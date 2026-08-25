@@ -1,0 +1,1 @@
+[ERC-8244](https://eip.tools/eip/8244) onchain HTML dapps

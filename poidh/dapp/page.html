@@ -167,8 +167,9 @@ border:2px solid var(--line);border-radius:999px;padding:1px 9px}
 .pill.vote,.pill.new{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .prov{color:var(--dim)}
 .spent{color:var(--dim);font-weight:600}
-/* The pinned bounty, given the room the first poidh gave a bounty: centred,
-   large, and saying the one number that matters. */
+/* The highlighted bounty, given the room the first poidh gave a bounty:
+   centred, large, and saying the one number that matters - which is also the
+   number it was chosen for. */
 .feat{border:3px solid var(--accent);border-radius:16px;padding:26px 22px;margin:8px 0 6px;
 text-align:center}
 .feat .lbl{color:var(--accent);margin-bottom:12px}
@@ -396,9 +397,20 @@ const SCAN="https://etherscan.io/";
 const FEE_BPS=250n,BPS=10000n;
 const PAGE=10;
 
-/* The bounty this page was built around. It is pinned, not privileged: it is
-   read the same way as every other one, and nothing here can change it. */
-const FEATURED=24n;
+/* WHAT GOES AT THE TOP IS THE DEEPEST POT, NOT AN ID WRITTEN IN HERE.
+   A pinned id gave the page a favourite it could never change: the bytes are
+   immutable, so the bounty this one was built around would have sat at the top
+   until the address itself was retired - and it would have blanked the moment
+   it fell off the first page of a list that only ever reads the newest ten. The
+   largest live pot is a fact about the market instead, it costs no read of its
+   own, and it moves on its own as the market does.
+
+   Provisional rows are skipped, the same way the live-pot stat skips them: the
+   cache holds the half of a bounty that cannot change and reads every pot as
+   zero, and "Biggest pot" over 0.0000 ETH would be a claim the page has not
+   checked yet. It waits the one round trip and then says something true. */
+const featuredOf=()=>LIST.reduce(
+(best,b)=>!b.prov&&statusOf(b)==="open"&&(!best||b.amount>best.amount)?b:best,null);
 
 /* The funder scan reads every bounty that has ever existed, so it is bounded -
    and the bound is shown to the reader rather than applied behind their back.
@@ -1574,13 +1586,12 @@ const rowOf=b=>'<button class=b data-b="'+b.id+'">'
 +"<span>"+esc(shortAddr(b.issuer))+"</span>"
 +"<span>"+ago(b.createdAt)+"</span></span></button>";
 
-const renderFeature=()=>{
-const b=LIST.find(x=>x.id===FEATURED);
+const renderFeature=b=>{
 const el=$("feature");
 if(!b){el.innerHTML="";return}
 const st=statusOf(b);
 el.innerHTML='<div class=feat>'
-+'<div class=lbl>Pinned bounty</div>'
++'<div class=lbl>Biggest pot</div>'
 +"<h2>"+esc(b.name)+"</h2>"
 +'<div class="pot num">'+fmt(b.amount,4)+' <span>ETH pooled'+usdPara(b.amount)+'</span></div>'
 +'<div class=b-meta>'+(isNew(b.id)?'<span class="pill new">new</span>':"")+badges(b)+"</div>"
@@ -1591,8 +1602,11 @@ el.innerHTML='<div class=feat>'
 +"</div></div>"};
 
 const renderList=()=>{
-renderFeature();
-const rest=LIST.filter(b=>b.id!==FEATURED);
+/* Chosen once and used twice, so the bounty at the top is the same one the
+   list below leaves out. */
+const feat=featuredOf();
+renderFeature(feat);
+const rest=feat?LIST.filter(b=>b.id!==feat.id):LIST;
 $("list").innerHTML=rest.length?rest.map(rowOf).join("")
 :'<p class=mut>Nothing read yet.</p>';
 const live=LIST.filter(b=>statusOf(b)==="open"&&!b.prov);

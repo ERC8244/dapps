@@ -3,8 +3,8 @@
   "title": "poidh — pics or it didn't happen",
   "description": "Onchain front end for the POIDH bounty market on Ethereum mainnet. Post a bounty, fund one together, claim it with a picture.",
   "page": "dapp/page.html",
-  "bytes": 109507,
-  "sha256": "95a65e3c5d43eec44503f68bea95355bce2a74af9349b498cb5404fe257c730d",
+  "bytes": 110440,
+  "sha256": "ddda1f8f33060a24a89d83f2d6d4ada6a85f7d3bf16914faee85a2e61ca277bc",
   "chunks": {
     "artifact": "Poidh8244",
     "count": 5,

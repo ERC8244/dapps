@@ -1,4 +1,4 @@
-/* Presses every control in dapp/poidh/page.html against a MOCK wallet and
+/* Presses every control in dapp/page.html against a MOCK wallet and
    decodes the transaction each one would have broadcast. Reads are real
    (mainnet, through a public node); only the signing end is faked, so the
    button -> calldata path is exercised exactly as a user would exercise it,
@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import {JSDOM} from 'jsdom';
 import {execSync} from 'node:child_process';
 
-const HTML = fs.readFileSync('dapp/poidh/page.html', 'utf8');
+const HTML = fs.readFileSync('dapp/page.html', 'utf8');
 const RPC = 'https://ethereum.publicnode.com';
 const POIDH = '0xe731dfadbff20542e10d09d26fc71445c70d4232';
 const ISSUER = '0x1c0aa8ccd568d90d61659f060d1bfb1e6f855a20';  // posted #24

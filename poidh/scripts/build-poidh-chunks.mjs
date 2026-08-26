@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
- * Split dapp/poidh/page.html into data-contract chunks and emit deployable
- * initcode, the same way script/build-tokenlist-chunks.mjs does for the token
- * list and script/build-zSwap-chunks.mjs does for zSwap.
+ * Split dapp/page.html into data-contract chunks and emit deployable initcode,
+ * the same way scripts/build-poidhverse-chunks.mjs does for POIDH Universe.
  *
  * WHY CHUNKS
  * The page is stored as the runtime bytecode of data contracts, so a single
@@ -19,8 +18,9 @@
  *   PUSH2 <len> DUP1 PUSH1 0x0a PUSH0 CODECOPY PUSH0 RETURN | <payload>
  * which returns the payload as the contract's runtime bytecode.
  *
- * Usage: node script/build-poidh-chunks.mjs
+ * Usage: node scripts/build-poidh-chunks.mjs
  */
+import {createHash} from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -33,8 +33,9 @@ if (process.argv[2] && process.argv[2] !== String(n)) {
   process.exit(1);
 }
 
-const SRC = path.join(ROOT, "dapp", "poidh", "page.html");
+const SRC = path.join(ROOT, "dapp", "page.html");
 const html = fs.readFileSync(SRC);
+const sha256 = createHash("sha256").update(html).digest("hex");
 const per = Math.ceil(html.length / n);
 if (per > EIP170) {
   console.error(`chunk size ${per} exceeds EIP-170 (${EIP170}); use more chunks`);
@@ -74,7 +75,7 @@ if (!rebuilt.equals(html)) {
   process.exit(1);
 }
 
-console.log(`dapp/poidh/page.html: ${html.length} B -> ${parts.length} chunk(s)`);
+console.log(`dapp/page.html: ${html.length} B, sha256 ${sha256} -> ${parts.length} chunk(s)`);
 for (const p of parts) {
   console.log(
     `  chunk${p.i}: ${p.bytes} B runtime (${EIP170 - p.bytes} B under EIP-170)  -> ${path.relative(ROOT, p.file)}`

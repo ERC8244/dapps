@@ -41,7 +41,7 @@ const castCall = (sig, ...args) =>
   execSync(`cast call ${POIDH} "${sig}" ${args.join(' ')} --rpc-url ${RPC}`).toString().trim();
 
 /* --- the page itself, so its real decoders are the ones under test --- */
-const dom = new JSDOM(fs.readFileSync('dapp/poidh/page.html', 'utf8'), {
+const dom = new JSDOM(fs.readFileSync('dapp/page.html', 'utf8'), {
   runScripts: 'dangerously', pretendToBeVisual: true, url: 'https://x.w4eth.io/',
   beforeParse(w) {
     w.localStorage.setItem('poidh:rpc', RPC);

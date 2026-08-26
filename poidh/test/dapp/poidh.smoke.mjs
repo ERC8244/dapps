@@ -1,4 +1,4 @@
-/* Runs the real dapp/poidh/page.html in jsdom against mainnet.
+/* Runs the real dapp/page.html in jsdom against mainnet.
    No stubs on the read path: every number below came off the chain through the
    page's own decoders. Checks the three things that are easy to break and
    impossible to notice - the list, the funder scan, and the cached first paint.
@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import {JSDOM} from 'jsdom';
 
-const HTML = fs.readFileSync('dapp/poidh/page.html', 'utf8');
+const HTML = fs.readFileSync('dapp/page.html', 'utf8');
 const RPC = 'https://ethereum.publicnode.com';   // deliberately a "state only" node
 const FUNDER = '0x7876d1aa2fb4311f84a9ba0a8cf816eb5223d5c2'; // funded #24 with 0.125
 const wait = ms => new Promise(r => setTimeout(r, ms));

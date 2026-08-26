@@ -14,7 +14,7 @@ contract Poidh8244Test is Test {
     address heir = address(0xCAFE);
 
     function setUp() public {
-        html = bytes(vm.readFile("dapp/poidh/page.html"));
+        html = bytes(vm.readFile("dapp/page.html"));
         address[5] memory d;
         for (uint256 i; i != 5; ++i) {
             bytes memory initcode =

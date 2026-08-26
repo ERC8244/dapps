@@ -7,7 +7,7 @@
    Usage: node test/dapp/poidh.controls.mjs                                  */
 import fs from 'node:fs'; import {JSDOM} from 'jsdom';
 const w8=ms=>new Promise(r=>setTimeout(r,ms));
-const dom=new JSDOM(fs.readFileSync('dapp/poidh/page.html','utf8'),{runScripts:'dangerously',
+const dom=new JSDOM(fs.readFileSync('dapp/page.html','utf8'),{runScripts:'dangerously',
  pretendToBeVisual:true,url:'https://x.w4eth.io/',beforeParse(w){
   w.localStorage.setItem('poidh:rpc','https://gateway.tenderly.co/public/mainnet');
   w.TextEncoder=TextEncoder;w.TextDecoder=TextDecoder;w.scrollTo=()=>{};

@@ -5,7 +5,7 @@ import {execSync} from 'node:child_process';
    are written out as constants — and a constant nobody checks is a bug that
    only shows up as a failed transaction.
    Usage: node test/dapp/poidh.abi.mjs                                      */
-const page = fs.readFileSync('dapp/poidh/page.html','utf8');
+const page = fs.readFileSync('dapp/page.html','utf8');
 
 /* every selector constant the page declares, paired with the signature it claims */
 const SIGS = {
@@ -27,7 +27,8 @@ const SIGS = {
 /* The ABI is fetched from the verified source on Etherscan rather than kept as
    a copy here: a pinned copy can drift from the contract the page actually
    calls, which is the exact failure this test exists to catch. */
-const KEY = process.env.ETHERSCAN_API_KEY || 'K3GX89YJAGF55CTNS353136VSN7TVITCDF';
+const KEY = process.env.ETHERSCAN_API_KEY;
+if (!KEY) { console.error('set ETHERSCAN_API_KEY'); process.exit(1); }
 const POIDH = '0xE731dFadBFf20542E10D09D26Fc71445C70d4232';
 const res = await (await fetch(`https://api.etherscan.io/v2/api?chainid=1&module=contract`
   + `&action=getabi&address=${POIDH}&apikey=${KEY}`)).json();

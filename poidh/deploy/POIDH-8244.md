@@ -9,7 +9,7 @@ An onchain HTML front end for the POIDH bounty market
 | page source | `dapp/page.html` |
 | wrapper | `src/Poidh8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/Poidh8244.t.sol`, `test/dapp/poidh.smoke.mjs`, `test/dapp/poidh.abi.mjs`, `test/dapp/poidh.buttons.mjs`, `test/dapp/poidh.integration.mjs` |
+| tests | `test/Poidh8244.t.sol`, `test/dapp/poidh.smoke.mjs`, `test/dapp/poidh.abi.mjs`, `test/dapp/poidh.buttons.mjs`, `test/dapp/poidh.connect.mjs`, `test/dapp/poidh.integration.mjs` |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## How the page finds bounties
@@ -43,6 +43,7 @@ forge test --match-path test/Poidh8244.t.sol
 node test/dapp/poidh.smoke.mjs        # the real page against mainnet in jsdom
 node test/dapp/poidh.abi.mjs          # every hard-coded selector vs the verified ABI
 node test/dapp/poidh.buttons.mjs      # presses every control, decodes what it would send
+node test/dapp/poidh.connect.mjs      # "Fund it" from a connected AND an unconnected wallet
 node test/dapp/poidh.integration.mjs  # decoders vs canonical ABI; every tx simulated by eth_call
 node ../scripts/verify.mjs poidh      # chunks, html() and every route, against mainnet
 node ../scripts/serve.mjs poidh       # localhost, real wallet, real transactions

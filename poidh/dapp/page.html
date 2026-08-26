@@ -1862,11 +1862,19 @@ to(cStr2(open?W_OPEN:W_SOLO,t,d),v))){
 $("nTitle").value="";$("nDesc").value="";$("nAmt").value="";
 go("b",CFG.count-1n)}};
 
+/* READ THE FIELD BEFORE CONNECTING, NOT AFTER. Connecting ends in `refresh()`,
+   which re-renders the detail panel - and these inputs are BUILT BY THAT
+   RENDER, so what the reader typed is destroyed on the way. Reading after it
+   asked an empty field what it held and then blamed the reader for the answer:
+   "That amount is not a number", about an amount they did type, with nothing
+   sent. Taken and checked first, the value survives the connect that the press
+   itself triggered. The static new-bounty form never had this because render()
+   does not rebuild it. */
 const joinBounty=async()=>{
-if(!await need())return;
 const v=parseAmt(($("joinAmt")||{}).value);
 if(v==null)return setStat("That amount is not a number.","err");
 if(v<CFG.minContrib)return setStat("The minimum is "+eth(CFG.minContrib)+".","err");
+if(!await need())return;
 await send("Funding #"+detail.id,to(cUint(W_JOIN,detail.id),v))};
 
 const postClaim=async()=>{

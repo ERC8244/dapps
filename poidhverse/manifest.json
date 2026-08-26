@@ -1,0 +1,28 @@
+{
+  "name": "poidhverse",
+  "title": "POIDH Universe",
+  "description": "Multi-chain POIDH application reading Ethereum, Base, Arbitrum and Degen Chain directly, with no API or indexer.",
+  "page": "dapp/page.html",
+  "bytes": 296949,
+  "sha256": "1e051d5152594af2b542114874789127b11f8bb9ed8a728f818c950a99dcb819",
+  "chunks": {
+    "artifact": "Poidhverse8244",
+    "maxPayload": 24575,
+    "prefix": "00"
+  },
+  "deployment": {
+    "chainId": 1,
+    "contract": "0x27f3C5fe79c092D663710d555Bb358cdc2dDe3a4",
+    "resolver": "0x4f6bdaaC679961aA0C8C6503CF204EA9F9A7A0aC",
+    "root": "0x5DCbD2FCE275A49D233a46A8c337429b48B5A965",
+    "routes": [
+      {
+        "kind": "wns",
+        "url": "https://poidhverse.wei.limo/",
+        "serves": "resolver",
+        "note": "points at the resolver, which serves whatever release is currently active — not necessarily this one"
+      },
+      {"kind": "erc8244", "url": "https://0x27f3c5fe79c092d663710d555bb358cdc2dde3a4.w4eth.io/", "serves": "exact"}
+    ]
+  }
+}

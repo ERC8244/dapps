@@ -1,0 +1,28 @@
+name: verify
+
+# A deployment cannot change, so it never complains when the repo drifts away
+# from it. This runs the check that notices, on every change and once a day.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dapp: [poidh, poidhverse]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node scripts/chunk.mjs ${{ matrix.dapp }}
+      - run: node scripts/verify.mjs ${{ matrix.dapp }}
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}

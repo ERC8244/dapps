@@ -1,0 +1,34 @@
+{
+  "name": "poidh",
+  "title": "poidh — pics or it didn't happen",
+  "description": "Onchain front end for the POIDH bounty market on Ethereum mainnet. Post a bounty, fund one together, claim it with a picture.",
+  "page": "dapp/page.html",
+  "bytes": 108930,
+  "sha256": "63faa25ab253313f5ccc94e05fed3a5989647723e3a56ebdef580e33c6e75a0e",
+  "chunks": {
+    "artifact": "Poidh8244",
+    "count": 5,
+    "prefix": ""
+  },
+  "deployment": {
+    "chainId": 1,
+    "contract": "0x0000006cf51135e7D5cB2EacF74fF7390AA9beCa",
+    "chunkContracts": [
+      "0x9022d2375aa7c878d8486DD5649a86bF653b4741",
+      "0x5129ddB7009ABAd18229bb0BbffE92CA17C5b84f",
+      "0x76E11ebeAfD4daBfB3B0f4CFD3EE169cc3aE95D8",
+      "0xF116eE52d95D66A72e2525c3A004458CfFb11d03",
+      "0xa2F53f63aB6409f6737f999E1Fad5367922B1873"
+    ],
+    "routes": [
+      {"kind": "wns", "url": "https://poidh.wei.limo/", "serves": "exact"},
+      {"kind": "erc8244", "url": "https://0x0000006cf51135e7d5cb2eacf74ff7390aa9beca.w4eth.io/", "serves": "exact"},
+      {
+        "kind": "erc4804",
+        "url": "https://0x0000006cf51135e7d5cb2eacf74ff7390aa9beca.1.w3link.io/",
+        "serves": "modified",
+        "note": "w3link injects ~7.9 KB of its own script after <body>; the bytes it serves are not the bytes html() returns"
+      }
+    ]
+  }
+}

@@ -8,9 +8,9 @@ An onchain HTML front end for the POIDH bounty market
 | --- | --- |
 | page source | `dapp/page.html` |
 | wrapper | `src/Poidh8244.sol` |
-| chunker | `scripts/build-poidh-chunks.mjs` |
+| chunker | `../scripts/chunk.mjs` (shared) |
 | tests | `test/Poidh8244.t.sol`, `test/dapp/poidh.smoke.mjs`, `test/dapp/poidh.abi.mjs`, `test/dapp/poidh.buttons.mjs`, `test/dapp/poidh.integration.mjs` |
-| local preview | `scripts/serve-poidh.mjs` |
+| local preview | `../scripts/serve.mjs` (shared) |
 
 ## How the page finds bounties
 
@@ -38,13 +38,14 @@ Everything below is run from this directory. `forge` and `cast` come from
 Foundry; the jsdom tests need `npm i jsdom` and an `ETHERSCAN_API_KEY`.
 
 ```
-node scripts/build-poidh-chunks.mjs   # out/Poidh8244.chunk1..5.creation.txt
+node ../scripts/chunk.mjs poidh       # out/Poidh8244.chunk1..5.creation.txt
 forge test --match-path test/Poidh8244.t.sol
 node test/dapp/poidh.smoke.mjs        # the real page against mainnet in jsdom
 node test/dapp/poidh.abi.mjs          # every hard-coded selector vs the verified ABI
 node test/dapp/poidh.buttons.mjs      # presses every control, decodes what it would send
 node test/dapp/poidh.integration.mjs  # decoders vs canonical ABI; every tx simulated by eth_call
-node scripts/serve-poidh.mjs          # localhost, real wallet, real transactions
+node ../scripts/verify.mjs poidh      # chunks, html() and every route, against mainnet
+node ../scripts/serve.mjs poidh       # localhost, real wallet, real transactions
 ```
 
 The chunker writes into `out/`, which is also Foundry's artifact directory, so

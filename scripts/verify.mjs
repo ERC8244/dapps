@@ -1,0 +1,84 @@
+#!/usr/bin/env node
+/**
+ * Check that a deployed dapp is the repo, all the way down.
+ *
+ * Four claims, each checked against the chain or the network rather than
+ * against another file in the repo:
+ *
+ *   1. the page is what the manifest pins
+ *   2. each chunk rebuilt from that page is byte-identical to the runtime code
+ *      at its deployed address
+ *   3. html() on the wrapper returns exactly the page
+ *   4. every published route serves exactly the page
+ *
+ * This is the check that catches a repo drifting away from what is deployed —
+ * which is invisible otherwise, because the deployment cannot change and so
+ * never complains.
+ *
+ * Usage: node scripts/verify.mjs <dapp>          (ETH_RPC_URL to pick a node)
+ */
+import {createHash} from "node:crypto";
+import {HTML_SELECTOR, RPC, decodeString, load, page, rpc, split} from "./lib.mjs";
+
+const m = load(process.argv[2]);
+const d = m.deployment;
+let failed = 0;
+
+const check = (ok, label, detail = "") => {
+  console.log(`  ${ok ? "ok  " : "FAIL"} ${label}${detail ? `  ${detail}` : ""}`);
+  if (!ok) failed++;
+};
+
+console.log(`${m.name} against ${RPC}`);
+
+// 1. the page is what the manifest pins — page() exits if not
+const {bytes, sha256} = page(m);
+check(true, "page matches manifest", `${bytes.length} B, sha256 ${sha256.slice(0, 16)}…`);
+
+// 2. rebuilt chunks vs deployed runtime code
+const parts = split(m, bytes);
+if (d.chunkContracts?.length) {
+  if (d.chunkContracts.length !== parts.length) {
+    check(false, "chunk count", `manifest lists ${d.chunkContracts.length}, page needs ${parts.length}`);
+  } else {
+    for (const [i, address] of d.chunkContracts.entries()) {
+      const code = Buffer.from((await rpc("eth_getCode", [address, "latest"])).slice(2), "hex");
+      check(code.equals(parts[i].runtime), `chunk ${i + 1} runtime`, address);
+    }
+  }
+} else {
+  console.log(`  --   chunk runtimes not checked (no chunkContracts in manifest)`);
+}
+
+// 3. html() on the wrapper
+const served = decodeString(await rpc("eth_call", [{to: d.contract, data: HTML_SELECTOR}, "latest"]));
+check(served.equals(bytes), "html() returns the page", d.contract);
+
+// 4. every published route.
+//
+// Only a route that promises the contract's own bytes is held to them. A
+// resolver route serves whatever release is currently active, and a gateway
+// that rewrites the document cannot match by construction — both are reported
+// rather than failed, because neither is the repo drifting.
+for (const route of d.routes ?? []) {
+  const exact = route.serves === "exact";
+  try {
+    const response = await fetch(route.url);
+    const body = Buffer.from(await response.arrayBuffer());
+    const hash = createHash("sha256").update(body).digest("hex");
+    const same = hash === sha256;
+    if (exact) {
+      check(same, `${route.kind} serves the page`, `${route.url} (${body.length} B)`);
+    } else {
+      console.log(
+        `  --   ${route.kind} ${same ? "serves the page" : `serves ${body.length} B, not this release`}` +
+          `  ${route.url}\n       ${route.serves}: ${route.note ?? ""}`
+      );
+    }
+  } catch (e) {
+    check(!exact, `${route.kind} reachable`, `${route.url} — ${e.message}`);
+  }
+}
+
+console.log(failed ? `\n${m.name}: ${failed} FAILED` : `\n${m.name}: verified`);
+process.exit(failed ? 1 : 0);

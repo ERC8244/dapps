@@ -10,8 +10,8 @@ indexer, analytics, remote JavaScript, or bounty snapshot.
 | immutable version | `src/UniverseVersionV2.sol` |
 | version interface | `src/UniverseVersion.sol` |
 | bytecode storage | `src/storage/CodeStore.sol`, `src/storage/CodeReader.sol` |
-| chunk builder | `scripts/build-poidhverse-chunks.mjs` |
-| local preview | `scripts/serve-poidhverse.mjs` |
+| chunk builder | `../scripts/chunk.mjs` (shared) |
+| local preview | `../scripts/serve.mjs` (shared) |
 | integrity tests | `test/Poidhverse8244.t.sol` |
 | complete project | [AlexanderCGKarlsson/poidhverse](https://github.com/AlexanderCGKarlsson/poidhverse) |
 
@@ -30,9 +30,10 @@ published immutable versions, and later releases must remain staged for three da
 From this directory:
 
 ```sh
-node scripts/build-poidhverse-chunks.mjs
+node ../scripts/chunk.mjs poidhverse
 forge test
-node scripts/serve-poidhverse.mjs
+node ../scripts/verify.mjs poidhverse
+node ../scripts/serve.mjs poidhverse
 ```
 
 The chunk builder refuses any page other than the canonical v0.2.2 release and proves that the generated chunks

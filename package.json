@@ -1,0 +1,6 @@
+{
+  "name": "dapps-tooling",
+  "private": true,
+  "description": "Dev-only deps for the repo's scripts and tests. Without this file npm prunes what it does not know about.",
+  "dependencies": { "ethers": "^6", "jsdom": "^26", "solc": "^0.8" }
+}

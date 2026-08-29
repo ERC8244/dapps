@@ -7,20 +7,27 @@ pragma solidity ^0.8.30;
 ///         mainnet, and its claim NFT at
 ///         0x9c5F45D5e1382e4058D334d93C6c01442012a4D9.
 /// @dev Architecture, following zSwap and Firstfruits8244: the HTML payload is
-///      the runtime bytecode of five data contracts, deployed separately and
+///      the runtime bytecode of up to sixteen data contracts, deployed separately and
 ///      passed to the constructor. `html()` reassembles them with EXTCODECOPY
 ///      and proper ABI encoding (offset + length + padded data), so any RPC
 ///      client decodes it directly. `request()` implements ERC-5219 for
 ///      web3:// gateways (ERC-4804), and `html()` alone is enough for an
 ///      ERC-8244 gateway.
 ///
-///      FIVE CHUNKS, FOR A ~105 KB PAGE. EIP-170 caps each chunk at 24,576
-///      bytes, not the page, so five hold 122,880. The count is fixed in the
-///      constructor arity and the deployed page is immutable, so it is chosen
-///      once: the page as written fills about six sevenths of them, and the rest
-///      is the room it may grow into before the count - and therefore the
-///      address - has to change. Every chunk must be non-empty and distinct,
-///      so the count cannot be padded past what the page fills.
+///      SIXTEEN SLOTS, AS MANY AS THE PAGE NEEDS. EIP-170 caps each chunk at
+///      24,576 bytes, not the page, so sixteen hold 393,216. Generation 1 took
+///      exactly five, and a page that outgrew them could not be deployed
+///      without editing this file - the arity, not EIP-170, was the ceiling,
+///      and it was reached with 24 bytes to spare. The slots are still
+///      immutable, so they are still read from code rather than storage; the
+///      list simply ends where the page does.
+///
+///      THE LIST MUST NOT HAVE A HOLE IN IT. Slots are filled from the front
+///      and the first zero ends the list: everything after it must be zero
+///      too. Without that check a zero in the middle would drop a chunk out of
+///      the page and still deploy happily, serving a document with a hole in
+///      it that no reader could tell from a whole one. Every used slot must
+///      hold real code and no two may be the same, exactly as before.
 ///
 /// WHAT THE PAGE TALKS TO
 ///   PoidhV3, its claim NFT and Multicall3, by `eth_call` through the reader's
@@ -85,6 +92,17 @@ contract Poidh8244 {
     address public immutable DATA3;
     address public immutable DATA4;
     address public immutable DATA5;
+    address public immutable DATA6;
+    address public immutable DATA7;
+    address public immutable DATA8;
+    address public immutable DATA9;
+    address public immutable DATA10;
+    address public immutable DATA11;
+    address public immutable DATA12;
+    address public immutable DATA13;
+    address public immutable DATA14;
+    address public immutable DATA15;
+    address public immutable DATA16;
 
     /// @dev A missing or duplicated chunk would permanently serve broken HTML.
     error InvalidData();
@@ -97,7 +115,7 @@ contract Poidh8244 {
     // --------------------------------------------------------------- LINEAGE
     //
     // `html()` is immutable and stays that way. The successor below is a CLAIM
-    // ABOUT LINEAGE, never a redirect: this contract serves its own five chunks
+    // ABOUT LINEAGE, never a redirect: this contract serves its own chunks
     // forever, whatever is deployed later. Making `html()` forward to a
     // successor would have been the smaller change and it would have cost the
     // one property this design exists for - an address whose bytes cannot move
@@ -178,13 +196,22 @@ contract Poidh8244 {
     ///      so the deployer IS the predecessor at construction time. No version
     ///      NUMBER is stored - it is derived by walking, so there is no counter
     ///      to pass in wrongly, skip, or repeat. The chain is the record.
-    constructor(address initialSteward, address previous, address[5] memory d) {
+    constructor(address initialSteward, address previous, address[16] memory d) {
         if (previous != address(0) && msg.sender != previous) revert InvalidData();
         steward = initialSteward;
         PREVIOUS = previous;
-        for (uint256 i; i != 5; ++i) {
+        // A page made of no chunks is not a page.
+        if (d[0] == address(0)) revert InvalidData();
+        for (uint256 i; i != 16; ++i) {
+            if (d[i] == address(0)) {
+                // The list has ended, so it must stay ended.
+                for (uint256 j = i + 1; j != 16; ++j) {
+                    if (d[j] != address(0)) revert InvalidData();
+                }
+                break;
+            }
             if (d[i].code.length == 0) revert InvalidData();
-            for (uint256 j = i + 1; j != 5; ++j) {
+            for (uint256 j = i + 1; j != 16; ++j) {
                 if (d[i] == d[j]) revert InvalidData();
             }
         }
@@ -193,6 +220,17 @@ contract Poidh8244 {
         DATA3 = d[2];
         DATA4 = d[3];
         DATA5 = d[4];
+        DATA6 = d[5];
+        DATA7 = d[6];
+        DATA8 = d[7];
+        DATA9 = d[8];
+        DATA10 = d[9];
+        DATA11 = d[10];
+        DATA12 = d[11];
+        DATA13 = d[12];
+        DATA14 = d[13];
+        DATA15 = d[14];
+        DATA16 = d[15];
         emit StewardshipTransferred(address(0), initialSteward);
     }
 
@@ -328,18 +366,23 @@ contract Poidh8244 {
         return "5219";
     }
 
-    /// @dev Reassembles the page from all five chunks in one pass: each chunk
+    /// @dev Reassembles the page from every filled chunk in one pass: each chunk
     ///      is copied directly after the previous one at the string body, so
     ///      there is no intermediate copy and no concatenation. The cursor
     ///      advances by construction, so the fifth chunk lands after the fourth
     ///      for the same reason the second lands after the first.
     function _html() private view returns (string memory s) {
-        address[5] memory d = [DATA1, DATA2, DATA3, DATA4, DATA5];
+        // An unused slot is address(0), whose code is empty, so it contributes
+        // nothing and needs no special case: the loop simply copies zero bytes.
+        address[16] memory d = [
+            DATA1, DATA2, DATA3, DATA4, DATA5, DATA6, DATA7, DATA8,
+            DATA9, DATA10, DATA11, DATA12, DATA13, DATA14, DATA15, DATA16
+        ];
         assembly ("memory-safe") {
             s := mload(0x40)
             let body := add(s, 0x20)
             let at := body
-            for { let i := 0 } lt(i, 5) { i := add(i, 1) } {
+            for { let i := 0 } lt(i, 16) { i := add(i, 1) } {
                 let a := mload(add(d, shl(5, i)))
                 let n := extcodesize(a)
                 extcodecopy(a, at, 0, n)

@@ -9,16 +9,20 @@ import {Poidh8244} from "../src/Poidh8244.sol";
 contract Poidh8244Test is Test {
     Poidh8244 page;
     bytes html;
+    address[16] chunks;
 
     address steward = address(0xBEEF);
     address heir = address(0xCAFE);
 
     function setUp() public {
         html = bytes(vm.readFile("dapp/page.html"));
-        address[5] memory d;
-        for (uint256 i; i != 5; ++i) {
-            bytes memory initcode =
-                vm.parseBytes(vm.readFile(string.concat("out/Poidh8244.chunk", vm.toString(i + 1), ".creation.txt")));
+        address[16] memory d;
+        // However many the chunker wrote, not however many are declared: the
+        // slots past the page are left zero, which is what the page IS now.
+        for (uint256 i; i != 16; ++i) {
+            string memory f = string.concat("out/Poidh8244.chunk", vm.toString(i + 1), ".creation.txt");
+            if (!vm.exists(f)) break;
+            bytes memory initcode = vm.parseBytes(vm.readFile(f));
             address a;
             assembly ("memory-safe") {
                 a := create(0, add(initcode, 0x20), mload(initcode))
@@ -26,6 +30,8 @@ contract Poidh8244Test is Test {
             require(a != address(0), "chunk deploy failed");
             d[i] = a;
         }
+        require(d[0] != address(0), "no chunks found - run scripts/chunk.mjs");
+        chunks = d;
         page = new Poidh8244(steward, address(0), d);
     }
 
@@ -51,10 +57,44 @@ contract Poidh8244Test is Test {
 
     /// @dev A chunk that is empty or repeated would serve broken HTML forever.
     function testRejectsBadChunks() public {
-        address[5] memory d;
-        for (uint256 i; i != 5; ++i) d[i] = address(page);
+        address[16] memory d;
+        for (uint256 i; i != 16; ++i) d[i] = address(page);
         vm.expectRevert(Poidh8244.InvalidData.selector);
         new Poidh8244(steward, address(0), d);
+    }
+
+    /// @dev A page of no chunks is not a page.
+    function testRejectsEmptyList() public {
+        address[16] memory d;
+        vm.expectRevert(Poidh8244.InvalidData.selector);
+        new Poidh8244(steward, address(0), d);
+    }
+
+    /// @dev THE ONE THE WIDENED ARRAY ADDED. A zero between two chunks would
+    ///      drop the middle of the page and still deploy, serving a document
+    ///      with a hole in it that no reader could tell from a whole one.
+    function testRejectsAHoleInTheList() public {
+        address[16] memory d = chunks;
+        d[1] = address(0);
+        vm.expectRevert(Poidh8244.InvalidData.selector);
+        new Poidh8244(steward, address(0), d);
+    }
+
+    /// @dev The same hole, arrived at from the far end.
+    function testRejectsAChunkAfterTheEnd() public {
+        address[16] memory d;
+        d[0] = chunks[0];
+        d[15] = chunks[1];
+        vm.expectRevert(Poidh8244.InvalidData.selector);
+        new Poidh8244(steward, address(0), d);
+    }
+
+    /// @dev One chunk is a legitimate page, and so is a short list.
+    function testAcceptsFewerThanSixteen() public {
+        address[16] memory d;
+        d[0] = chunks[0];
+        Poidh8244 one = new Poidh8244(steward, address(0), d);
+        assertEq(one.html().length, chunks[0].code.length);
     }
 
     /// @dev The role moves in two steps, so a mistyped address cannot take it.
@@ -115,7 +155,7 @@ contract Poidh8244Test is Test {
 
     /// @dev Only the current steward appends, and only once.
     function testDeployNext() public {
-        address[5] memory d = [page.DATA1(), page.DATA2(), page.DATA3(), page.DATA4(), page.DATA5()];
+        address[16] memory d = chunks;
         bytes memory initcode =
             abi.encodePacked(type(Poidh8244).creationCode, abi.encode(steward, address(page), d));
 
@@ -139,7 +179,7 @@ contract Poidh8244Test is Test {
     /// @dev A successor that does not name this contract is refused, so the
     ///      write-once pointer cannot be burned on a stranger.
     function testRejectsForeignSuccessor() public {
-        address[5] memory d = [page.DATA1(), page.DATA2(), page.DATA3(), page.DATA4(), page.DATA5()];
+        address[16] memory d = chunks;
         bytes memory initcode =
             abi.encodePacked(type(Poidh8244).creationCode, abi.encode(steward, address(0), d));
         vm.prank(steward);

@@ -360,7 +360,7 @@ footer p{margin-top:12px;max-width:36rem;margin-left:auto;margin-right:auto;colo
 <li><a href="https://poidh.xyz" target=_blank rel=noreferrer>poidh.xyz</a></li>
 <li><a href="https://docs.poidh.xyz" target=_blank rel=noreferrer>docs</a></li>
 </ul>
-<p style="margin-top:10px">This page reads the bounty contract directly and talks to nothing else. Claim pictures live on IPFS and are fetched only when you ask for one.</p>
+<p style="margin-top:10px">This page reads the bounty contract through a node you pick, and talks to nothing else. A claim&rsquo;s picture is either in the claim itself &mdash; nothing to fetch, nobody to ask &mdash; or on a host the claimant chose, contacted only when you ask to see it.</p>
 </footer>
 
 <!-- --------------------------------------------------------------- MODALS -->
@@ -1086,6 +1086,47 @@ return f&&f.toLowerCase()===String(a).toLowerCase()?n:""};
 return await agrees(str(w))||await agrees(str(g))
 ||await agrees(await ensRevName(nd,retAddr(er)))||""};
 
+/* NAMES FOR THE PEOPLE IN THE POT, NOT JUST THE READER. The chip has resolved
+   the connected wallet since the first version; everyone else stayed a hex
+   stub, which hides the one thing a funders list exists to show.
+
+   WNS ONLY, AND BATCHED. nameRev is four round trips for one address and a
+   funders list is unbounded; through aggregate3 the whole panel costs three
+   requests however many people are on it. The forward check is kept, because
+   it is the whole reason a name can be trusted: a reverse record is a claim
+   anybody may make. A failed lookup is not cached. Only the reader's own name
+   still walks GNS and ENS - one address can afford it. */
+const NAMES=new Map();          /* addr -> name, or "" for looked up and none */
+const nameLabel=a=>NAMES.get(String(a||"").toLowerCase())||shortAddr(a);
+let namesBusy=false;
+const resolveNames=async list=>{
+const want=[...new Set(list.map(a=>String(a||"").toLowerCase())
+.filter(a=>/^0x[0-9a-f]{40}$/.test(a)&&!NAMES.has(a)))];
+if(!want.length||namesBusy)return false;
+namesBusy=true;
+try{
+const rev=await mc3(want.map(a=>({to:WNS,data:"0x"+SEL_REV+encAddr(a)})));
+const cand=[];
+want.forEach((a,i)=>{let n="";
+try{n=rev[i]?decodeString(rev[i]).trim().toLowerCase():""}catch{}
+if(n&&nameOk(n))cand.push({a,n});else NAMES.set(a,"")});
+if(!cand.length)return false;
+const ids=await mc3(cand.map(c=>({to:WNS,data:"0x"+SEL_CID+pad32("20")+encStr(c.n)})));
+const good=[];
+cand.forEach((c,i)=>{const id=ids[i];
+if(id&&strip0x(id).length===64)good.push({a:c.a,n:c.n,id:strip0x(id)});
+else NAMES.set(c.a,"")});
+if(!good.length)return false;
+const fwd=await mc3(good.map(g=>({to:WNS,data:"0x"+SEL_NRES+g.id})));
+let found=false;
+good.forEach((g,i)=>{const to=retAddr(fwd[i]||"");
+const ok=!!to&&to.toLowerCase()===g.a;
+NAMES.set(g.a,ok?g.n:"");
+if(ok)found=true});
+return found}
+catch{return false}
+finally{namesBusy=false}};
+
 /* ---------------------------------------------------------------- STATE */
 let CFG={minBounty:0n,minContrib:0n,period:172800n,count:0n};
 let LIST=[];              /* bounty summaries, newest first */
@@ -1114,7 +1155,7 @@ if(_statTimer)clearTimeout(_statTimer),_statTimer=null;
 if(msg&&cls)_statTimer=setTimeout(()=>{
 if(el.className===cls)setStat("")},cls==="err"?9000:6000)};
 const txLink=h=>'<a href="'+SCAN+'tx/'+h+'" target="_blank" rel="noreferrer">'+h.slice(0,10)+"…</a>";
-const acct=a=>'<a href="'+SCAN+'address/'+a+'" target="_blank" rel="noreferrer">'+esc(shortAddr(a))+"</a>";
+const acct=a=>'<a href="'+SCAN+'address/'+a+'" target="_blank" rel="noreferrer">'+esc(nameLabel(a))+"</a>";
 const eth=v=>fmt(v,4)+" ETH";
 /* Dollars are a courtesy, never a source of truth: no price, no parenthesis. */
 const usd=v=>{
@@ -1151,6 +1192,14 @@ const cacheSave=()=>{try{localStorage.setItem(CK,JSON.stringify(cache))}catch{}}
    It is kept here rather than on chain: the reading is per-person, it would
    cost gas to write, and a shared counter could be advanced past somebody by
    anyone else. */
+/* WHICH WALLET, REMEMBERED BY rdns. EIP-6963 uuids are minted fresh on every
+   page load, so they cannot name a wallet across a reload; rdns is the wallet
+   itself. Only the choice is kept - never an address, never a permission. The
+   wallet still decides on load whether the site is still authorised, and a
+   wallet that has been revoked simply answers with no accounts. */
+const WK="poidh:wallet:v1";
+const wSave=r=>{try{r?localStorage.setItem(WK,r):localStorage.removeItem(WK)}catch{}};
+const wLast=()=>{try{return localStorage.getItem(WK)||""}catch{return""}};
 const SK="poidh:seen:v1";
 let seen={count:0,at:0};
 try{seen=JSON.parse(localStorage.getItem(SK)||"null")||seen}catch{}
@@ -1382,6 +1431,15 @@ return b};
    not history - a round is at most `votingPeriod` old - so this stays well
    inside the 10,000-block cap that windowed nodes enforce. */
 const T_VOTECAST="0xf86157a5d86bb7712df058863b02b9593d09c70f8264d183bade1d5452053dde";
+/* ASKED IN WINDOWS, BECAUSE THE FREE TIERS ANSWER IN WINDOWS. A round is
+   15,000 blocks and dRPC and MEV Blocker refuse a range over 10,000, so the
+   single query this made was rejected once a round was ~33 hours old and the
+   answer fell to "unknown" on half the nodes offered - exactly when someone is
+   deciding whether to vote. Newest window first, returning on a hit, so a
+   young round still costs the one request it always did. A window that fails
+   still throws: half a search would read as "you have not voted", the one
+   wrong thing this must never say. */
+const LOG_WINDOW=10000;
 const votedThisRound=async b=>{
 try{
 const tip=Number(await rpcRead("eth_blockNumber",[],1));
@@ -1389,12 +1447,16 @@ const started=b.votes.deadline-Number(CFG.period);
 const age=Math.max(0,Math.floor(Date.now()/1000)-started);
 /* 12s blocks, plus a wide margin, and never more than one round's worth. */
 const span=Math.min(Math.ceil(age/12)+600,Math.ceil(Number(CFG.period)/12)+600);
+const topics=[T_VOTECAST,"0x"+encAddr(account),"0x"+encUint(b.id),"0x"+encUint(b.voting)];
+const floor=Math.max(0,tip-span);
+for(let to=tip;;to-=LOG_WINDOW){
+const from=Math.max(floor,to-LOG_WINDOW+1);
 const logs=await rpcRead("eth_getLogs",[{address:POIDH,
-fromBlock:"0x"+Math.max(0,tip-span).toString(16),toBlock:"0x"+tip.toString(16),
-topics:[T_VOTECAST,"0x"+encAddr(account),"0x"+encUint(b.id),"0x"+encUint(b.voting)]}],1);
+fromBlock:"0x"+from.toString(16),toBlock:"0x"+to.toString(16),topics}],1);
 /* The round is in the log body, so a vote from a previous round on the same
    claim - a claim can be put up again after one fails - is not counted. */
-return logs.some(l=>uword(l.data,2)===b.round)}
+if(logs.some(l=>uword(l.data,2)===b.round))return true;
+if(from<=floor)return false}}
 catch{return null}};
 
 /* ---------------------------------------------------------------- REFRESH
@@ -1642,9 +1704,19 @@ return'<div class="claim'+(won?" win":"")+'">'
 +"</div>":"")
 +"</div></div>"};
 
+/* WHAT THE READER TYPED SURVIVES A REPAINT THEY DID NOT ASK FOR: this panel is
+   rebuilt wholesale, so a background repaint used to empty a field somebody
+   was still typing into - the connect bug from the other direction. */
 const renderDetail=()=>{
 const b=detail;
 const el=$("bBody");
+/* EVERY FIELD, NOT JUST THE POT. A background repaint used to empty whatever
+   somebody was part-way through writing - a claim's title and description as
+   readily as an amount. The file input is skipped: its value is not ours to
+   set, and the picture it stands for is held in picUri regardless. */
+const keep=[];
+for(const f of el.querySelectorAll("input[id],textarea[id],select[id]"))
+if(f.type!=="file")keep.push([f.id,f.value]);
 if(!b){el.innerHTML='<p class=mut>Reading…</p>';return}
 const st=statusOf(b);
 const fee=b.amount*FEE_BPS/BPS;
@@ -1724,10 +1796,16 @@ if(acts.length)h+='<div class=box><h3>You</h3>'+acts.join('<div style="height:8p
 /* ---- claiming */
 if(idle&&account&&!iAmIssuer){
 h+='<div class=box><h3>Claim it</h3>'
-+'<p class="mut" style="font-size:12px">Post the proof. The picture is yours to host &mdash; put it on IPFS and give the link here; the contract mints the claim NFT against it and holds it until the bounty is settled.</p>'
++'<p class="mut" style="font-size:12px">Post the proof. Choose a picture and it goes on chain with the claim &mdash; no host, nothing to keep paying for. A link to one you host yourself still works.</p>'
 +'<div class=field><input id=cTitle maxlength=120 placeholder="Title"></div>'
 +'<div class=field><textarea id=cDesc style="min-height:70px" placeholder="What the picture shows."></textarea></div>'
-+'<div class=field><input id=cUri placeholder="ipfs://… or https://…"></div>'
++'<div class=field><span class=lbl>The picture</span>'
++'<input type=file id=cFile accept="image/*" style="width:100%">'
++'<div class=seg id=cSize style="margin-top:8px">'
++PIC_SIZES.map((p,i)=>'<button data-ps="'+i+'"'+(i===picSize?" class=on":"")+">"+p[0]+"</button>").join("")
++"</div>"
++'<p class="mut" id=cPicNote style="margin-top:7px;font-size:13px">'+esc(picNote)+"</p></div>"
++'<div class=field><input id=cUri placeholder="…or a link you host: ipfs:// or https://"></div>'
 +'<button class="btn btn-pri btn-block" id=doClaim>Submit the claim</button></div>'}
 else if(idle&&!account)
 h+='<div class=box><h3>Claim it</h3><p class=mut>Connect a wallet to post the picture and claim this bounty.</p></div>';
@@ -1741,7 +1819,16 @@ h+='<div class=box><h3>Claims ('+b.claims.length+")</h3>"
 
 h+='<p class="mut" style="margin-top:14px;font-size:12px"><a href="'+SCAN+"address/"+POIDH
 +'#readContract" target=_blank rel=noreferrer>Read this bounty on Etherscan</a></p>';
-el.innerHTML=h};
+el.innerHTML=h;
+for(const[id,v]of keep){const f=$(id);if(f&&v)f.value=v}
+/* Everyone this panel names, asked for in one go after it is on screen: the
+   panel paints at hex speed and the names arrive into it. */
+resolveNames([b.issuer,b.claimer].concat(b.parts.map(p=>p.addr))
+.concat(b.claims.map(c=>c.issuer)))
+/* By id, not by identity: a refresh in flight replaces `detail` with a fresh
+   object for the same bounty, and comparing the objects threw the repaint
+   away exactly when the names had just arrived. */
+.then(found=>{if(found&&view.t==="b"&&detail&&detail.id===b.id){renderDetail();wire()}})};
 
 const renderMine=()=>{
 const el=$("mineBody");
@@ -1895,9 +1982,15 @@ const postClaim=async()=>{
 if(!await need())return;
 const t=$("cTitle").value.trim(),d=$("cDesc").value.trim(),u=$("cUri").value.trim();
 if(!t)return setStat("Give the claim a title.","err");
-if(!/^(ipfs:\/\/|https:\/\/)\S+$/i.test(u))
-return setStat("The picture needs an ipfs:// or https:// link.","err");
-await send("Claim on #"+detail.id,to(cStr3(W_MKCLAIM,detail.id,t,d,u)))};
+/* The chosen picture wins over the link field: somebody who did both meant the
+   one they went to the trouble of picking. */
+const uri=picUri?metaUri(t,d,picUri):u;
+if(!picUri&&!/^(ipfs:\/\/|https:\/\/)\S+$/i.test(u))
+return setStat("Choose a picture, or give an ipfs:// or https:// link to one.","err");
+if(await send("Claim on #"+detail.id,to(cStr3(W_MKCLAIM,detail.id,t,d,uri)))){
+/* Cleared explicitly now that a repaint no longer clears it by accident. */
+for(const id of["cTitle","cDesc","cUri"]){const f=$(id);if(f)f.value=""}
+picUri="";picSay(PIC_NONE);renderDetail();wire()}};
 
 /* A claim's tokenURI points at metadata on somebody else's host, so nothing is
    fetched until the reader asks for it by name. The URI is the claimant's to
@@ -1906,8 +1999,84 @@ await send("Claim on #"+detail.id,to(cStr3(W_MKCLAIM,detail.id,t,d,u)))};
 const IPFS="https://ipfs.io/ipfs/";
 const httpize=u=>{
 u=String(u||"").trim();
+/* A claim that carries its own bytes. Only pictures and metadata are followed:
+   a data: URI of any other type is not a picture and is not opened. */
+if(/^data:(image\/[a-z.+-]+|application\/json)[;,]/i.test(u))return u;
 if(/^ipfs:\/\//i.test(u))return IPFS+u.replace(/^ipfs:\/\/(ipfs\/)?/i,"");
 return /^https:\/\//i.test(u)?u:""};
+
+/* The metadata half of a data: claim, read without touching the network -
+   percent-encoded or base64, both are written by somebody and both turn up. */
+const dataJson=u=>{
+const c=u.indexOf(","),head=u.slice(0,c),body=u.slice(c+1);
+return JSON.parse(/;base64/i.test(head)?atob(body):decodeURIComponent(body))};
+/* A PICTURE WITH NOWHERE TO PUT IT WAS THE WHOLE PROBLEM. The claim form used
+   to ask for a link, which meant the claimant had already solved hosting -
+   found a pinning service, made an account, kept it alive. Most people simply
+   cannot claim on those terms, and a bounty nobody can claim is not a bounty.
+
+   So the picture goes where the page itself lives: in contract state, as a
+   data: URI, the metadata percent-encoded rather than base64 so the picture is
+   base64'd once instead of twice. Nothing is pinned and nobody is paid to keep
+   it - it is as permanent as the claim NFT.
+
+   THE PRICE IS SHOWN BEFORE IT IS PAID. Storage is 20,000 gas per 32 bytes, so
+   the size control is the reader's, not a default chosen for them, and the
+   budget is the FINAL on-chain length: quality then scale walk down until the
+   encoded result fits, so what they picked is what they are billed for. */
+const PIC_SIZES=[["small",1600],["medium",3600],["large",7200]];
+const PIC_NONE="No picture chosen. Pick one, or paste a link below.";
+let picSize=0,picUri="",picNote=PIC_NONE;
+/* SAY IT INTO THE PANEL, DO NOT REBUILD THE PANEL TO SAY IT. Repainting to
+   show a one-line note threw away the title and the description the claimant
+   had already typed - and the name of the file they had just chosen with it. */
+const picSay=m=>{picNote=m;const el=$("cPicNote");if(el)el.textContent=m};
+const metaUri=(t,d,img)=>"data:application/json,"
++encodeURIComponent(JSON.stringify({name:t,description:d,image:img}));
+
+/* Gas the claim will actually cost: the string is stored a word at a time, and
+   it is calldata on the way in. Rounded up and openly approximate - a quote
+   nobody can hold the page to is worse than no quote unless it says so. */
+const claimGas=n=>BigInt(Math.ceil(n/32))*22100n+BigInt(n)*16n+120000n;
+const claimCost=async n=>{
+try{return claimGas(n)*BigInt(await rpcRead("eth_gasPrice",[],1))}catch{return null}};
+
+const shrink=async(file,budget)=>{
+/* FROM THE IMAGE, because a phone writes rotation into EXIF rather than into
+   the pixels, and the default ignores it - every portrait photo came out on
+   its side, which for a page about proof is the whole thing ruined. */
+const bmp=await(self.createImageBitmap?createImageBitmap(file,{imageOrientation:"from-image"}):new Promise((res,rej)=>{
+const i=new Image(),u=URL.createObjectURL(file);
+i.onload=()=>{URL.revokeObjectURL(u);res(i)};i.onerror=rej;i.src=u}));
+const cv=document.createElement("canvas"),cx=cv.getContext("2d");
+const W=bmp.width||1,H=bmp.height||1;
+let last="";
+for(let side=1024;side>=64;side=Math.round(side*0.72)){
+const k=Math.min(1,side/Math.max(W,H));
+cv.width=Math.max(1,Math.round(W*k));cv.height=Math.max(1,Math.round(H*k));
+cx.drawImage(bmp,0,0,cv.width,cv.height);
+for(const q of[0.72,0.58,0.45,0.34,0.25]){
+let u=cv.toDataURL("image/webp",q);
+if(u.indexOf("data:image/webp")!==0)u=cv.toDataURL("image/jpeg",q);
+last=u;
+if(u.length<=budget)return{uri:u,w:cv.width,h:cv.height}}}
+return{uri:last,w:cv.width,h:cv.height,over:true}};
+
+const pickPic=async file=>{
+if(!file){picUri="";return picSay(PIC_NONE)}
+picSay("Shrinking it to fit…");
+try{
+const r=await shrink(file,PIC_SIZES[picSize][1]);
+picUri=r.uri;
+/* The description is part of the string that gets stored, so it is part of
+   what is quoted; leaving it out understated every estimate. */
+const total=metaUri(($("cTitle")||{}).value||"",($("cDesc")||{}).value||"",picUri).length;
+const wei=await claimCost(total);
+picSay(r.w+"×"+r.h+", "+(total/1024).toFixed(1)+" KB on chain"
++(wei?" — about "+fmt(wei,4)+" ETH"+usdPara(wei)+" to submit, at this moment's gas":"")
++(r.over?". That is as small as it goes; a bigger budget or a simpler picture would fit better.":"."))}
+catch(e){picUri="";picSay("That file could not be read as a picture.")}};
+
 const showPic=async cid=>{
 const box=document.querySelector('[data-pw="'+cid+'"]');
 if(!box)return;
@@ -1922,6 +2091,18 @@ catch(e){box.innerHTML='<span class="mut" style="font-size:13px">Could not read 
 const url=httpize(uri);
 if(!url){box.innerHTML='<span class="mut" style="font-size:13px">'
 +(uri?"That link is not one this page will follow.":"No picture was attached.")+"</span>";return}
+/* THE WHOLE POINT OF AN ONCHAIN CLAIM: there is nothing to fetch. The bytes
+   came back with the tokenURI, so no host is contacted and none can refuse. */
+if(/^data:/i.test(url)){
+try{
+let img=url;
+if(/^data:application\/json/i.test(url))
+img=httpize(((j=>j&&(j.image||j.image_url||j.imageUrl))(dataJson(url)))||"");
+if(!img)throw Error("no picture in that metadata");
+box.innerHTML='<img src="'+esc(img)+'" alt="claim picture" loading=lazy>'}
+catch(e){box.innerHTML='<span class="mut" style="font-size:13px">That onchain claim could not be read: '
++esc(String(e.message||e))+"</span>"}
+return}
 box.innerHTML='<span class="mut" style="font-size:13px">Fetching from '
 +esc(new URL(url).host)+"&hellip;</span>";
 try{
@@ -1939,6 +2120,13 @@ catch(e){box.innerHTML='<span class="mut" style="font-size:13px">Could not read 
 const wire=()=>{
 const on=(id,fn)=>{const el=$(id);if(el)el.onclick=fn};
 echoUsd("joinAmt","joinUsd");
+const cf=$("cFile");
+if(cf)cf.onchange=()=>pickPic(cf.files&&cf.files[0]);
+const cs=$("cSize");
+if(cs)for(const el of cs.querySelectorAll("button"))
+el.onclick=()=>{picSize=+el.dataset.ps;
+for(const o of cs.querySelectorAll("button"))o.classList.toggle("on",o===el);
+const f=$("cFile");if(f&&f.files&&f.files[0])pickPic(f.files[0])};
 on("doJoin",joinBounty);
 on("doClaim",postClaim);
 on("doPull",()=>send("Taking back your stake",to(cUint(W_WDOPEN,detail.id))));
@@ -2081,7 +2269,7 @@ const bind=p=>{
 PROV=p;
 if(!p||!p.on)return;
 p.on("accountsChanged",a=>{account=(a&&a[0]||"").toLowerCase()||null;
-myName="";if(!account)PROV=null;render();refresh()});
+myName="";if(!account)PROV=null;if(account)setStat("");render();refresh()});
 p.on("chainChanged",()=>location.reload())};
 
 /* An action pressed while disconnected used to open the picker and then throw
@@ -2091,12 +2279,18 @@ p.on("chainChanged",()=>location.reload())};
 let _connWait=null;
 const settleConn=()=>{const f=_connWait;_connWait=null;if(f)f()};
 
-const use=async get=>{
+const use=async c=>{
 $("wpick").classList.add("hide");
+/* "Disconnected." carries no class, so setStat never times it out - it sat
+   there through the next connection, describing a wallet that had been
+   replaced. Acting on the picker clears whatever the last wallet left. */
+setStat("");
+const get=c&&c.get!==undefined?c.get:c;
 try{
 const p=typeof get==="function"?await get():get;
 if(!p)return;
 bind(p);
+wSave(c&&c.rdns);
 const accs=await rpc("eth_requestAccounts",[]);
 account=(accs&&accs[0]||"").toLowerCase()||null;
 myName="";
@@ -2114,6 +2308,7 @@ finally{settleConn()}};
 const connect=async()=>{
 if(account){
 account=null;PROV=null;myName="";mine=null;pending=0n;ethBal=0n;
+wSave("");
 render();setStat("Disconnected.");return refresh()}
 /* ASK AGAIN, EVERY TIME. EIP-6963 providers announce themselves once, and a
    wallet that was still waking up when the page loaded never made the list -
@@ -2123,7 +2318,7 @@ render();setStat("Disconnected.");return refresh()}
    load. */
 try{dispatchEvent(new Event("eip6963:requestProvider"))}catch{}
 await new Promise(r=>setTimeout(r,80));
-const choices=providers.map(p=>({name:p.info.name,icon:p.info.icon,get:()=>p.provider}));
+const choices=providers.map(p=>({name:p.info.name,icon:p.info.icon,rdns:p.info.rdns,get:()=>p.provider}));
 if(!choices.length&&window.ethereum)
 choices.push({name:"Browser wallet",get:()=>window.ethereum});
 /* Always offered, injected wallet or not: it is the only route for a phone. */
@@ -2135,7 +2330,7 @@ list.innerHTML=choices.map((c,i)=>
 +"<span>"+esc(c.name)+"</span></button>").join("");
 $("wpNone").textContent="";
 for(const el of list.querySelectorAll("button[data-w]"))
-el.onclick=()=>use(choices[+el.dataset.w].get);
+el.onclick=()=>use(choices[+el.dataset.w]);
 $("wpick").classList.remove("hide");
 return new Promise(res=>{_connWait=res})};
 
@@ -2160,24 +2355,50 @@ const SEL_LATEST="52bfe789";
 const selfAddress=()=>{
 const m=/^(0x[0-9a-fA-F]{40})\./.exec(location.hostname||"");
 return m?m[1].toLowerCase():""};
+/* A NAME ROUTE IS STILL THE CONTRACT'S OWN BYTES. wei.limo serves <name>.wei by
+   resolving the name and calling html() on whatever it points at, so the page
+   arrives from its contract exactly as it does on an address gateway - there is
+   simply no 0x in the hostname to read it off. Told only to look for one, the
+   page concluded it had been opened from a file, on the route most readers
+   actually use, and checkSuccessor gave up with it: nobody arriving by name
+   could ever be told a newer version existed, which is the entire point of the
+   lineage. The name is resolved through WNS instead - the same registry this
+   page already reads names from, onchain, no gateway asked to be believed. */
+const WEI_HOST=/^([a-z0-9-]+)\.wei\.limo$/i;
+const selfAddressNamed=async()=>{
+const a=selfAddress();
+if(a)return a;
+const m=WEI_HOST.exec(location.hostname||"");
+if(!m)return "";
+try{return (await nsFwd(WNS,m[1].toLowerCase())||"").toLowerCase()}catch{return ""}};
 const checkSuccessor=async()=>{
-const here=selfAddress();
+const here=await selfAddressNamed();
 if(!here)return;
 try{
 const tip=aword(await rpcRead(C,[{to:here,data:"0x"+SEL_LATEST},L],1),0);
 if(!tip||tip===ZERO||tip.toLowerCase()===here)return;
-$("newerLink").href=location.href.replace(here,tip.toLowerCase())
+/* On an address route the successor is the same URL with the address swapped.
+   On a name route there is no address in the URL to swap, and the name still
+   points here - so the reader is sent to the successor's own gateway rather
+   than in a circle back to this page. */
+const swapped=location.href.replace(here,tip.toLowerCase())
 .replace(here.replace(/^0x/,""),tip.toLowerCase().replace(/^0x/,""));
+$("newerLink").href=swapped!==location.href?swapped
+:"https://"+tip.toLowerCase()+".w4eth.io/"+(location.hash||"");
 $("newerLi").classList.remove("hide")}
 catch{}};
 
 /* ---------------------------------------------------------------- START */
 $("addrLi").innerHTML='bounties <a href="'+SCAN+"address/"+POIDH
 +'#code" target=_blank rel=noreferrer>'+POIDH.slice(0,10)+"…"+POIDH.slice(-4)+"</a>";
-$("pgLi").innerHTML=(()=>{const a=selfAddress();
-return a?'page <a href="'+SCAN+"address/"+a+'#code" target=_blank rel=noreferrer>'
+const pgSay=a=>{$("pgLi").innerHTML=
+a?'page <a href="'+SCAN+"address/"+a+'#code" target=_blank rel=noreferrer>'
 +a.slice(0,10)+"…"+a.slice(-4)+"</a> · ERC-8244"
-:"page: opened from a file, not from its contract"})();
+:"page: this address does not say which contract served it"};
+/* Said at once from the hostname, and said again if a name had to be asked
+   about first, so the line is never blank while the registry is answering. */
+pgSay(selfAddress());
+selfAddressNamed().then(a=>{if(a)pgSay(a)});
 
 /* A wallet that is already connected answers without a prompt; one that is not
    is never asked on load. With neither a wallet nor a named read node the page
@@ -2189,16 +2410,37 @@ return a?'page <a href="'+SCAN+"address/"+a+'#code" target=_blank rel=noreferrer
 if(view.t==="list")paintFromCache();
 render();
 fromHash();
+/* THE WALLET THAT WAS CHOSEN, NOT WHICHEVER ONE WON window.ethereum. With two
+   wallets installed the injected default is not necessarily the one the reader
+   picked, so a reload used to come back as the wrong wallet or as nobody. The
+   remembered rdns is looked up among the wallets announcing themselves now,
+   and only if none answers does the default get its turn. Still no prompt on
+   load: eth_accounts asks what is already authorised, it does not request. */
 try{
-if(window.ethereum){
-const a=await window.ethereum.request({method:"eth_accounts"}).catch(()=>[]);
-if(a&&a[0]){bind(window.ethereum);account=a[0].toLowerCase();
-nameRev(account).then(n=>{if(n){myName=n;renderChip()}}).catch(()=>{})}}}
+try{dispatchEvent(new Event("eip6963:requestProvider"))}catch{}
+await new Promise(r=>setTimeout(r,80));
+const want=wLast();
+const picked=want&&providers.find(p=>p.info&&p.info.rdns===want);
+const cands=[];
+if(picked)cands.push(picked.provider);
+if(window.ethereum&&(!picked||picked.provider!==window.ethereum))cands.push(window.ethereum);
+for(const p of cands){
+const a=await p.request({method:"eth_accounts"}).catch(()=>[]);
+if(a&&a[0]){bind(p);account=a[0].toLowerCase();
+if(picked&&p===picked.provider)wSave(want);
+nameRev(account).then(n=>{if(n){myName=n;renderChip()}}).catch(()=>{});
+break}}}
 catch{}
-if(!account&&!window.ethereum&&!readNode()){renderChip();showReadPick();return}
+if(!account&&!PROV&&!window.ethereum&&!readNode()){renderChip();showReadPick();return}
 await refresh();
 checkSuccessor()})();
 
 /* The ballot's clock is the only thing on the page that moves on its own. */
-setInterval(()=>{if(view.t==="b"&&detail&&detail.voting)renderDetail()},30000);
+/* REBUILT MEANS REWIRED. This repaint moves a vote countdown, and it called
+   renderDetail() alone - the one path that skips the wire() every other render
+   ends with. Thirty seconds into a bounty with a live vote every control in
+   the panel was replaced by an identical one carrying no handler: Fund it,
+   Take back, Cancel, the votes, the accepts. They did not fail, they did
+   nothing at all, with nothing in the status line to say why. */
+setInterval(()=>{if(view.t==="b"&&detail&&detail.voting){renderDetail();wire()}},30000);
 </script></body></html>

@@ -9,7 +9,8 @@
  *   2. each chunk rebuilt from that page is byte-identical to the runtime code
  *      at its deployed address
  *   3. html() on the wrapper returns exactly the page
- *   4. every published route serves exactly the page
+ *   4. a name route resolves, on chain, to the contract the manifest names
+ *   5. every published route serves exactly the page
  *
  * This is the check that catches a repo drifting away from what is deployed —
  * which is invisible otherwise, because the deployment cannot change and so
@@ -79,7 +80,37 @@ check(
   d.contract
 );
 
-// 4. every published route.
+// 4. a name route points where the manifest says.
+//
+// A WNS route serves whatever the name resolves to, so when it stops matching
+// the reason is almost never the gateway - it is that the name still points at
+// the previous release. Fetching the URL can only say the bytes differ; the
+// registry says which contract is actually being served, which is the thing
+// somebody then has to go and change.
+const WNS = "0x0000000000696760e15f265e828db644a0c242eb";
+const SEL_CID = "0xfb021939", SEL_RESOLVE = "0x4f896d4f";
+const wordAddr = (h) => "0x" + String(h ?? "").slice(-40);
+for (const route of d.routes ?? []) {
+  const name = route.kind === "wns" && /^https:\/\/([a-z0-9-]+)\.wei\.limo\/?$/i.exec(route.url);
+  if (!name) continue;
+  try {
+    const label = name[1].toLowerCase();
+    const utf8 = Buffer.from(label, "utf8");
+    const arg = "0000000000000000000000000000000000000000000000000000000000000020" +
+      utf8.length.toString(16).padStart(64, "0") +
+      utf8.toString("hex").padEnd(Math.ceil(utf8.length / 32) * 64, "0");
+    const id = await rpc("eth_call", [{to: WNS, data: SEL_CID + arg}, "latest"]);
+    const at = wordAddr(await rpc("eth_call",
+      [{to: WNS, data: SEL_RESOLVE + id.slice(2)}, "latest"]));
+    const points = at.toLowerCase() === d.contract.toLowerCase();
+    check(points, `${label}.wei resolves to this release`,
+      points ? d.contract : `points at ${at}, not ${d.contract}`);
+  } catch (e) {
+    console.log(`  --   ${route.kind} name not resolved  ${e.message}`);
+  }
+}
+
+// 5. every published route.
 //
 // Only a route that promises the contract's own bytes is held to them. A
 // resolver route serves whatever release is currently active, and a gateway

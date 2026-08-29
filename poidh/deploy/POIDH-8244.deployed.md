@@ -10,7 +10,8 @@ ERC-5219.
 | **Browse (ERC-8244)** | https://0x0000006cf51135e7d5cb2eacf74ff7390aa9beca.w4eth.io/ |
 | **Browse (ERC-4804)** | https://0x0000006cf51135e7d5cb2eacf74ff7390aa9beca.1.w3link.io/ |
 | **WNS route** | https://poidh.wei.limo/ |
-| steward | `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20` (ross.wei) |
+| steward | `0x7C7F6cB2dab9De9b242EEeC29D2F61bD7D9750E0` |
+| steward at deploy | `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20` (ross.wei), transferred away in block 25,829,816 |
 | previous / successor | `0x0` / `0x0` — generation 1, tip of its own lineage |
 | page | 108,930 B, sha256 `63faa25ab253313f5ccc94e05fed3a5989647723e3a56ebdef580e33c6e75a0e` |
 

@@ -6,7 +6,7 @@ nothing to keep running.
 
 | dapp | page | deployed | route |
 | --- | --- | --- | --- |
-| [poidh](poidh/) | 108,930 B, 5 chunks | [`0x0000006c…9beCa`](https://etherscan.io/address/0x0000006cf51135e7D5cB2EacF74fF7390AA9beCa#code) | https://poidh.wei.limo/ |
+| [poidh](poidh/) | 124,304 B, 6 chunks | [`0x37b9f184…3689`](https://etherscan.io/address/0x37b9f184FaC49F4c4343d60526ACDA5579Fa3689#code) | https://poidh.wei.limo/ |
 | [poidhverse](poidhverse/) | 296,949 B, 13 chunks | [`0x27f3C5fe…De3a4`](https://etherscan.io/address/0x27f3C5fe79c092D663710d555Bb358cdc2dDe3a4#code) | https://poidhverse.wei.limo/ |
 
 ## The shape
@@ -74,9 +74,11 @@ do — `verify` only holds a route to the bytes if it claims them.
 
 The two dapps differ here, and poidhverse's model is the one to standardise on.
 
-poidh names its successor in the page contract itself: immutable, elegant, and
-unable to actually deliver an update, because `poidh.wei` points at a frozen
-address and no reader is told a newer version exists.
+poidh names its successor in the page contract itself: immutable and elegant,
+but it delivers an update only because `poidh.wei` can be repointed by hand.
+The page reads its own address from the hostname, resolving a `.wei` name
+through WNS when the host is one, so a reader who arrives by name is still told
+when a successor exists — but the name itself remains one key's decision.
 
 poidhverse points its name at a **resolver** holding a release root, with a
 mandatory three-day delay before a published release activates. A release

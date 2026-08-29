@@ -50,7 +50,18 @@ const a = open();
 await wait(9000);
 const rows = a.d.querySelectorAll('#list .b').length;
 ok(rows >= 9, 'list renders from state alone', rows + ' rows');
-ok(a.d.getElementById('feature').textContent.includes('CELL'), 'pinned bounty #24 renders');
+/* Nothing is pinned any more, so the assertion is the rule the page follows
+   rather than the bounty it happens to pick today. */
+const feat = JSON.parse(await a.w.eval(`(()=>{const b=featuredOf();
+  return JSON.stringify(b ? {id: Number(b.id), amt: String(b.amount)} : null)})()`));
+const deepest = JSON.parse(await a.w.eval(`JSON.stringify(LIST
+  .filter(b => !b.prov && statusOf(b) === "open")
+  .map(b => ({id: Number(b.id), amt: String(b.amount)}))
+  .sort((x, y) => Number(BigInt(y.amt) - BigInt(x.amt)))[0] || null)`));
+ok(feat && deepest && feat.id === deepest.id, 'the deepest open pot is featured',
+   feat ? '#' + feat.id + ', ' + feat.amt + ' wei' : 'nothing featured');
+ok(a.d.getElementById('feature').textContent.includes('Biggest pot'),
+   'and labelled as a pot, not as a pin');
 ok(!a.d.querySelector('.pill.new'), 'nothing marked new on a first-ever visit');
 ok(a.errs.length === 0, 'no script errors', a.errs.join('; '));
 
@@ -102,13 +113,19 @@ ok(degraded === 'null', 'degrades to "unknown" where logs are refused', degraded
 
 const cache = a.w.localStorage.getItem('poidh:bounties:v1');
 const seen = a.w.localStorage.getItem('poidh:seen:v1');
-ok(JSON.parse(seen).count === 25, 'water level recorded', seen);
+/* Read from the chain, not written in here: bounty 26 was posted and a pinned
+   25 failed a page that was right. */
+const COUNT = Number(await a.w.eval('CFG.count'));
+ok(COUNT > 0, 'bounty counter read from the chain', COUNT + ' bounties');
+ok(JSON.parse(seen).count === COUNT, 'water level recorded', seen);
 ok(Object.keys(JSON.parse(cache)).length >= 10, 'immutable half cached',
    Object.keys(JSON.parse(cache)).length + ' bounties');
 
 /* --------------------------------------- 2. return visit, one bounty behind */
-console.log('\nreturn visit, cache warm, last seen 24 of 25');
-const c = open({'poidh:bounties:v1': cache, 'poidh:seen:v1': JSON.stringify({count: 24, at: 0})});
+const NEWEST = COUNT - 1;                      /* ids are 0-based */
+console.log(`\nreturn visit, cache warm, last seen ${NEWEST} of ${COUNT}`);
+const c = open({'poidh:bounties:v1': cache,
+                'poidh:seen:v1': JSON.stringify({count: NEWEST, at: 0})});
 await wait(250);
 const early = c.d.querySelectorAll('#list .b').length;
 ok(early >= 9, 'list painted from cache before any read returned', early + ' rows in 250ms');
@@ -128,7 +145,8 @@ ok(/b-amt num prov/.test(provHtml) && /···/.test(provHtml) && !/ETH/.test(pro
    (provHtml.match(/b-amt[^>]*>[^<]*/) || [''])[0].slice(0, 34));
 await wait(9000);
 ok(c.d.querySelectorAll('#list .b-amt.prov').length === 0, 'live read replaced them');
-ok(!!c.d.querySelector('#feature .pill.new, #list .pill.new'), 'bounty #24 marked new');
+ok(!!c.d.querySelector('#feature .pill.new, #list .pill.new'),
+   'bounty #' + NEWEST + ' marked new');
 ok(c.d.querySelectorAll('.pill.new').length === 1, 'and only the unseen one',
    c.d.querySelectorAll('.pill.new').length + ' marked');
 ok(c.errs.length === 0, 'no script errors', c.errs.join('; '));

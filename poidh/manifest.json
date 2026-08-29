@@ -1,34 +1,43 @@
 {
   "name": "poidh",
-  "title": "poidh — pics or it didn't happen",
+  "title": "poidh \u2014 pics or it didn't happen",
   "description": "Onchain front end for the POIDH bounty market on Ethereum mainnet. Post a bounty, fund one together, claim it with a picture.",
   "page": "dapp/page.html",
-  "bytes": 110440,
-  "sha256": "ddda1f8f33060a24a89d83f2d6d4ada6a85f7d3bf16914faee85a2e61ca277bc",
+  "bytes": 124304,
+  "sha256": "e2eacdc8a1f4cb6c1f3483d1039e8214ae358bda0f2adf7fc6c7362f9c3f0075",
   "chunks": {
     "artifact": "Poidh8244",
-    "count": 5,
+    "count": 6,
     "prefix": ""
   },
   "deployment": {
     "chainId": 1,
-    "contract": "0x0000006cf51135e7D5cB2EacF74fF7390AA9beCa",
-    "pageSha256": "63faa25ab253313f5ccc94e05fed3a5989647723e3a56ebdef580e33c6e75a0e",
+    "contract": "0x37b9f184FaC49F4c4343d60526ACDA5579Fa3689",
+    "pageSha256": "e2eacdc8a1f4cb6c1f3483d1039e8214ae358bda0f2adf7fc6c7362f9c3f0075",
     "chunkContracts": [
-      "0x9022d2375aa7c878d8486DD5649a86bF653b4741",
-      "0x5129ddB7009ABAd18229bb0BbffE92CA17C5b84f",
-      "0x76E11ebeAfD4daBfB3B0f4CFD3EE169cc3aE95D8",
-      "0xF116eE52d95D66A72e2525c3A004458CfFb11d03",
-      "0xa2F53f63aB6409f6737f999E1Fad5367922B1873"
+      "0x2f9601B413a9BbF620c52c620Bf354Be33e7b907",
+      "0x3522C50FD4a00E54aBeF4eF043b169a304a7A968",
+      "0x600526395b5db1129c67236003639942b9989EcC",
+      "0xcC7200Fe1500245e534158d53f0f12c571704441",
+      "0xdad6FF01E411b3348a02F627585420A905A45120",
+      "0xB9Acd1E89FaEAD820ba721044be45a03f4026979"
     ],
     "routes": [
-      {"kind": "wns", "url": "https://poidh.wei.limo/", "serves": "exact"},
-      {"kind": "erc8244", "url": "https://0x0000006cf51135e7d5cb2eacf74ff7390aa9beca.w4eth.io/", "serves": "exact"},
+      {
+        "kind": "erc8244",
+        "url": "https://0x37b9f184fac49f4c4343d60526acda5579fa3689.w4eth.io/",
+        "serves": "exact"
+      },
       {
         "kind": "erc4804",
-        "url": "https://0x0000006cf51135e7d5cb2eacf74ff7390aa9beca.1.w3link.io/",
+        "url": "https://0x37b9f184fac49f4c4343d60526acda5579fa3689.1.w3link.io/",
         "serves": "modified",
         "note": "w3link injects ~7.9 KB of its own script after <body>; the bytes it serves are not the bytes html() returns"
+      },
+      {
+        "kind": "wns",
+        "url": "https://poidh.wei.limo/",
+        "serves": "exact"
       }
     ]
   }

@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dapp: [poidh, poidhverse]
+        dapp: [poidh, poidhverse, fwa]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

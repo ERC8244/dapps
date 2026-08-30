@@ -103,6 +103,14 @@ check(
 // the previous release. Fetching the URL can only say the bytes differ; the
 // registry says which contract is actually being served, which is the thing
 // somebody then has to go and change.
+//
+// WHAT THE NAME SHOULD POINT AT IS THE ROUTE'S OWN CLAIM, not always the
+// version contract. The two publishing models differ here and the manifest
+// already says which one a dapp uses: an `exact` route promises the contract's
+// own bytes, so the name has to be the contract; a `resolver` route promises
+// whatever release is currently active, so the name has to be the RESOLVER and
+// pointing it at a version would break the very thing that model exists for.
+// Held to the contract either way, poidhverse fails for being what it is.
 const WNS = "0x0000000000696760e15f265e828db644a0c242eb";
 const SEL_CID = "0xfb021939", SEL_RESOLVE = "0x4f896d4f";
 const wordAddr = (h) => "0x" + String(h ?? "").slice(-40);
@@ -118,9 +126,16 @@ for (const route of d.routes ?? []) {
     const id = await rpc("eth_call", [{to: WNS, data: SEL_CID + arg}, "latest"]);
     const at = wordAddr(await rpc("eth_call",
       [{to: WNS, data: SEL_RESOLVE + id.slice(2)}, "latest"]));
-    const points = at.toLowerCase() === d.contract.toLowerCase();
-    check(points, `${label}.wei resolves to this release`,
-      points ? d.contract : `points at ${at}, not ${d.contract}`);
+    // Named in the manifest beside the route that relies on it.
+    const viaResolver = route.serves === "resolver";
+    const want = viaResolver ? d.resolver : d.contract;
+    if (!want) {
+      console.log(`  --   ${label}.wei not checked (route says "${route.serves}" and the manifest names no resolver)`);
+      continue;
+    }
+    const points = at.toLowerCase() === want.toLowerCase();
+    check(points, `${label}.wei resolves to ${viaResolver ? "the release resolver" : "this release"}`,
+      points ? want : `points at ${at}, not ${want}`);
   } catch (e) {
     console.log(`  --   ${route.kind} name not resolved  ${e.message}`);
   }

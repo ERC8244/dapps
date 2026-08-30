@@ -1,0 +1,48 @@
+{
+  "name": "fwa",
+  "title": "fwa.wei — Community Hub",
+  "description": "Onchain front end for the Fake World Assets community hub. The current king, mainchain impact, the buyback tracker and FWAIR launches, all read from Ethereum in the reader's own browser.",
+  "page": "dapp/page.html",
+  "bytes": 214280,
+  "sha256": "369bea961f6e7a69e54ec11d8772ad34e5a56b3e7b5c2e6d4806d14227e57a89",
+  "chunks": {
+    "artifact": "Fwa8244",
+    "maxPayload": 24575,
+    "prefix": "00"
+  },
+  "deployment": {
+    "chainId": 1,
+    "contract": "0xa6F1Ab97F43a3f9dE6245101619c852d1e526AF7",
+    "pageSha256": "369bea961f6e7a69e54ec11d8772ad34e5a56b3e7b5c2e6d4806d14227e57a89",
+    "steward": "0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20",
+    "chunkContracts": [
+      "0xe70e0D11b92ebB50cC6Ce7b6C374017131a4bC88",
+      "0x14eabce2EdE79310F8Dd502aac840A7c4a65BE96",
+      "0x194E8511a95D5ceD0db9dF97140CA67EDB21459F",
+      "0x0A5495969Eeb75f09E7C72Bc34d6c47135202aa6",
+      "0x9523CF3ee21a8B498Dcc4D154C45f8ADc99f0e80",
+      "0xB523559641FD0Ef0355e56128988bB45474245dC",
+      "0x86330a32EA23Df32ac5F3BC14BD9406b01A9404d",
+      "0x9131354B4C875A8A93d904F7731C47A5D0c7e79B",
+      "0x917b1b0d38E4d2c7924E0E4c4E6285408907cD9D"
+    ],
+    "routes": [
+      {
+        "kind": "erc8244",
+        "url": "https://0xa6f1ab97f43a3f9de6245101619c852d1e526af7.w4eth.io/",
+        "serves": "exact"
+      },
+      {
+        "kind": "erc4804",
+        "url": "https://0xa6f1ab97f43a3f9de6245101619c852d1e526af7.1.w3link.io/",
+        "serves": "modified",
+        "note": "w3link injects its own script after <body>; the bytes it serves are not the bytes html() returns"
+      },
+      {
+        "kind": "wns",
+        "url": "https://fwa.wei.limo/",
+        "serves": "exact"
+      }
+    ]
+  }
+}

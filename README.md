@@ -8,6 +8,7 @@ nothing to keep running.
 | --- | --- | --- | --- |
 | [poidh](poidh/) | 124,304 B, 6 chunks | [`0x37b9f184…3689`](https://etherscan.io/address/0x37b9f184FaC49F4c4343d60526ACDA5579Fa3689#code) | https://poidh.wei.limo/ |
 | [poidhverse](poidhverse/) | 296,949 B, 13 chunks | [`0x27f3C5fe…De3a4`](https://etherscan.io/address/0x27f3C5fe79c092D663710d555Bb358cdc2dDe3a4#code) | https://poidhverse.wei.limo/ |
+| [fwa](fwa/) | 214,280 B, 9 chunks | [`0xa6F1Ab97…6AF7`](https://etherscan.io/address/0xa6F1Ab97F43a3f9dE6245101619c852d1e526AF7#code) | https://fwa.wei.limo/ |
 
 ## The shape
 

@@ -25,6 +25,22 @@ const m = load(process.argv[2]);
 const d = m.deployment;
 let failed = 0;
 
+// A dapp is a directory with a manifest, and it is one before it is deployed.
+// There is nothing on chain to check yet, so check what there is - that the
+// page is what the manifest pins, and that it still chunks - and say plainly
+// that the rest is waiting on a deploy rather than reporting a pass.
+if (!d) {
+  const {bytes, sha256} = page(m);
+  const parts = split(m, bytes);
+  console.log(
+    `${m.name}: no deployment in the manifest - nothing on chain to check yet\n` +
+      `  ok   page matches manifest  ${bytes.length} B, sha256 ${sha256.slice(0, 16)}\u2026\n` +
+      `  ok   page chunks            ${parts.length} chunk(s)\n` +
+      `  --   html() and routes not checked (deploy it, then add deployment to manifest.json)`
+  );
+  process.exit(0);
+}
+
 const check = (ok, label, detail = "") => {
   console.log(`  ${ok ? "ok  " : "FAIL"} ${label}${detail ? `  ${detail}` : ""}`);
   if (!ok) failed++;

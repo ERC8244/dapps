@@ -1,0 +1,22 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+cache_path = "cache"
+solc_version = "0.8.30"
+optimizer = true
+optimizer_runs = 1_000
+via_ir = true
+evm_version = "prague"
+fs_permissions = [
+    { access = "read", path = "./dapp" },
+]
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = true
+int_types = "long"
+
+[fuzz]
+runs = 1_000

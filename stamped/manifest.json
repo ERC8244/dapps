@@ -1,0 +1,49 @@
+{
+  "name": "stamped",
+  "title": "Stamped — Onchain POAPs",
+  "description": "Permanent event stamps with a self-contained web and Farcaster Mini App frontend stored entirely in Ethereum bytecode.",
+  "page": "dapp/page.html.gz",
+  "bytes": 111895,
+  "sha256": "4554b4ec22915cb4e39a47665aed7c5a0e2097fee436f05d108a4f11afda5ea9",
+  "chunks": {
+    "artifact": "StampedVersion",
+    "maxPayload": 24575,
+    "prefix": "00"
+  },
+  "deployment": {
+    "chainId": 1,
+    "contract": "0xcBb240f5B0fE63b7d961d50BA820d962aD88c310",
+    "root": "0xa80978E5Cf461C8E26E16B084F55D0c5cB2C8b9b",
+    "resolver": "0xe5fc60819694e46633c97D97be01bc00E3b47789",
+    "gatewayAdapter": "0x2d07854640cc1E0080dEA77c22296CEB17856C21",
+    "pageSha256": "4554b4ec22915cb4e39a47665aed7c5a0e2097fee436f05d108a4f11afda5ea9",
+    "chunkContracts": [
+      "0x07bA4a74C207c556EDd02E365F1ED3188517bD2F",
+      "0x92c4FD699A9267784BE1040088d7D19663DC4c9a",
+      "0x4Bcb7E7DaF731F7EA33cefd85eC1d4521fD2f1ec",
+      "0xf4aaC3eC46E5Bf0caf006Af20D10b289dBcD2C16",
+      "0xBaBB12788004F5D77F86c0Be7A8141B96e87F162"
+    ],
+    "routes": [
+      {
+        "kind": "wns",
+        "url": "https://stamped.wei.limo/",
+        "serves": "adapter",
+        "target": "gatewayAdapter",
+        "note": "main Stamped URL; provides Farcaster and social metadata, then opens the active reviewed release"
+      },
+      {
+        "kind": "wns-resource",
+        "url": "https://stamped.wei.limo/app.gz",
+        "serves": "resolver",
+        "note": "compressed application loaded by the main Stamped URL; follows the active reviewed release"
+      },
+      {
+        "kind": "erc8244",
+        "url": "https://0xcbb240f5b0fe63b7d961d50ba820d962ad88c310.w4eth.io/",
+        "serves": "modified",
+        "note": "the direct contract URL treats the compressed application as plain HTML, so use stamped.wei.limo"
+      }
+    ]
+  }
+}

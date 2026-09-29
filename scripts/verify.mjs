@@ -126,15 +126,19 @@ for (const route of d.routes ?? []) {
     const id = await rpc("eth_call", [{to: WNS, data: SEL_CID + arg}, "latest"]);
     const at = wordAddr(await rpc("eth_call",
       [{to: WNS, data: SEL_RESOLVE + id.slice(2)}, "latest"]));
-    // Named in the manifest beside the route that relies on it.
-    const viaResolver = route.serves === "resolver";
-    const want = viaResolver ? d.resolver : d.contract;
+    // Named in the manifest beside the route that relies on it. `target` lets
+    // an adapter-backed name state that architecture without teaching this
+    // verifier a special case for one project.
+    const target = route.target || (route.serves === "resolver" ? "resolver" : "contract");
+    const want = d[target];
     if (!want) {
-      console.log(`  --   ${label}.wei not checked (route says "${route.serves}" and the manifest names no resolver)`);
+      console.log(`  --   ${label}.wei not checked (route targets "${target}" and the deployment names no such address)`);
       continue;
     }
     const points = at.toLowerCase() === want.toLowerCase();
-    check(points, `${label}.wei resolves to ${viaResolver ? "the release resolver" : "this release"}`,
+    const targetLabel = target === "resolver" ? "the release resolver" :
+      target === "gatewayAdapter" ? "the gateway adapter" : "this release";
+    check(points, `${label}.wei resolves to ${targetLabel}`,
       points ? want : `points at ${at}, not ${want}`);
   } catch (e) {
     console.log(`  --   ${route.kind} name not resolved  ${e.message}`);

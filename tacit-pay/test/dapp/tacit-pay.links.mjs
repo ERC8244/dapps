@@ -59,6 +59,7 @@ ok(card.includes(NAME) && card.includes(K1addr.slice(0, 10)) && /0\.002 ETH/.tes
 ok(await B.$$eval('#req [data-rc]', (b) => b.length) === 3, 'with every chain offered');
 await B.click('#req-pay');
 await B.waitForFunction(() => /Pay 0\.002 ETH on/.test(document.querySelector('#req-pay')?.textContent || ''), null, {timeout: 30e3});
+await B.waitForFunction(() => [...document.querySelectorAll('#req [data-rc]')].every((b) => / ETH/.test(b.textContent)), null, {timeout: 30e3}).catch(() => {});
 const chips = await B.$$eval('#req [data-rc]', (b) => b.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
 ok(chips.every((t) => /(99\.\d+|100) ETH/.test(t)), 'once its wallet is connected, each chain shows what the wallet holds there', chips.join(' · '));
 await B.reload();

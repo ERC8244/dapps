@@ -207,8 +207,8 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), then point a `.wei` name at the contract.
 
 **Cost**, measured by deploying the chunks and the wrapper on a local anvil (Prague rules): a full chunk is 5,368,866
-gas and the last 4,297,380, so nine chunks are 47,248,308 gas, and the wrapper 1,511,730: 48,760,038 gas in all,
-about 0.049 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
+gas and the last 1,092,512, so ten chunks are 49,412,306 gas, and the wrapper 1,552,168: 50,964,474 gas in all,
+about 0.051 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
 
 ## Stewardship and the name
 

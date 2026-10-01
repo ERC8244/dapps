@@ -14,7 +14,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | page source | `dapp/page.html` |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -23,7 +23,13 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   address alone. The second needs no Tacit key: the page proves the deposit with a throwaway key, so a payer with only
   a wallet can pay a payment link. Or shield from an exchange: a standing deposit address, the same on every chain,
   that the relay moves into the private balance for at most 0.25%, or that you take in yourself at no fee.
-- **Send** privately to a `tacit1…` or `bp1…` address, or pay an `0x` address out of the pool.
+  The standing deposit address is the same on every chain. For each person who will pay by plain transfer, *one-time
+  addresses* give a separate deposit address that works on every chain, with nothing on chain tying two of them together.
+  ETH sent to any of them waits there until it is taken in, by the relay or by the wallet at no fee. Because what waits
+  is plain ETH with no event of its own, the page reads every address the key could have issued (those up to the last one
+  used, and a gap past it) when a key is opened and every few minutes, and says on the balance when something waits: a
+  browser that issued nothing finds it from the key alone. A key issues only as many addresses as it can find again.
+- **Send** privately to a `tacit1…`, `bp1…` or name, or pay an `0x` address out of the pool.
 - **Withdraw** any part to any address.
 - **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`/`.eth` name, on any chain
   (next section), with a QR code, that anyone with a wallet can pay.
@@ -164,6 +170,7 @@ node test/dapp/tacit-pay.fork.mjs              # every flow on anvil forks of al
 node test/dapp/tacit-pay.links.mjs             # a real .wei name, a link, a payer paying it on every chain, recovery by key
 node test/dapp/tacit-pay.relay.mjs             # a faithful relay, then relays that lie, stall, overcharge or leave events out
 node test/dapp/tacit-pay.index.mjs             # an event index that says "no events" is caught against the pool
+node test/dapp/tacit-pay.boxes.mjs             # one-time deposit addresses: issued, funded as by an exchange, found from the key, taken in
 KEEPER=… node test/dapp/tacit-pay.keeper.mjs   # the real relay server, from the repo's worker-relay, on a fork
 node test/dapp/tacit-pay.chains.mjs            # read-only: every node and relay the page ships, asked what the page asks
 node test/dapp/tacit-pay.live.mjs              # read-only against mainnet: nodes, relays, routers, the proving key
@@ -186,8 +193,8 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), then point a `.wei` name at the contract.
 
 **Cost**, measured by deploying the chunks and the wrapper on a local anvil (Prague rules): a full chunk is 5,368,866
-gas and the last 3,040,808, so nine chunks are 45,991,736 gas, and the wrapper 1,504,819: 47,496,555 gas in all,
-about 0.047 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
+gas and the last 4,297,380, so nine chunks are 47,248,308 gas, and the wrapper 1,511,730: 48,760,038 gas in all,
+about 0.049 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
 
 ## Stewardship and the name
 

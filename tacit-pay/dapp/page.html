@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pT1ePzGnYm9PDbLTDt1yDrcYBwlkI38ZCBC14sxd2X8=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+z0GZbjr+xGWQ760Qx1QQRs7zGpSKw3+KsUqbpD+HME=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Shield ETH, pay anyone privately, withdraw any part. Proved in your browser, recovered from your key. An onchain page: this document is served by a contract.">
@@ -219,6 +219,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
       <div class="req" id="req" hidden><div id="req-body"></div><div class="status" role="status" aria-live="polite" id="req-status"></div></div>
       <div class="seg" role="tablist" aria-label="Chain" id="chains"></div>
       <div class="bal" id="bal"></div>
+      <div id="bal-note"></div>
       <div class="seg sub" role="tablist" aria-label="Action" id="tabs"></div>
       <div id="form"></div>
       <div class="status" role="status" aria-live="polite" id="status"></div>
@@ -1712,6 +1713,14 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // Asks the relay to watch a deposit address, so what arrives there moves in without anyone asking.
     watch: (i = 0) => keeperPost('/receive', { chainId: chain.chainId, npk: String(receiveKeys(keys, i).npk), feeBps: RECEIVE_FEE_BPS }),
     waiting: async (i = 0) => BigInt(await chain.rpc('eth_getBalance', [boxOf(i), 'latest'])),
+    // What waits at deposit addresses `indexes` ({ index → wei, or null where a node did not answer), and how many
+    // addresses from the first are found again from the key alone: those up to the last one used, and a gap past it.
+    waitingAt: async (indexes) => {
+      const out = {};
+      for (let k = 0; k < indexes.length; k += 7) await Promise.all(indexes.slice(k, k + 7).map(async (i) => { out[i] = await chain.rpc('eth_getBalance', [boxOf(i), 'latest']).then(BigInt, () => null); }));
+      return out;
+    },
+    boxSpan: () => saved.nextRefund + REFUND_GAP,
     connect(s) { signer = s; },
     rescan,
     // Whether the deposit address can be shown: the pool and router have code, and the router's own box for this key
@@ -2033,6 +2042,7 @@ function bind(w, a) {
   S.wallet = w; S.provider = p; S.account = lc(a);
   store.set(WK, w.info.rdns || '');
   refresh();
+  if (REQ.v) warm();
 }
 // What shows the wallet is redrawn; a sign-in that is waiting on the wallet is left as it is.
 function refresh() { paintWallet(); paintReq(); if (!$('#form [aria-busy="true"]')) renderForm(); }
@@ -2135,7 +2145,10 @@ function syncChain(c, fresh = false) {
   const W = walletOn(c);
   const p = st.syncing = (st.syncing || Promise.resolve()).catch(() => {}).then(async () => {
     const [s, q] = await Promise.all([W.sync(), relayOf(c) ? W.quote().catch((e) => ({ error: e })) : null]);
-    const waiting = await W.waiting(0).catch(() => null);
+    const everyone = !st.scanAt || Date.now() - st.scanAt > 300_000, bw = await W.waitingAt(everyone ? Array.from({ length: W.boxSpan() }, (_, i) => i) : boxIndexes(st));
+    if (everyone && Object.values(bw).every((v) => v != null)) st.scanAt = Date.now();
+    st.boxW = { ...st.boxW, ...Object.fromEntries(Object.entries(bw).filter(([, v]) => v != null)) };
+    const waiting = st.boxW[0] ?? null;
     if (S.key !== key) return;
     if (!fresh && st.bal != null && s.balance > st.bal && !S.busy) toast(`${fmt(s.balance - st.bal)} ETH arrived on ${c.full}.`);
     Object.assign(st, { bal: s.balance, notes: W.notes().map((n) => BigInt(n.v)), leaves: s.leaves, quote: q?.error ? null : q, quoteErr: q?.error || null, waiting, err: null, at: Date.now() });
@@ -2181,6 +2194,31 @@ function maxSpend(fee) {
   return best;
 }
 
+// ── one-time deposit addresses ─────────────────────────────────────────────────────────────────────────────────
+// Deposit address 0 is the standing one. Each one after it is for one payer: the same address on every chain, with nothing
+// on chain tying two of them together. Plain ETH sent to any of them waits there until it is taken in, by the relay or
+// by this wallet, so what waits is read at every address the key could have issued, not only the ones issued here.
+const boxStore = () => `tacit-pay-boxes-v1:${S.key.pool.address}`;
+const boxes = () => readJson(boxStore()) || { issued: [] };
+const boxIndexes = (st) => [...new Set([0, ...boxes().issued.map((x) => x.i), ...Object.keys(st.boxW || {}).map(Number).filter((i) => st.boxW[i] > 0n)])];
+const waitKey = (st = cur()) => JSON.stringify(Object.entries(st.boxW || {}).filter(([, v]) => v > 0n).map(([i, v]) => [i, String(v)]));
+const waitingTotal = (st = cur()) => Object.values(st.boxW || {}).reduce((a, v) => a + (v > 0n ? v : 0n), 0n);
+// The addresses to show: those issued here, and any other that has money at it.
+const boxList = (st) => {
+  const have = boxes().issued, known = new Set(have.map((x) => x.i));
+  return [...have, ...Object.keys(st.boxW || {}).map(Number).filter((i) => i > 0 && !known.has(i) && st.boxW[i] > 0n).map((i) => ({ i, label: '' }))].sort((a, b) => b.i - a.i);
+};
+function issueBox(label) {
+  const b = boxes(), limit = Math.min(...CHAINS.map((c) => walletOn(c).boxSpan())) - 1, next = Math.max(0, ...b.issued.map((x) => x.i)) + 1;
+  if (next > limit) return toast(`${b.issued.length} addresses are out and unused. Once one is used, more open up: that keeps each one findable from your key alone.`, true);
+  b.issued.push({ i: next, label: label.slice(0, 40), at: Date.now() });
+  writeJson(boxStore(), b);
+  delete DRAFT['f-boxlabel'];
+  for (const c of CHAINS) if (relayOf(c)) walletOn(c).watch(next).catch(() => {});
+  CHAINS.forEach((c) => syncChain(c, true));
+  renderForm();
+}
+
 // ── rendering ───────────────────────────────────────────────────────────────────────────────────────────────
 const cur = () => CH[S.chain.chainId];
 const ethIcon = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`;
@@ -2197,7 +2235,7 @@ function paint() {
   paintChains(); paintBal(); paintReq(); paintActivity();
   if (S.busy) return;
   if (FORM.relay !== undefined && FORM.relay !== relayKey()) renderForm();
-  else if (FORM.waiting !== undefined && FORM.waiting !== cur().waiting) renderForm();
+  else if (FORM.waiting !== undefined && FORM.waiting !== waitKey()) renderForm();
   else FORM.check?.();
 }
 function paintWallet() {
@@ -2213,7 +2251,9 @@ function paintChains() {
   $$('#chains [data-chain]').forEach((b) => b.onclick = () => { if (S.busy) return; S.chain = chainOf(b.dataset.chain); writeJson('tacit-pay-chain-v1', S.chain.chainId); mount($('#status'), ''); render(); syncChain(S.chain); });
 }
 function paintBal() {
-  const c = S.chain, st = cur();
+  const c = S.chain, st = cur(), w = S.key ? waitingTotal(st) : 0n;
+  mount($('#bal-note'), w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : '');
+  $('#bal-take')?.addEventListener('click', () => { S.tab = 'shield'; S.from = 'exchange'; render(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   if (!S.key) {
     mount($('#bal'), html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg><div><div class="v t">Private ETH</div><div class="u">on ${c.full} · yours shows once a wallet is open</div></div>`);
     return;
@@ -2323,7 +2363,7 @@ function formShield(f) {
     <button type="button" role="tab" data-from="exchange" aria-selected="${S.from === 'exchange'}">From an exchange<small>up to 0.25%</small></button></div>` : '';
   if (S.key && S.from === 'exchange') {
     const W = walletOn(c), box = W.receiveBox(0), waiting = st.waiting ?? null;
-    FORM.waiting = st.waiting;
+    FORM.waiting = waitKey();
     // Shown once the router confirms it computes the same address for this key.
     if (st.boxOk === undefined) { st.boxOk = null; W.ready().then((ok) => { st.boxOk = ok; }, () => { st.boxOk = 'unread'; }).finally(() => { if (!S.busy && S.tab === 'shield') renderForm(); }); }
     if (st.boxOk !== true) {
@@ -2340,11 +2380,21 @@ function formShield(f) {
         <div class="addr"><code>${box}</code><button class="link" type="button" data-copy="${box}">copy</button></div>
         <p class="note">Send ETH here from an exchange or any wallet, on Ethereum, Base or Robinhood Chain. ${relayOf(c) ? html`The relay moves it into your private balance on that chain, usually within minutes, for at most 0.25%${min ? html`; on ${c.full}, send at least ${fmt(min)} ETH` : ''}.` : 'Take it in below once it arrives.'} Only send ETH. Everything sent here is visibly sent to this one address.</p></div>
       ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${relayTakes ? 'The relay collects it shortly, or take it in yourself now: no fee, your wallet pays the gas.' : 'Take it in yourself: no fee, your wallet pays the gas.'}</span><button class="btn ghost sm" type="button" id="f-sweep">Take it in</button></div>` : ''}
-      <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button></p>`);
+      <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button></p>
+      <div class="blk"><div class="lbl"><span>One-time addresses</span><span>one for each person who pays you</span></div>
+        <p class="note">Give each payer their own address. Each works on every chain, nothing on chain ties two of yours together, and what arrives is moved into your private balance${relayOf(c) ? ' by the relay, or by you at no fee' : ' by you at no fee'}. Only send ETH.</p>
+        <div class="amt text"><input id="f-boxlabel" maxlength="40" placeholder="Who it is for (optional, kept on this device)" autocomplete="off" aria-label="Who the address is for"><button class="link" type="button" id="f-newbox">new address</button></div>
+        <ul class="rows">${boxList(st).map((x) => { const addr = W.receiveBox(x.i), w = st.boxW?.[x.i] ?? 0n, more = CHAINS.filter((o) => o !== c && (CH[o.chainId].boxW?.[x.i] ?? 0n) > 0n).map((o) => `${fmt(CH[o.chainId].boxW[x.i])} ETH on ${o.name}`);
+          return html`<li><div class="h"><b>${x.label || `Address ${x.i}`}</b><span>${w > 0n ? html`<span class="in">${fmt(w)} ETH waiting</span>` : ''}</span></div>
+            <div class="addr"><code>${addr}</code><button class="link" type="button" data-copy="${addr}">copy</button></div>
+            ${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting here on ${c.full}.</span><button class="btn ghost sm" type="button" data-take="${x.i}">Take it in</button></div>` : ''}
+            ${more.length ? html`<div class="f">also waiting: ${more.join(' · ')}: open that chain to take it in</div>` : ''}</li>`; })}</ul></div>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
-    $('#f-check').onclick = async () => { await W.watch(0).catch(() => {}); await syncChain(c, true); mount($('#status'), cur().waiting > 0n ? `${fmt(cur().waiting)} ETH is waiting at your deposit address.` : 'Nothing is waiting at your deposit address.'); renderForm(); };
+    $('#f-newbox').onclick = () => issueBox($('#f-boxlabel').value.trim());
+    $$('[data-take]', f).forEach((b) => b.onclick = () => act(b, async (step) => { await walletReady(c, step); const h = await W.sweep({ index: Number(b.dataset.take), onStep: step }); done(c, h, 'Taken in.'); }));
+    $('#f-check').onclick = async () => { st.scanAt = 0; await Promise.all(boxIndexes(st).map((i) => W.watch(i).catch(() => {}))); await syncChain(c, true); mount($('#status'), waitingTotal() > 0n ? `${fmt(waitingTotal())} ETH is waiting at your deposit addresses.` : 'Nothing is waiting at your deposit addresses.'); renderForm(); };
     $('#f-sweep')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => { await walletReady(c, step); const h = await W.sweep({ index: 0, onStep: step }); done(c, h, 'Taken in.'); }));
-    if (relayOf(c)) W.watch(0).catch(() => {});
+    if (relayOf(c)) boxIndexes(st).forEach((i) => W.watch(i).catch(() => {}));
   } else {
     mount(f, html`${seg}
       ${amountField('f-samt', 'Amount', S.account ? html`<button type="button" id="f-max">Wallet <span id="f-wb" class="num">…</span> ETH</button>` : html`<button type="button" id="f-conn">Connect a wallet</button>`)}
@@ -2521,7 +2571,9 @@ function formReceive(f) {
       <div class="qrbox" id="f-qr"></div>
       <div class="addr rlink"><code id="f-rlink"></code></div>
       <div class="row2"><button class="btn" type="button" id="f-link">Copy payment link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>
-      <p class="note">Whoever opens it can pay from any wallet: their browser proves a deposit straight into your private balance on the chain they pick, so their address and the amount show on chain, and you do not. Paid from a Tacit balance, it is private end to end. It waits in your private balance on that chain: open this page with your Tacit key, or with the Ethereum wallet you signed in with, on any device, and it is there.</p></div>`);
+      <p class="note">Whoever opens it can pay from any wallet: their browser proves a deposit straight into your private balance on the chain they pick, so their address and the amount show on chain, and you do not. Paid from a Tacit balance, it is private end to end. It waits in your private balance on that chain: open this page with your Tacit key, or with the Ethereum wallet you signed in with, on any device, and it is there.</p>
+      <p class="note">Being paid from an exchange, or a wallet that cannot open this page? <button class="link" type="button" id="f-toexch">Give them a one-time deposit address</button> instead.</p></div>`);
+  $('#f-toexch').onclick = () => { S.tab = 'shield'; S.from = 'exchange'; render(); };
   $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
   const link = () => payLink({ to: RECV.s?.ok ? $('#f-rname').value.trim().toLowerCase() : k.address, amount: parseEth($('#f-ramt').value), chains: RECV.scope === 'any' ? null : [chainOf(RECV.scope)], note: $('#f-rfor').value.trim() });
   let last = '';
@@ -2758,7 +2810,7 @@ async function detail(c, r) {
 }
 function describe(r) {
   const used = BigInt(r.used), kept = BigInt(r.kept), ext = r.ext == null ? null : BigInt(r.ext), fee = BigInt(r.fee ?? 0);
-  if (r.box != null) return { label: 'Came in at your deposit address', v: kept, in: true, fee: BigInt(r.boxFee ?? 0) };
+  if (r.box != null) return { label: r.box ? 'Came in at a one-time address' : 'Came in at your deposit address', v: kept, in: true, fee: BigInt(r.boxFee ?? 0) };
   if (!used) return ext == null ? { label: 'Came in', v: kept, in: true } : { label: ext > 0n ? 'Shielded in' : 'Received privately', v: kept, in: true };
   if (ext == null) return { label: 'Spent', v: used - kept };
   if (ext < 0n) return { label: r.dest ? `Moved to ${r.dest}` : html`Withdrew to <span class="nw">${short(r.to)}</span>`, v: -ext, fee };

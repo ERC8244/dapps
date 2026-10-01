@@ -89,7 +89,7 @@ const WALLET = `(() => {
 })();`;
 
 async function open(wallets) {
-  const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
+  const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write'], colorScheme: process.env.DARK ? 'dark' : 'light'});
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = new URL(req.url());
     if (req.method() === 'POST' && !/onrender\.com$/.test(url.host)) {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-plTd5KtN0gjiWX45GxgcjfU6kMmvRBZFR8QZ1s3Muh4=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-hnAxk4aYyXIFerOwhsjTR3T2kZGDBHHy6Uyykasf8MM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Shield ETH, pay anyone privately, withdraw any part. Proved in your browser, recovered from your key. An onchain page: this document is served by a contract.">
@@ -121,6 +121,9 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .note.err { color: var(--err); }
 .note.warn { color: var(--orange); }
 .note.ok { color: var(--ok); }
+.note.old { visibility: hidden; animation: old-show 0s 3s forwards; }
+@keyframes old-show { to { visibility: visible; } }
+.amt:has(input[aria-invalid="true"]) { border-color: var(--err); }
 .route { margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
 .route b { font-weight: 500; color: var(--ink); }
 .addr { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); }
@@ -148,7 +151,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .rname .amt { margin-bottom: 0; }
 .rlink { margin-top: 12px; }
 .qrbox { display: flex; justify-content: center; margin: 16px 0 2px; }
-.qr { display: block; width: min(264px, 100%); height: auto; border: 1px solid var(--hair); }
+.qr { display: block; width: min(340px, 100%); height: auto; border: 1px solid var(--hair); }
 .meter { height: 3px; margin: 10px 0 4px; background: var(--hair); overflow: hidden; }
 .meter i { display: block; height: 100%; width: var(--p, 0%); background: var(--eth); transition: width .2s; }
 .rows { list-style: none; margin: 14px 0 0; padding: 0; border-top: 1px solid var(--hair); }
@@ -221,7 +224,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
       <div class="bal" id="bal"></div>
       <div id="bal-note"></div>
       <div class="seg sub" role="tablist" aria-label="Action" id="tabs"></div>
-      <div id="form"></div>
+      <div id="form"><p class="note old">This page needs a current browser (2021 or later). Update yours, or open it in another.</p></div>
       <div class="status" role="status" aria-live="polite" id="status"></div>
     </section>
 
@@ -893,7 +896,25 @@ const secp = (() => {
     const R = lift(r, rec & 1), ri = inv(r, SN), e = big(hash);
     return add(mulG(mod(-e * ri, SN)), mul(R, s * ri % SN));
   };
-  return { G, mul, mulG, add, affine, compress, decompress, recover };
+  const sign = (hash, d) => {
+    const e = big(hash) % SN;
+    for (;;) {
+      const k = big(randomBytes(32)) % SN;
+      if (!k) continue;
+      const r = affine(mulG(k))[0] % SN;
+      let x = r && inv(k, SN) * (e + r * d) % SN;
+      if (!x) continue;
+      if (x > SN / 2n) x = SN - x;
+      return cat(be(r), be(x));
+    }
+  };
+  const verify = (sig, hash, pub) => {
+    if (sig.length !== 64) return false;
+    const r = big(sig.subarray(0, 32)), x = big(sig.subarray(32));
+    if (!r || r >= SN || !x || x > SN / 2n) return false;
+    try { const w = inv(x, SN), R = add(mulG(big(hash) % SN * w % SN), mul(decompress(pub), r * w % SN)); return !!R[2] && affine(R)[0] % SN === r; } catch { return false; }
+  };
+  return { G, mul, mulG, add, affine, compress, decompress, recover, sign, verify };
 })();
 const pubOf = (priv) => secp.compress(secp.mulG(big(priv)));
 
@@ -1252,6 +1273,17 @@ function aggregate(h) {
   return out;
 }
 
+// A short ID of a whole address, the same text for the same address on every page: an address is too long to read, so a
+// payer and a payee compare this instead. 64 bits.
+const addressId = (a) => { const x = hex(sha256(cat(utf8('tacit-address-id-v1\0'), utf8(String(a).toLowerCase().replace(/\s/g, '')))).subarray(0, 8)); return `${x.slice(0, 4)}·${x.slice(4, 8)}·${x.slice(8, 12)}·${x.slice(12)}`; };
+
+// A payment link may carry a one-time deposit address, as its key `n` and the payee's signature `ns` over it under their
+// view key (the first 33 bytes of their pool address), so the payer's page can tell the address is the payee's own.
+const BOX_TAG = utf8('tacit-pay-box-v1');
+const npkHex = (v) => BigInt(v).toString(16).padStart(64, '0');
+const boxDigest = (npk) => keccak(cat(BOX_TAG, unhex(npkHex(npk))));
+const boxSigned = (V, nHex, sigHex) => { try { return secp.verify(unhex(sigHex), boxDigest(BigInt('0x' + nHex)), secp.compress(V)); } catch { return false; } };
+
 // ── receive boxes ───────────────────────────────────────────────────────────────────────────────────────────
 // Box i is a standing ETH address for one note key of the wallet; anyone pays it, anyone sweeps it into the pool, and
 // the router computes the note. The key derives from the wallet's nullifier secret, so the seed alone finds every box.
@@ -1274,21 +1306,30 @@ function receiveBoxAddress(router, npk, feeBps = RECEIVE_FEE_BPS) {
 const receiveRho = (box, n) => big(keccak(cat(RECEIVE_TAG, addrWord(box), be(n)))) % FR;
 
 // ── chain reads ─────────────────────────────────────────────────────────────────────────────────────────────
+// A signal that aborts after `ms`, on browsers that have no AbortSignal.timeout.
+function timeoutSignal(ms) {
+  if (AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
+}
 // A JSON-RPC reader over several endpoints: each call tries them in order, and a revert is final at the first.
 function jsonRpc(urls) {
   let id = 0, pref = 0;
+  const noBatch = new Set();
   // Several reads in one request: [[method, params], …] → [{ result } | { error }, …]. A node that will not take a batch
-  // is asked one read at a time.
+  // is asked one read at a time, and a read a node answered with an error is asked again of the others.
   const batch = async (calls) => {
     for (let k = 0; k < urls.length; k++) {
       const i = (pref + k) % urls.length, base = id;
+      if (noBatch.has(i)) continue;
       try {
-        const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(calls.map(([method, params], n) => ({ jsonrpc: '2.0', id: base + n + 1, method, params }))), signal: AbortSignal.timeout(20_000) });
+        const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(calls.map(([method, params], n) => ({ jsonrpc: '2.0', id: base + n + 1, method, params }))), signal: timeoutSignal(20_000) });
         const j = await r.json(), by = new Map((Array.isArray(j) ? j : []).map((x) => [x.id, x]));
         id += calls.length;
-        if (calls.some((_, n) => !by.has(base + n + 1))) throw new Error('batch refused');
+        if (calls.some((_, n) => !by.has(base + n + 1))) { noBatch.add(i); throw new Error('batch refused'); }
         pref = i;
-        return calls.map((_, n) => { const x = by.get(base + n + 1); return x.error ? { error: Object.assign(new Error(x.error.message || 'rpc error'), { rpc: x.error }) } : { result: x.result }; });
+        return Promise.all(calls.map(async ([m, p], n) => { const x = by.get(base + n + 1); return x.error || !('result' in x) ? one(m, p).then((result) => ({ result }), (error) => ({ error })) : { result: x.result }; }));
       } catch {}
     }
     return Promise.all(calls.map(([m, p]) => one(m, p).then((result) => ({ result }), (error) => ({ error }))));
@@ -1298,9 +1339,10 @@ function jsonRpc(urls) {
     for (let k = 0; k < urls.length; k++) {
       const i = (pref + k) % urls.length;
       try {
-        const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout(method === 'eth_getLogs' ? 30_000 : 12_000) });
+        const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: timeoutSignal(method === 'eth_getLogs' ? 30_000 : 12_000) });
         const j = await r.json();
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
+        if (!('result' in j)) throw new Error('the node sent no result');
         pref = i;
         return j.result;
       } catch (e) {
@@ -1315,6 +1357,17 @@ function jsonRpc(urls) {
 const errorText = (e) => (e.all || [e]).map((x) => `${x.message} ${JSON.stringify(x.rpc?.data ?? '')}`).join(' ');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// What to do after an eth_getLogs over `step` blocks failed on every node, read node by node, since one node can refuse for
+// its range limit while another is only rate-limited: { step } a narrower window (the largest limit a node names below the
+// current one, else a quarter when any answer speaks of ranges or sizes), { busy } wait and ask again, or null.
+function logFailure(e, step) {
+  const each = (e.all || [e]).map((x) => `${x.message} ${JSON.stringify(x.rpc?.data ?? '')}`.slice(0, 2000));
+  const named = each.flatMap((t) => [...t.matchAll(/(\d[\d,]*)\s*(?:blocks?|range)\b/gi)].map((x) => Number(x[1].replace(/,/g, '')))).filter((n) => n > 0 && n < step);
+  if (named.length) return { step: Math.max(...named) };
+  if (each.some((t) => /rate.?limit|too many requests|\b429\b|over rate|capacity/i.test(t))) return { busy: true };
+  if (step > 1 && each.some((t) => /range|limit|too many|too large|exceed|response size|10000/i.test(t))) return { step: Math.max(1, Math.floor(step / 4)) };
+  return null;
+}
 // Logs in [from, to], in ranges the endpoints accept: a limit an endpoint names is taken, otherwise the range shrinks.
 async function getLogs(rpc, address, topics, from, to, chunk = 50_000) {
   const out = [];
@@ -1324,13 +1377,9 @@ async function getLogs(rpc, address, topics, from, to, chunk = 50_000) {
       out.push(...await rpc('eth_getLogs', [{ address, topics, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }]));
       a = b + 1; busy = 0;
     } catch (e) {
-      const m = errorText(e).slice(0, 2000);
-      if (/rate.?limit|too many requests|\b429\b/i.test(m) && !/range|blocks?\b/i.test(m) && ++busy <= 8) { await sleep(Math.min(12_000, 1500 * 2 ** (busy - 1))); continue; }
-      if (step > 1 && /range|limit|too many|too large|exceed|\d{4,} blocks?/i.test(m)) {
-        const named = [...m.matchAll(/(\d[\d,]*)\s*(?:blocks?|range)\b/gi)].map((x) => Number(x[1].replace(/,/g, ''))).filter((n) => n > 0 && n < step);
-        step = named.length ? Math.max(...named) : Math.max(1, Math.floor(step / 4));
-        continue;
-      }
+      const f = logFailure(e, step);
+      if (f?.step) { step = f.step; continue; }
+      if (f?.busy && ++busy <= 8) { await sleep(Math.min(12_000, 1500 * 2 ** (busy - 1))); continue; }
       throw e;
     }
   }
@@ -1464,7 +1513,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const keeperFetch = async (path, init = {}) => {
     if (!keeper) throw new Error('no relay for this chain');
     for (let i = 0; ; i++) {
-      const r = await fetch(keeper + path, { ...init, signal: AbortSignal.timeout(path === '/relay' ? 180_000 : init.method === 'POST' ? 30_000 : 10_000) });
+      const r = await fetch(keeper + path, { ...init, signal: timeoutSignal(path === '/relay' ? 180_000 : init.method === 'POST' ? 30_000 : 10_000) });
       const post = init.method === 'POST';
       if (r.status !== 429 || i >= (post ? 4 : 1)) return r;
       await sleep(Math.min(post ? 30 : 5, Number(r.headers.get('retry-after')) || 3) * 1000 * (0.5 + Math.random()));
@@ -1485,7 +1534,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // Confirmed history from the relay's index. A page counts only if the tree it builds is one the pool has held at
   // that size, so the index cannot invent leaves. No nullifier is sent to a node to ask whether it is spent: a spend
   // the index left out shows when the chain logs reach it, or as a refused spend, which rebuilds from the chain. An
-  // index that withholds a memo could hide a note, so the state is rebuilt from chain logs alone once a week.
+  // index that withholds a memo could hide a note until Rebuild reads the chain's logs alone; it cannot move funds.
   async function fromIndex(safe) {
     boxTopics();
     let cand = saved;
@@ -1513,30 +1562,27 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (cand !== saved) { saved = cand; persist(); }
   }
   // A tree counts only if the pool has held its root at its size, as the nodes agree: one node cannot show a balance that
-  // is not there.
+  // is not there. A node a block or two behind does not know a new root yet, or a node is busy, so the nodes are asked
+  // again a few times before the events are called wrong.
   async function held(tree) {
-    const data = calldata('rootSize(bytes32)', ['uint256'], [tree.root]), r = chain.vote ? await chain.vote(chain.pool, data) : await chain.rpc('eth_call', [{ to: chain.pool, data }, 'latest']);
-    if (BigInt(r.length > 2 ? r : '0x0') !== BigInt(tree.size)) throw new Error('these events do not match the pool');
+    const data = calldata('rootSize(bytes32)', ['uint256'], [tree.root]);
+    for (let i = 0; ; i++) {
+      let bad;
+      try {
+        const r = chain.vote ? await chain.vote(chain.pool, data) : await chain.rpc('eth_call', [{ to: chain.pool, data }, 'latest']);
+        if (BigInt(r.length > 2 ? r : '0x0') === BigInt(tree.size)) return;
+        bad = new Error('these events do not match the pool');
+      } catch (e) { bad = e; }
+      if (i >= 3) throw bad;
+      await sleep(2000);
+    }
   }
-  const WEEK = 7 * 24 * 3600 * 1000;
-  let checking = false;
   const READ_WINDOW = 100_000, byOrder = (x, y) => x.block - y.block || x.firstIndex - y.firstIndex;
-  async function chainCheck(safe) {
-    boxTopics();
-    const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], chain.deployBlock, safe), getLogs(chain.rpc, chain.router, [T_RECEIVED, boxTopics()], chain.deployBlock, safe)]);
-    const full = { ...absorb({ ...blank(), nextRefund: saved.nextRefund }, tl.map(decodeTransact).sort((x, y) => x.block - y.block || x.firstIndex - y.firstIndex), rl.map(decodeReceived)), block: saved.block };
-    if (full.tree.size !== saved.tree.size) return;
-    await held(full.tree);
-    const have = new Set(saved.notes.map((n) => n.index));
-    if (full.notes.some((n) => !have.has(n.index))) { saved = { ...full, attempts: saved.attempts, nextRefund: Math.max(saved.nextRefund, full.nextRefund) }; view = lastKey = null; }
-    saved.checkedAt = Date.now();
-    persist();
-  }
 
   // New events since the last read: those `confirmations` deep are kept, the rest are read again next time. One read
   // at a time, each building on the last.
   let reading = Promise.resolve();
-  let boxIdx = [0], boxW = {}, lastKey = null, strikes = 0, lastRebuild = 0;
+  let boxIdx = [0], boxW = {}, lastKey = null, strikes = 0, lastRebuild = 0, feedPause = 0;
   const sync = (idx) => { if (idx) boxIdx = idx; return (reading = reading.catch(() => {}).then(readNew)); };
   // The chain's head: the pool's leaf count and what waits at some deposit addresses in one Multicall3 call (or, where a
   // node cannot answer it, one by one), then the block number the node reports. The block is read last, so the logs read
@@ -1561,11 +1607,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     const { tip, leaves, waiting } = await headRead(boxIdx), safe = tip - chain.confirmations, key = `${tip}:${leaves}:${boxIdx.join()}`;
     boxW = waiting;
     if (key === lastKey) return summary();
-    if (keeper && feed && saved.block < safe) {
-      const fed = await fromIndex(safe).then(() => true, () => false);
-      // The full read of the logs runs behind the first paint, not before it.
-      if (fed && saved.block >= safe && Date.now() - (saved.checkedAt ?? 0) > WEEK && !checking) { checking = true; setTimeout(() => chainCheck(safe).catch(() => { saved.checkedAt = Date.now() - WEEK + 3_600_000; }).finally(() => { checking = false; }), 30_000); }
-    }
+    if (keeper && feed && saved.block < safe && Date.now() >= feedPause) await fromIndex(safe).catch(() => { feedPause = Date.now() + 120_000; });
     // The index and the logs must add up to the pool: events left out show as a leaf out of order, a root the pool never
     // held, or a tree short of its leaf count, and the state is then read again from the chain alone.
     const rebuild = async () => {
@@ -1573,11 +1615,12 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       const f = feed; feed = false;
       try { return await readNew(); } finally { feed = f; }
     };
-    // Events left out, or a node a block behind: a second look first, then the state is read again from the chain, at most
-    // once in ten minutes.
+    // Events left out, or a node a block behind: a second look first, then the state is read again from the chain. An index
+    // that left events out is not asked again this session; with no index in play, a rebuild comes at most once in ten minutes.
     const inconsistent = async () => {
       if (++strikes < 2) { await sleep(2000); return readNew(); }
       strikes = 0;
+      if (feed) { feed = false; lastRebuild = Date.now(); return rebuild(); }
       if (Date.now() - lastRebuild < 600_000) throw new Error('The logs a node returned are behind the pool. Trying again shortly.');
       lastRebuild = Date.now();
       return rebuild();
@@ -1586,8 +1629,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       // The confirmed part is read and kept a window at a time, so a long read that fails partway keeps what it has.
       while (saved.block < safe) {
         const a = saved.block + 1, z = Math.min(safe, a + READ_WINDOW - 1);
-        const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z), getLogs(chain.rpc, chain.router, [T_RECEIVED, boxTopics()], a, z)]);
-        const next = { ...absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived)), block: z };
+        boxTopics();
+        const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z), getLogs(chain.rpc, chain.router, [T_RECEIVED], a, z)]);
+        const next = { ...absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived).filter((r) => boxes.has(r.box))), block: z };
         // A deposit address used in this window widens the set watched: read the same window again with the longer list.
         if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; continue; }
         if (next.tree.size !== saved.tree.size) await held(next.tree);
@@ -1595,8 +1639,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         persist();
       }
       if (saved.block < tip) {
-        const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], saved.block + 1, tip), getLogs(chain.rpc, chain.router, [T_RECEIVED, boxTopics()], saved.block + 1, tip)]);
-        view = absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived));
+        boxTopics();
+        const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], saved.block + 1, tip), getLogs(chain.rpc, chain.router, [T_RECEIVED], saved.block + 1, tip)]);
+        view = absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived).filter((r) => boxes.has(r.box)));
       }
     } catch (e) {
       if (/out of order|do not match the pool/.test(e?.message || '')) return inconsistent();
@@ -1665,13 +1710,33 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   async function waitFor(ok, ms = 120_000) {
     for (const t0 = Date.now(); ;) { await sync(); if (ok()) return; if (Date.now() - t0 > ms) throw new Error('timed out waiting for the chain'); await sleep(3000); }
   }
+  // The tree to prove against when the relay has paused this connection's reservations: this wallet's, plus the leaves
+  // already queued at the relay. null when the two do not line up.
+  async function queueTail() {
+    try {
+      for (let i = 0; i < 30; i++) {
+        const h = await keeperGet('/head');
+        let t = state().tree;
+        if (BigInt(h.root) !== t.root) {
+          await sync(); t = state().tree;
+          if (BigInt(h.root) !== t.root) { if (BigInt(h.size) >= BigInt(t.size)) { await sleep(1500); continue; } return null; }
+        }
+        const c = t.clone();
+        c.append(h.pending.flatMap((x) => [BigInt(x.outLeaf0), BigInt(x.outLeaf1)]));
+        return c.root === BigInt(h.tail.root) ? c : null;
+      }
+    } catch {}
+    return null;
+  }
   // A slot in the relay's queue and the tree to prove against: this wallet's plus what is queued ahead of the slot.
   // → { id, tree }, 'stale' (a spend of these notes is queued: wait), or null (prove against the pool's head).
+  // 'tail': the relay has paused reservations for this connection; send without a slot.
   async function reserve(sealed, ins) {
     let r;
     try {
       const res = await keeperPost('/reserve', { outLeaf0: String(sealed[0]?.leaf ?? 0n), outLeaf1: String(sealed[1]?.leaf ?? 0n), nfs: ins.map((n) => String(n.nf)) });
       if (res.status === 409) return 'stale';
+      if (res.status === 403) return 'tail';
       if (res.status !== 200) return null;
       r = res.body;
     } catch { return null; }
@@ -1708,7 +1773,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (q && sealed.some(Boolean)) {
         const r = await reserve(sealed, ins);
         if (r === 'stale') { queued = true; continue; }
-        if (r) { slot = r.id; tree = r.tree; }
+        if (r === 'tail') tree = (await queueTail()) || tree;
+        else if (r) { slot = r.id; tree = r.tree; }
       }
       const w = buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => o && { v: o.v, npk: o.npk, rho: o.rho }), extAmount: ext, fee, extDataHash: eh });
       onStep('proving');
@@ -1760,13 +1826,25 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // Notes covering `need`: two of them, combining the two largest first (paying a fee each time) while two do not.
   async function prepare(need, q, onStep) {
     const fee = q ? BigInt(q.fee) : 0n;
+    // Nothing is merged, and no fee paid for it, unless merging can reach the amount: the same walk as the form's plan.
+    const reachable = () => {
+      const u = unspent().map((n) => BigInt(n.v)).sort((a, b) => (a < b ? -1 : 1));
+      for (let i = 0; i < 8; i++) {
+        if (u.some((v) => v >= need) || u.some((v, k) => u.slice(k + 1).some((w) => v + w >= need))) return true;
+        if (u.length < 2) return false;
+        const a = u.pop(), b = u.pop();
+        if (a + b <= fee) return false;
+        u.push(a + b - fee); u.sort((x, y) => (x < y ? -1 : 1));
+      }
+      return false;
+    };
+    if (!select(need) && !reachable()) throw new Error('Your private balance does not cover this amount and its fee.');
     for (let i = 0; i < 8; i++) {
       const pick = select(need);
       if (pick) return pick;
       const u = unspent().sort((a, b) => (BigInt(b.v) < BigInt(a.v) ? -1 : 1));
       if (u.length < 2 || BigInt(u[0].v) + BigInt(u[1].v) <= fee) break;
-      const total = BigInt(u[0].v) + BigInt(u[1].v), after = [total - fee, ...u.slice(2).map((n) => BigInt(n.v))];
-      if (!(after.some((v) => v >= need) || after.some((v, i) => after.slice(i + 1).some((w) => v + w >= need)))) break;
+      const total = BigInt(u[0].v) + BigInt(u[1].v);
       onStep('combining two notes first');
       await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - fee }, null], q, onStep });
       await waitFor(() => unspent().some((n) => BigInt(n.v) === total - fee));
@@ -1900,19 +1978,41 @@ function fmt(v, max = 6) {
 }
 const ethStr = (v) => (BigInt(v) > 0n && BigInt(v) < 5n * 10n ** 11n ? '<0.000001' : fmt(v));
 const plain = (v) => fmt(v, 18).replace(/,/g, '');
+// A decimal comma reads as a point, a thousands comma as nothing, and a lone comma before three digits (1,500) is refused
+// rather than guessed: the same rules as tacit.finance's pay pages.
 function parseEth(s) {
   let t = String(s || '').trim();
-  if (/^\d*,\d+$/.test(t)) t = t.replace(',', '.');
+  if (t.includes(',')) {
+    if (/^[1-9]\d{0,2}(?:,\d{3})+(?:\.\d*)?$/.test(t) && (t.includes('.') || t.indexOf(',') !== t.lastIndexOf(','))) t = t.replace(/,/g, '');
+    else if (/^\d*,\d*$/.test(t) && !/^[1-9]\d{0,2},\d{3}$/.test(t)) t = t.replace(',', '.');
+    else return null;
+  }
   if (!/^\d*\.?\d*$/.test(t) || t === '' || t === '.') return null;
   const [w, f = ''] = t.split('.');
   if (f.length > 18) return null;
-  return BigInt(w || '0') * 10n ** 18n + BigInt((f + '0'.repeat(18)).slice(0, 18));
+  return BigInt(w || '0') * 10n ** 18n + BigInt((f + '0'.repeat(18)).slice(0, 18) || '0');
 }
+for (const ev of ['input', 'change']) document.addEventListener(ev, ({ target: i }) => {
+  if (!i.matches?.('input[inputmode="decimal"]')) return;
+  const t = i.value.trim(), open = ev === 'input' && (t === '.' || /^[1-9]\d{0,2}(?:,\d{3})*,\d{0,3}$/.test(t));
+  if (t && !open && parseEth(t) == null) i.setAttribute('aria-invalid', 'true'); else i.removeAttribute('aria-invalid');
+}, true);
+// Arrow keys, Home and End move between the tabs of a tab list.
+document.addEventListener('keydown', (e) => {
+  const t = e.target.closest?.('[role="tab"]'), box = t?.closest('[role="tablist"]');
+  if (!box || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const tabs = [...box.querySelectorAll('[role="tab"]:not([disabled])')], i = tabs.indexOf(t);
+  if (i < 0) return;
+  e.preventDefault();
+  tabs[e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length].click();
+  box.querySelector('[role="tab"][aria-selected="true"]')?.focus();
+});
 const ago = (sec) => {
+  if (!Number.isFinite(sec) || sec <= 0) return '';
   const d = Math.max(0, Date.now() / 1000 - sec);
   if (d < 90) return 'just now';
-  if (d < 3600) return `${Math.round(d / 60)} min ago`;
-  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+  if (d < 3600) return `${Math.floor(d / 60)} min ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)} h ago`;
   return new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 function toast(msg, bad = false) {
@@ -1922,7 +2022,7 @@ function toast(msg, bad = false) {
   $('#toasts').append(el);
   setTimeout(() => el.remove(), bad ? 7000 : 4200);
 }
-const copy = (text, done = 'Copied') => navigator.clipboard.writeText(text).then(() => toast(done), () => toast('Could not copy.', true));
+const copy = (text, done = 'Copied') => Promise.resolve().then(() => navigator.clipboard.writeText(text)).then(() => toast(done), () => toast('Could not copy.', true));
 async function busy(btn, fn) {
   if (btn.getAttribute('aria-busy') === 'true') return;
   btn.setAttribute('aria-busy', 'true'); btn.disabled = true;
@@ -1965,15 +2065,17 @@ const rpcOn = (c) => (RPC[c.chainId] ||= jsonRpc(nodesOf(c)));
 // ── the prover: workers made from the script above, holding the ceremony's key between them ──────────────────
 const PROVER = { state: 'idle', got: 0, total: CEREMONY.wasm.bytes + CEREMONY.zkey.bytes, err: null, ms: null, saved: false };
 const ARTIFACTS = 'tacit-pay-artifacts-v1';
-const sha256hex = async (b) => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', b)));
+const sha256hex = async (b) => (globalThis.crypto?.subtle ? hex(new Uint8Array(await crypto.subtle.digest('SHA-256', b))) : hex(sha256(b)));
 async function artifact(a, onBytes) {
   const key = `${location.origin}/${a.name}?sha256=${a.sha256}`;
   let cache = null;
   try { cache = await caches.open(ARTIFACTS); } catch {}
   const hit = await cache?.match(key).catch(() => null);
   if (hit) {
-    const b = new Uint8Array(await hit.arrayBuffer());
-    if (await sha256hex(b) === a.sha256) { onBytes(b.length); return b; }
+    try {
+      const b = new Uint8Array(await hit.arrayBuffer());
+      if (await sha256hex(b) === a.sha256) { onBytes(b.length); return b; }
+    } catch {}
     await cache.delete(key).catch(() => {});
   }
   for (const base of mirrors()) {
@@ -2004,10 +2106,13 @@ function proverPool(src, n) {
     w.onerror = (e) => { e.preventDefault(); pool.dead = true; for (const p of wk.wait.values()) p.reject(new Error('Proving stopped on this device, likely short of memory. Close other tabs and try again.')); wk.wait.clear(); };
     return wk;
   });
-  const call = (wk, msg, transfer = []) => new Promise((resolve, reject) => { const id = ++wk.seq; wk.wait.set(id, { resolve, reject }); wk.w.postMessage({ ...msg, id }, transfer); });
+  const call = (wk, msg, transfer = []) => new Promise((resolve, reject) => {
+    if (pool.dead || pool.stopped) return reject(new Error(pool.dead ? 'Proving stopped on this device, likely short of memory. Close other tabs and try again.' : 'Proving was stopped.'));
+    const id = ++wk.seq; wk.wait.set(id, { resolve, reject }); wk.w.postMessage({ ...msg, id }, transfer);
+  });
   let ranges = null;
   const pool = {
-    dead: false,
+    dead: false, stopped: false,
     async load(zkey, wasm) {
       const r = await call(workers[0], { op: 'split', key: zkey.buffer, wasm: wasm.buffer, n }, [zkey.buffer, wasm.buffer]);
       ranges = r.ranges;
@@ -2015,6 +2120,7 @@ function proverPool(src, n) {
     },
     // The witness and the QAP run on the first worker; every worker takes its slice of each multi-exponentiation.
     async prove(input) {
+      if (pool.dead) throw new Error('Proving stopped on this device, likely short of memory. Close other tabs and try again.');
       const { w, publicSignals } = await call(workers[0], { op: 'witness', input });
       const sl = (x, [a, b], off = 0) => x.slice(8 * (a + off), 8 * (b + off)), np = publicSignals.length + 1;
       const qap = call(workers[0], { op: 'qap', w: w.slice() });
@@ -2025,7 +2131,8 @@ function proverPool(src, n) {
       const points = { A: a.map((x) => x.points[0]), B1: a.map((x) => x.points[1]), B2: a.map((x) => x.points[2]), C: a.map((x) => x.points[3]), H: b.map((x) => x.points[0]) };
       return { proof: (await call(workers[0], { op: 'finish', points })).proof, publicSignals };
     },
-    stop() { for (const wk of workers) wk.w.terminate(); },
+    // A proof still running when the pool is stopped fails, so whoever waits on it is not left waiting.
+    stop() { pool.stopped = true; for (const wk of workers) { wk.w.terminate(); for (const p of wk.wait.values()) p.reject(new Error('Proving was stopped.')); wk.wait.clear(); } },
   };
   return pool;
 }
@@ -2059,7 +2166,7 @@ async function prove(input, chain) {
 const warm = () => { prover().catch(() => {}); };
 
 // ── an Ethereum wallet: opens the Tacit key, and sends what the relay does not ──────────────────────────────────
-const S = { key: null, provider: null, wallet: null, account: null, chain: chainOf(readJson('tacit-pay-chain-v1')) || CHAINS[1], tab: 'shield', from: 'wallet', route: readJson('tacit-pay-route-v1') || {}, busy: false };
+const S = { sent: null, key: null, provider: null, wallet: null, account: null, chain: chainOf(readJson('tacit-pay-chain-v1')) || CHAINS[1], tab: 'shield', from: 'wallet', route: readJson('tacit-pay-route-v1') || {}, busy: false };
 const CH = Object.fromEntries(CHAINS.map((c) => [c.chainId, {}]));
 // Wallets announce themselves; one that only sets window.ethereum is used when none does. The wallet last connected is
 // kept by its reverse-DNS name, as the announced ids change on every load.
@@ -2126,7 +2233,7 @@ function bind(w, a) {
   S.wallet = w; S.provider = p; S.account = lc(a);
   store.set(WK, w.info.rdns || '');
   refresh();
-  if (REQ.v) warm();
+  if (REQ.v && !REQ.v.box) warm();
 }
 // What shows the wallet is redrawn; a sign-in that is waiting on the wallet is left as it is.
 function refresh() { paintWallet(); paintReq(); if (!$('#form [aria-busy="true"]')) renderForm(); }
@@ -2169,7 +2276,7 @@ async function walletReady(c, say) {
 const signerFor = (c) => ({
   get address() { return S.account; },
   ready: async () => { if (!S.account) await connect(); await onChain(c.chainId); },
-  send: ({ to, data, value }) => S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.account, to, data, value: '0x' + BigInt(value).toString(16) }] }),
+  send: ({ to, data, value }) => S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.account, to, ...(data ? { data } : {}), value: '0x' + BigInt(value).toString(16) }] }),
 });
 
 // The Tacit key is a hash of the wallet's signature over one fixed message, the same in every Tacit app, so the same
@@ -2214,11 +2321,11 @@ function setKey(key, account) {
   render(); syncAll(true);
   if (PROVER.saved) warm();
 }
-function lock() { S.key = null; for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
+function lock() { S.key = null; for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const k of Object.keys(DRAFT)) delete DRAFT[k]; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
 
 // ── per chain ───────────────────────────────────────────────────────────────────────────────────────────────
 // A relay the reader set is held to the fee ceiling but not to the default relay's address.
-const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), vote: (to, data) => quorum(to, data, nodesOf(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
+const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), vote: (to, data) => quorum(to, data, nodesOf(c), true), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
 function walletOn(c) {
   const st = CH[c.chainId];
   return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c) }));
@@ -2304,22 +2411,45 @@ const boxList = (st) => {
   const have = boxes().issued, known = new Set(have.map((x) => x.i));
   return [...have, ...Object.keys(st.boxW || {}).map(Number).filter((i) => i > 0 && !known.has(i) && st.boxW[i] > 0n).map((i) => ({ i, label: '' }))].sort((a, b) => b.i - a.i);
 };
+// The next deposit address index this key can hand out and find again from the key alone, or null when the gap is full.
+function nextBoxIndex() {
+  const ws = CHAINS.map((c) => walletOn(c)), limit = Math.min(...ws.map((w) => w.boxSpan())) - 1;
+  const next = Math.max(Math.max(0, ...boxes().issued.map((x) => x.i)) + 1, ...ws.map((w) => w.nextBox()));
+  return next > limit ? null : next;
+}
+const watchBox = (i) => { for (const c of CHAINS) if (relayOf(c)) walletOn(c).watch(i).catch(() => {}); };
 let issuing = false;
 function issueBox(label) {
   if (issuing) return;
   issuing = true;
   try {
-    const b = boxes(), ws = CHAINS.map((c) => walletOn(c)), limit = Math.min(...ws.map((w) => w.boxSpan())) - 1;
-    const next = Math.max(Math.max(0, ...b.issued.map((x) => x.i)) + 1, ...ws.map((w) => w.nextBox()));
-    if (next > limit) return toast(`${b.issued.length} addresses are out and unused. Once one is used, more open up: that keeps each one findable from your key alone.`, true);
+    const b = boxes(), next = nextBoxIndex();
+    if (next == null) return toast(`${b.issued.length} addresses are out and unused. Once one is used, more open up: that keeps each one findable from your key alone.`, true);
     b.issued.push({ i: next, label: label.slice(0, 40), at: Date.now() });
     vset('boxes', b);
     if (boxes().issued.length !== b.issued.length) return toast('This browser would not keep the address, so none was issued.', true);
     delete DRAFT['f-boxlabel'];
-    for (const c of CHAINS) if (relayOf(c)) walletOn(c).watch(next).catch(() => {});
+    watchBox(next);
     CHAINS.forEach((c) => syncChain(c, true));
     renderForm();
   } finally { issuing = false; }
+}
+// The deposit address of the payment link being made: one nobody else has been given, kept while the link is edited and
+// until it is paid. undefined while a chain's history is still being read (an address must never be handed out twice),
+// null when the gap is full.
+const historyRead = () => CHAINS.every((c) => CH[c.chainId].at != null || (CH[c.chainId].fails || 0) >= 2);
+function linkBox() {
+  if (!historyRead()) return undefined;
+  const b = boxes(), used = Math.max(...CHAINS.map((c) => walletOn(c).nextBox()));
+  let i = vget('linkbox')?.i;
+  if (i == null || i < used || !b.issued.some((x) => x.i === i)) {
+    i = nextBoxIndex();
+    if (i == null) return null;
+    b.issued.push({ i, label: 'Payment link', at: Date.now() });
+    vset('boxes', b); vset('linkbox', { i });
+    watchBox(i);
+  }
+  return i;
 }
 
 // ── rendering ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -2339,6 +2469,7 @@ function paint() {
   if (S.busy) return;
   if (FORM.relay !== undefined && FORM.relay !== relayKey()) renderForm();
   else if (FORM.waiting !== undefined && FORM.waiting !== waitKey()) renderForm();
+  else if (FORM.hist !== undefined && FORM.hist !== historyRead()) renderForm();
   else FORM.check?.();
 }
 function paintWallet() {
@@ -2355,7 +2486,8 @@ function paintChains() {
 }
 function paintBal() {
   const c = S.chain, st = cur(), w = S.key ? waitingTotal(st) : 0n;
-  mount($('#bal-note'), w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : '');
+  const all = S.key && CHAINS.every((x) => CH[x.chainId].bal != null), total = all ? CHAINS.reduce((n, x) => n + CH[x.chainId].bal, 0n) : 0n;
+  mount($('#bal-note'), html`${total > 0n && CHAINS.filter((x) => CH[x.chainId].bal > 0n).length > 1 ? html`<p class="note">Your total across chains: <b class="num">${fmt(total)} ETH</b></p>` : ''}${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : ''}`);
   $('#bal-take')?.addEventListener('click', () => { S.tab = 'shield'; S.from = 'exchange'; render(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   if (!S.key) {
     mount($('#bal'), html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg><div><div class="v t">Private ETH</div><div class="u">on ${c.full} · yours shows once a wallet is open</div></div>`);
@@ -2442,8 +2574,9 @@ async function act(btn, fn, target = '#status') {
   const step = (m) => { label = STEPS[m] || m; t0 = m === 'proving' ? performance.now() : 0; show(); };
   const tick = setInterval(show, 250);
   let ok = false, syncAfter = false;
-  try { step('Getting ready'); await cur().syncing?.catch(() => {}); await fn(step, c); ok = true; }
+  try { step('Getting ready'); await cur().syncing?.catch(() => {}); await fn(step, c); ok = true; S.sent = null; }
   catch (e) {
+    if (e?.unconfirmed && (target === '#req-status' || S.tab === 'shield')) S.sent = { h: e.unconfirmed, c };
     const offer = relayTrouble(e) && viaOf(S.tab) !== 'self' && (S.tab === 'send' || S.tab === 'withdraw');
     if (e?.feeMoved || e?.unconfirmed) syncAfter = true;
     mount(status, e instanceof Quiet ? '' : e?.unconfirmed ? html`<span>${errText(e)}</span> ${txLink(c, e.unconfirmed)}` : html`<span class="err">${errText(e)}</span>${offer ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}`);
@@ -2519,13 +2652,14 @@ function formShield(f) {
     FORM.check = () => {
       const a = parseEth(amt.value), t = target();
       rc.hidden = true; go.disabled = true;
-      const who = t?.name && t.r ? kvRow('To', `${t.name} · ${short(t.to, 6)}`) : '', say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
+      if (S.sent?.c === c) { mount(rc, sentNote(c)); rc.hidden = false; return sentWire(renderForm); }
+      const who = t?.r ? html`${kvRow('To', t.name ? `${t.name} · ${short(t.to, 6)}` : short(to.value.trim(), 10))}${kvRow('ID', addressId(t.to || to.value.trim()))}` : '', say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
       if (!S.account) { go.disabled = false; return; }
       if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
       if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
       if (!a || !t || t.error) return who ? say('') : undefined;
       if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
-      say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${t.self || t.name ? '' : kvRow('To', short(to.value.trim(), 10))}${kvRow('Fee', 'none · your wallet pays the gas')}`);
+      say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${kvRow('Fee', 'none · your wallet pays the gas')}`);
       go.disabled = false;
     };
     go.onclick = () => {
@@ -2585,7 +2719,7 @@ function formSend(f) {
     mount($('#f-note'), t?.addr
       ? 'Arrives as a withdrawal from the pool: the address and the amount show on chain; nothing links them to you.'
       : viaOf(tab) === 'self' ? 'Your wallet shows as the sender of a pool transaction; whom you paid and how much stay hidden.' : 'Nothing on chain links this payment to you or to them.');
-    const who = t?.name && t.r ? kvRow('To', `${t.name} · ${short(t.to, 6)}`) : '', say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
+    const who = t?.r ? html`${kvRow('To', t.name ? `${t.name} · ${short(t.to, 6)}` : short(to.value.trim(), 10))}${kvRow('ID', addressId(t.to || to.value.trim()))}` : '', say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
     if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
     if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
     if (!a || !t || t.error) return who ? say('') : undefined;
@@ -2600,6 +2734,7 @@ function formSend(f) {
     const a = parseEth(amt.value), t = await recipientNow(target()), via = viaOf(tab), W = walletOn(c);
     if (!a) throw new Error('Enter an amount.');
     if (!t || t.error || t.pending) throw new Error(t?.error || 'Enter who to pay.');
+    if (t.r && S.key && same(t.r.raw, S.key.pool.raw)) throw new Error('That is your own address.');
     if (t.name) await pinName(t);
     if (via === 'self') await walletReady(c, step);
     const h = t.addr ? await W.withdraw({ to: t.addr, amount: a, via, onStep: step, expectFee: shown }) : await W.send({ to: t.r, amount: a, via, onStep: step, expectFee: shown, guard: t.name ? () => pinName(t) : null });
@@ -2654,27 +2789,30 @@ function formWithdraw(f) {
 // A payment link: #pay=<tacit1…, bp1… or name.wei>&amount=&chain=&chains=&for=. Whoever opens it pays from a wallet
 // straight into the payee's private balance on the chain they pick, or from their own private balance: proved in their
 // browser. A name in it is read from Ethereum, shown beside the address it gave, and read again before anything is paid.
-const payLink = ({ to, amount, chains, note }) => {
+const payLink = ({ to, n, ns, amount, chains, note }) => {
   const q = new URLSearchParams({ pay: to });
+  if (n != null && ns) { q.set('n', npkHex(n)); q.set('ns', ns); }
   if (amount) q.set('amount', plain(amount));
   if (chains?.length) { q.set('chain', chains[0].key); if (chains.length > 1) q.set('chains', chains.map((c) => c.key).join(',')); }
   if (note) q.set('for', note);
   return `${location.origin}${location.pathname}#${q}`;
 };
-const RECV = { s: null, scope: 'any' };
+const RECV = { s: null, for: '', scope: 'any' };
 function formReceive(f) {
   const k = S.key, kept = vget('name')?.name;
   if (kept && !DRAFT['f-rname']) { DRAFT['f-rname'] = kept; RECV.s = null; }
   mount(f, html`
     <div class="blk"><div class="lbl"><span>Your Tacit address</span><span>works in every Tacit app</span></div>
       <div class="addr"><code>${k.address}</code><button class="link" type="button" data-copy="${k.address}">copy</button></div>
-      <p class="note">Anyone using Tacit can pay you privately with it, on any chain. It never appears on chain. Your pool address works too: <button class="link" type="button" data-copy="${k.pool.address}">copy bp1…</button></p></div>
+      <p class="note">ID <b class="num nw">${addressId(k.address)}</b>. Whoever pays you sees the same ID, so you can check it matches.</p>
+      <p class="note">Anyone using Tacit can pay you privately with it, on any chain. It never appears on chain. Your pool address (ID <span class="num nw">${addressId(k.pool.address)}</span>) works too: <button class="link" type="button" data-copy="${k.pool.address}">copy bp1…</button></p></div>
     <div class="blk rname"><div class="lbl"><span>Get paid by link</span><span>anyone with a wallet can pay it</span></div>
       <div class="lbl"><span>Your name (optional)</span><span>so the link reads you.wei, not a long address</span></div>
       <div class="amt text"><input id="f-rname" placeholder="you.wei or you.eth" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your name"></div>
       <div id="f-rname-note"></div>
       <div class="lbl"><span>Amount (optional)</span></div>
       <div class="amt"><input id="f-ramt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount (optional)"><span class="u">${ethIcon}ETH</span></div>
+      <p class="note err" id="f-rerr" hidden>Enter the amount as a number, up to 18 decimals.</p>
       <div class="lbl"><span>What it’s for (optional)</span></div>
       <div class="amt text"><input id="f-rfor" maxlength="60" placeholder="Dinner, rent, invoice 42…" autocomplete="off" aria-label="What it is for"></div>
       <div class="lbl"><span>Chains</span><span>the payer picks, unless you offer one</span></div>
@@ -2682,18 +2820,29 @@ function formReceive(f) {
       <div class="qrbox" id="f-qr"></div>
       <div class="addr rlink"><code id="f-rlink"></code></div>
       <div class="row2"><button class="btn" type="button" id="f-link">Copy payment link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>
-      <p class="note">Whoever opens it can pay from any wallet: their browser proves a deposit straight into your private balance on the chain they pick, so their address and the amount show on chain, and you do not. Paid from a Tacit balance, it is private end to end. It waits in your private balance on that chain: open this page with your Tacit key, or with the Ethereum wallet you signed in with, on any device, and it is there.</p>
+      <p class="note">Whoever opens it can pay from any wallet, with a plain transfer to a deposit address made for this link (signed by your key, so their page can tell it is yours; the relay moves it into your private balance within minutes for at most 0.25%, or you take it in at no fee), or by proving a deposit in their browser. Their address and the amount show on chain, and you do not. Paid from a Tacit balance, it is private end to end. It waits in your private balance on that chain: open this page with your Tacit key, or with the Ethereum wallet you signed in with, on any device, and it is there.</p>
       <p class="note">Being paid from an exchange, or a wallet that cannot open this page? <button class="link" type="button" id="f-toexch">Give them a one-time deposit address</button> instead.</p></div>`);
   $('#f-toexch').onclick = () => { S.tab = 'shield'; S.from = 'exchange'; render(); };
   $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
-  const link = () => payLink({ to: RECV.s?.ok ? $('#f-rname').value.trim().toLowerCase() : k.address, amount: parseEth($('#f-ramt').value), chains: RECV.scope === 'any' ? null : [chainOf(RECV.scope)], note: $('#f-rfor').value.trim() });
+  // The link's own deposit address, signed with this key's view key: a payer who only has a wallet sends plain ETH to it.
+  const bi = linkBox(), n = bi != null ? receiveKeys(k.pool, bi).npk : null, ns = n != null ? hex(secp.sign(boxDigest(n), k.pool.v)) : null;
+  FORM.hist = historyRead();
+  const link = () => payLink({ to: RECV.s?.ok ? $('#f-rname').value.trim().toLowerCase() : k.address, n, ns, amount: parseEth($('#f-ramt').value), chains: RECV.scope === 'any' ? null : [chainOf(RECV.scope)], note: $('#f-rfor').value.trim() });
   let last = '';
-  FORM.check = () => { const l = link(); if (l !== last) { last = l; mount($('#f-qr'), qrSvg(l)); $('#f-rlink').textContent = l; } };
+  FORM.check = () => {
+    const raw = $('#f-ramt').value.trim(), bad = !!raw && parseEth(raw) == null;
+    $('#f-rerr').hidden = !bad;
+    $('#f-link').disabled = $('#f-share').disabled = bi === undefined || bad;
+    if (bad) { mount($('#f-qr'), ''); $('#f-rlink').textContent = ''; last = ''; return; }
+    if (bi === undefined) { mount($('#f-qr'), html`<p class="note">Preparing your link… It waits for every chain’s history, so an address is never handed out twice.</p>`); $('#f-rlink').textContent = ''; last = ''; return; }
+    const l = link();
+    if (l !== last) { last = l; mount($('#f-qr'), qrSvg(l)); $('#f-rlink').textContent = l; }
+  };
   $$('[data-rs]', f).forEach((b) => b.onclick = () => { RECV.scope = b.dataset.rs; $$('[data-rs]', f).forEach((x) => x.setAttribute('aria-selected', x === b)); FORM.check(); });
-  $('#f-link').onclick = () => copy(link(), 'Payment link copied');
+  $('#f-link').onclick = () => { if (bi !== undefined && !$('#f-link').disabled) copy(link(), 'Payment link copied'); };
   const sh = $('#f-share');
   if (!navigator.share) { sh.hidden = true; $('#f-link').style.gridColumn = '1 / -1'; }
-  sh.onclick = () => navigator.share({ title: 'Pay me', text: 'Pay me privately:', url: link() }).catch(() => {});
+  sh.onclick = () => { if (bi !== undefined) navigator.share({ title: 'Pay me', text: 'Pay me privately:', url: link() }).catch(() => {}); };
   // The name is checked against this key: the link may use it only if it names the address above.
   const note = $('#f-rname-note'), input = $('#f-rname');
   let timer = null;
@@ -2708,20 +2857,24 @@ function formReceive(f) {
     $('#f-rpub')?.addEventListener('click', (e) => publishName(e.currentTarget, v));
     FORM.check?.();
   };
-  const checkName = () => {
+  // `keep`: the form was drawn again (a chain's history arrived, a tab came back), so a verdict already reached for this
+  // name and this key stands and the link does not drop the name while it is read once more.
+  const checkName = (keep) => {
     const v = input.value.trim().toLowerCase();
     clearTimeout(timer);
-    if (!v) { RECV.s = null; return paintName(); }
-    if (!nameOk(v)) { RECV.s = { err: 'A name ends in .wei or .eth.' }; return paintName(); }
-    RECV.s = { reading: true }; paintName();
+    const mine = `${k.pool.address}|${v}`;
+    if (!v) { RECV.s = null; RECV.for = ''; return paintName(); }
+    if (!nameOk(v)) { RECV.s = { err: 'A name ends in .wei or .eth.' }; RECV.for = ''; return paintName(); }
+    if (keep && RECV.for === mine && RECV.s && !RECV.s.reading) return paintName();
+    RECV.for = mine; RECV.s = { reading: true }; paintName();
     timer = setTimeout(async () => {
-      try { const x = await resolveName(v); if (input.value.trim().toLowerCase() === v) { RECV.s = same(x.r.raw, k.pool.raw) ? { ok: true } : { other: x.to }; if (RECV.s.ok) vset('name', { name: v }); } }
+      try { const x = await resolveName(v); if (input.value.trim().toLowerCase() === v) { RECV.s = same(x.r.raw, k.pool.raw) ? { ok: true } : { other: x.to }; if (RECV.s.ok && S.key === k) vset('name', { name: v }); } }
       catch (e) { if (input.value.trim().toLowerCase() === v) RECV.s = /not published/.test(e.message) ? { none: true } : { err: e.message }; }
       paintName();
     }, 450);
   };
   input.addEventListener('input', checkName);
-  if (input.value || DRAFT['f-rname']) { input.value ||= DRAFT['f-rname']; checkName(); }
+  if (input.value || DRAFT['f-rname']) { input.value ||= DRAFT['f-rname']; checkName(true); }
   FORM.check();
 }
 // One transaction on Ethereum from the wallet that owns a .wei name: its text record gets this address.
@@ -2739,7 +2892,7 @@ function publishName(btn, name) {
     for (let i = 0; i < 12; i++) {
       NAMES.delete(name);
       const x = await resolveName(name).catch(() => null);
-      if (x && same(x.r.raw, k.pool.raw)) { RECV.s = { ok: true }; vset('name', { name }); toast(`${name} now points to your address.`); mount($('#status'), ''); return; }
+      if (x && same(x.r.raw, k.pool.raw)) { RECV.s = { ok: true }; if (S.key === k) vset('name', { name }); toast(`${name} now points to your address.`); mount($('#status'), ''); return; }
       await sleep(2000);
     }
     throw new Error(`Published, but the nodes do not show ${name} pointing to you yet. Check again in a moment.`);
@@ -2748,14 +2901,50 @@ function publishName(btn, name) {
 
 // ── a payment request opened from a link ────────────────────────────────────────────────────────────────────────
 const REQ = { v: null };
+// The deposit address a link carries counts only when the payee's own key signed it: a name or address in the link says
+// who is paid, and the signature ties the address to them.
+function reqBox(v) {
+  v.box = null; v.boxBad = false;
+  if (!v.r || !v.n) return;
+  if (v.ns && boxSigned(v.r.V, v.n, v.ns)) v.box = receiveBoxAddress(ROUTER, BigInt('0x' + v.n)); else v.boxBad = true;
+}
+// A payment from the wallet that the network has not confirmed after waiting: the form will not send another until the
+// payer says the first was dropped.
+const sentNote = (c) => html`<p class="note warn">Your last payment on ${c.full} is not confirmed yet: ${txLink(c, S.sent.h)}. If it lands, it goes through by itself. <button class="link" type="button" id="sent-again">It was dropped: pay again</button></p>`;
+const sentWire = (again) => $('#sent-again')?.addEventListener('click', () => { S.sent = null; again(); });
+const RMIN = {};
+// The least the relay moves in from a deposit address on a chain (a smaller amount waits for the payee to take it in).
+function relayMin(c) {
+  const e = (RMIN[c.chainId] ||= { at: 0, v: null });
+  if (relayOf(c) && Date.now() - e.at > 120_000) {
+    e.at = Date.now();
+    fetch(relayOf(c) + '/quote', { signal: timeoutSignal(8_000) }).then((x) => x.json()).then((q) => { e.v = /^\d+$/.test(String(q.receiveMin ?? '')) ? BigInt(q.receiveMin) : null; if (REQ.v && !S.busy) paintReq(); }).catch(() => {});
+  }
+  return e.v;
+}
+// A plain send from the wallet to the link's deposit address, once the pool's router on this chain agrees it is the one.
+async function boxPay(r, a, ch, step) {
+  const n = BigInt('0x' + r.n);
+  const got = await rpcOn(ch)('eth_call', [{ to: ROUTER, data: calldata('receiveBoxOf(uint256,uint16)', ['uint256', 'uint16'], [n, RECEIVE_FEE_BPS]) }, 'latest']);
+  if (lc('0x' + String(got).slice(-40)) !== lc(r.box)) throw new Error(`The pool’s router on ${ch.full} does not confirm that deposit address, so nothing was sent.`);
+  step('confirm in your wallet');
+  const h = await signerFor(ch).send({ to: r.box, value: a });
+  step('waiting for the block');
+  for (let i = 0, end = Date.now() + 180_000; Date.now() < end; i++) {
+    const rc = await rpcOn(ch)('eth_getTransactionReceipt', [h]).catch(() => null);
+    if (rc) { if (rc.status !== '0x1') throw new Error('The transfer did not go through. Nothing was sent.'); return h; }
+    await sleep(Math.min(5000, 1000 + 400 * i));
+  }
+  throw Object.assign(new Error('The network has not confirmed it yet. If it lands, it reaches them by itself.'), { unconfirmed: h });
+}
 function openRequest(spec) {
-  const v = REQ.v = { ...spec, name: null, r: null, entered: '', state: 'ready', err: null, paid: null, wb: null, wbFor: null };
+  const v = REQ.v = { ...spec, name: null, r: null, entered: '', state: 'ready', err: null, paid: null, wb: null, wbFor: null, box: null, boxBad: false, mode: 'box' };
   if (v.chains && !v.chains.includes(S.chain)) { S.chain = v.chains[0]; writeJson('tacit-pay-chain-v1', S.chain.chainId); }
   if (nameOk(spec.to.toLowerCase())) {
     v.name = spec.to.toLowerCase(); v.state = 'resolving';
-    resolveName(v.name).then((x) => Object.assign(v, { r: x.r, to: x.to, state: 'ready' }), (e) => Object.assign(v, { state: 'error', err: e.message })).finally(() => { if (REQ.v === v) { paintReq(); } });
+    resolveName(v.name).then((x) => { Object.assign(v, { r: x.r, to: x.to, state: 'ready' }); reqBox(v); }, (e) => Object.assign(v, { state: 'error', err: e.message })).finally(() => { if (REQ.v === v) { paintReq(); } });
   } else {
-    try { v.r = parseRecipient(spec.to); } catch (e) { Object.assign(v, { state: 'error', err: `That payment link is not valid: ${e.message}` }); }
+    try { v.r = parseRecipient(spec.to); reqBox(v); } catch (e) { Object.assign(v, { state: 'error', err: `That payment link is not valid: ${e.message}` }); }
   }
 }
 function closeRequest() {
@@ -2767,6 +2956,7 @@ function closeRequest() {
 // What the payer's wallet holds on each chain offered, so the chain can be picked with the money in view.
 function reqBalances(r) {
   if (!S.account || (r.wbFor === S.account && Date.now() - (r.wbAt || 0) < 15_000)) return;
+  if (r.wbFor !== S.account) r.wb = {};
   r.wbFor = S.account; r.wbAt = Date.now(); r.wb ||= {};
   for (const ch of r.chains || CHAINS) rpcOn(ch)('eth_getBalance', [S.account, 'latest']).then((b) => { if (REQ.v === r && r.wbFor === S.account) { r.wb[ch.chainId] = BigInt(b); paintReq(); } }, () => {});
 }
@@ -2777,16 +2967,16 @@ function paintReq() {
   if (!r || S.busy) return;
   const body = $('#req-body'), chains = r.chains || CHAINS, c = chains.includes(S.chain) ? S.chain : chains[0];
   const head = html`<div class="lbl"><span>Payment request</span><button class="link" type="button" id="req-x">dismiss</button></div>`;
-  const wire = () => { $('#req-x').onclick = closeRequest; $('#req-retry')?.addEventListener('click', () => { openRequest(r); render(); }); };
+  const wire = () => { $('#req-x').onclick = closeRequest; $('#req-retry')?.addEventListener('click', () => { openRequest({ ...r, to: r.name || r.to }); render(); }); };
   if (r.state === 'resolving') { mount(body, html`${head}<div class="req-to"><span class="sk" style="--w:10ch"></span></div><p class="note">Reading ${r.name} on Ethereum…</p>`); return wire(); }
   if (r.state === 'error') { mount(body, html`${head}<p class="note err">${r.err}</p>${/did not agree/.test(r.err) ? html`<p class="note"><button class="link" type="button" id="req-retry">Try again</button></p>` : ''}`); return wire(); }
   const own = S.key && same(r.r.raw, S.key.pool.raw), st = CH[c.chainId], who = r.name || short(r.to, 10);
-  const target = html`<div class="req-to">${r.name || 'A private Tacit address'}<small>${r.name ? `${short(r.to, 8)} · a private Tacit address` : short(r.to, 10)}</small></div>`;
+  const target = html`<div class="req-to">${r.name || 'A private Tacit address'}<small>${r.name ? `${short(r.to, 8)} · a private Tacit address` : short(r.to, 10)}</small><small>ID <b class="num nw">${addressId(r.to)}</b> · they see the same ID under their Tacit address</small></div>`;
   if (own) { mount(body, html`${head}${target}<div class="req-a num">${r.amount ? html`${fmt(r.amount)} <small>ETH</small>` : 'Any amount'}</div><div class="req-m">${chains.length > 1 ? 'on any chain' : `on ${c.full}`}${r.note ? html` · “${r.note}”` : ''}</div><p class="note">This is your own request. Share its link from Receive.</p>`); return wire(); }
   if (r.paid) {
     mount(body, html`${head}<div class="req-a num"><span class="ok">✓</span> ${fmt(r.paid.a)} <small>ETH</small></div>
       <div class="req-m">paid to <b>${who}</b> on ${r.paid.c.full} · ${txLink(r.paid.c, r.paid.h)}</div>
-      <p class="note">It is in their private balance now. They see it when they open their wallet with their key, on any device; whom you paid is not on chain.</p>
+      <p class="note">${r.paid.box ? 'It reaches their private balance within minutes (the relay takes up to 0.25%), or when they take it in themselves. ' : 'It is in their private balance now. '}They see it when they open their wallet with their key, on any device; whom you paid is not on chain.</p>
       <div class="row2"><button class="btn ghost" type="button" id="req-again">Pay again</button><button class="btn" type="button" id="req-done">Done</button></div>`);
     wire(); $('#req-again').onclick = () => { r.paid = null; r.entered = ''; mount($('#req-status'), ''); paintReq(); }; $('#req-done').onclick = closeRequest;
     return;
@@ -2794,6 +2984,7 @@ function paintReq() {
   reqBalances(r);
   const caret = document.activeElement?.id === 'req-amt' ? document.activeElement.selectionStart : null;
   const canPriv = S.key && st.bal != null && (!r.amount || plan(r.amount, feeOf('send') ?? 0n));
+  const viaBox = !!r.box && r.mode !== 'prove', min = r.box ? relayMin(c) : null;
   mount(body, html`${head}${target}
     <div class="req-a num">${r.amount ? html`${fmt(r.amount)} <small>ETH</small>` : 'Any amount'}</div>
     ${r.note ? html`<div class="req-m">for “${r.note}”</div>` : ''}
@@ -2801,9 +2992,21 @@ function paintReq() {
     <div class="seg sub" role="tablist" aria-label="Pay on">${chains.map((ch) => html`<button type="button" role="tab" data-rc="${ch.chainId}" aria-selected="${ch === c}">${ch.name}${r.wb?.[ch.chainId] != null ? html`<small>${fmt(r.wb[ch.chainId], 4)} ETH</small>` : ''}</button>`)}</div>
     <button class="btn" type="button" id="req-pay"></button>
     <div id="req-note"></div>
-    ${canPriv ? html`<p class="note"><button class="link" type="button" id="req-priv">Pay from my private balance instead</button></p>` : ''}
-    <p class="note">${S.account ? 'Proved here, then sent from your wallet straight into their private balance: no fee, and your wallet pays the gas.' : 'Connect any wallet; it proves here and sends from your wallet, straight into their private balance.'} Your address and the amount show on chain; whom you paid does not.</p>`);
+    ${r.boxBad ? html`<p class="note warn">The deposit address in this link was not signed by ${r.name || 'the payee'}, so it is ignored.</p>` : ''}
+    ${viaBox ? html`<p class="note">Sent from your wallet to ${r.name ? `${r.name}’s` : 'their'} own deposit address: nothing to prove or download. It reaches their private balance within minutes, for at most 0.25%${min ? `; on ${c.full}, send at least ${fmt(min)} ETH` : ''}. Your address and the amount show on chain; whom you paid does not.</p>
+      <details class="adv"><summary>Pay from an exchange or another wallet</summary>
+        <div class="qrbox" id="req-qr"></div>
+        <div class="addr"><code>${r.box}</code><button class="link" type="button" data-copy="${r.box}">copy</button></div>
+        <p class="note">Send only ETH. The address is the same on Ethereum, Base and Robinhood Chain, so pick the network you are sending on${min ? `; on ${c.full}, at least ${fmt(min)} ETH` : ''}.</p></details>
+      <p class="note"><button class="link" type="button" id="req-prove">Pay with no fee instead: it proves here and downloads a 33 MB key once</button></p>`
+    : html`${r.box ? html`<p class="note"><button class="link" type="button" id="req-back">Use their deposit address instead</button></p>` : ''}
+      <p class="note">${S.account ? 'Proved here, then sent from your wallet straight into their private balance: no fee, and your wallet pays the gas.' : 'Connect any wallet; it proves here and sends from your wallet, straight into their private balance.'} Your address and the amount show on chain; whom you paid does not.</p>`}
+    ${canPriv ? html`<p class="note"><button class="link" type="button" id="req-priv">Pay from my private balance instead</button></p>` : ''}`);
   wire();
+  $$('[data-copy]', body).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
+  if (viaBox) mount($('#req-qr'), qrSvg(r.box));
+  $('#req-prove')?.addEventListener('click', () => { r.mode = 'prove'; paintReq(); });
+  $('#req-back')?.addEventListener('click', () => { r.mode = 'box'; paintReq(); });
   $$('[data-rc]', body).forEach((b) => b.onclick = () => {
     if (S.busy) return;
     S.chain = chainOf(b.dataset.rc); writeJson('tacit-pay-chain-v1', S.chain.chainId); r.wbAt = 0; mount($('#req-status'), ''); render(); if (S.key) syncChain(S.chain);
@@ -2813,12 +3016,14 @@ function paintReq() {
   const check = () => {
     const a = amount(), wb = r.wb?.[c.chainId];
     pay.textContent = !S.account ? 'Connect a wallet to pay' : a ? `Pay ${fmt(a)} ETH on ${c.name}` : `Pay on ${c.name}`;
-    const low = S.account && a && wb != null && a + c.gasReserve > wb;
-    mount($('#req-note'), low ? html`<p class="note err">Your wallet holds ${fmt(wb, 4)} ETH on ${c.full}. ${chains.length > 1 ? 'Pick another chain, or add funds.' : 'Add funds to pay this.'}</p>` : '');
-    pay.disabled = !!S.account && (!a || low);
+    const low = S.account && a && wb != null && a + c.gasReserve > wb, small = viaBox && a && min && a < min, held = S.sent?.c === c;
+    mount($('#req-note'), held ? sentNote(c) : low ? html`<p class="note err">Your wallet holds ${fmt(wb, 4)} ETH on ${c.full}. ${chains.length > 1 ? 'Pick another chain, or add funds.' : 'Add funds to pay this.'}</p>`
+      : small ? html`<p class="note warn">That is under the relay’s minimum of ${fmt(min)} ETH on ${c.full}: it waits at their deposit address until they take it in themselves. A larger amount, or another chain, is moved in for them.</p>` : '');
+    pay.disabled = held || (!!S.account && (!a || low));
+    if (held) sentWire(paintReq);
   };
   if (amtIn) amtIn.addEventListener('input', () => { r.entered = amtIn.value; check(); });
-  amtIn?.addEventListener('focus', warm, { once: true });
+  if (!viaBox) amtIn?.addEventListener('focus', warm, { once: true });
   check();
   if (caret != null && amtIn) { amtIn.focus(); amtIn.setSelectionRange(caret, caret); }
   pay.onclick = (e) => {
@@ -2826,12 +3031,17 @@ function paintReq() {
     const a = amount();
     if (S.chain !== c) { S.chain = c; writeJson('tacit-pay-chain-v1', c.chainId); }
     act(e.currentTarget, async (step, ch) => {
-      const pin = async () => { try { await pinName({ name: r.name, r: r.r }); } catch (x) { openRequest(r); throw x; } };
+      const pin = async () => { try { await pinName({ name: r.name, r: r.r }); } catch (x) { openRequest({ ...r, to: r.name }); throw x; } };
       if (r.name) await pin();
       await walletReady(ch, step);
       r.wbAt = 0;
-      const h = await shieldTo(ch, r.r, a, step, r.name ? pin : null);
-      r.paid = { h, c: ch, a };
+      if (viaBox) {
+        const h = await boxPay(r, a, ch, step);
+        r.paid = { h, c: ch, a, box: true };
+      } else {
+        const h = await shieldTo(ch, r.r, a, step, r.name ? pin : null);
+        r.paid = { h, c: ch, a };
+      }
       toast(`Paid ${fmt(a)} ETH.`);
       mount($('#req-status'), '');
     }, '#req-status');
@@ -2848,13 +3058,18 @@ function paintReq() {
 const NAME_KEY = 'finance.tacit', ENS = '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e';
 const nameOk = (n) => /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+(wei|eth)$/.test(n);
 const namehash = (n) => n.split('.').reverse().reduce((node, l) => keccak(cat(node, keccak(utf8(l)))), new Uint8Array(32));
-function quorum(to, data, urls = nodesOf(CHAINS[0])) {
+// `lone`: when the nodes that answered all say the same thing, one answer is enough once the rest have failed (a read that
+// only shows a balance); a name, which decides where money goes, always needs two.
+function quorum(to, data, urls = nodesOf(CHAINS[0]), lone = false) {
   return new Promise((resolve, reject) => {
     const tally = {}, need = Math.min(2, urls.length);
     let left = urls.length;
-    const answered = (x) => { if (x != null && (tally[x] = (tally[x] || 0) + 1) >= need) resolve(x); if (--left === 0) reject(new Error('Could not read that: the nodes did not agree. Try again.')); };
+    const answered = (x) => {
+      if (x != null && (tally[x] = (tally[x] || 0) + 1) >= need) resolve(x);
+      if (--left === 0) { const seen = Object.keys(tally); if (lone && seen.length === 1) resolve(seen[0]); else reject(new Error('Could not read that: the nodes did not agree. Try again.')); }
+    };
     for (const u of urls) {
-      fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }), signal: AbortSignal.timeout(10_000) })
+      fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }), signal: timeoutSignal(10_000) })
         .then((r) => r.json()).then((j) => answered(j.error ? (/revert/i.test(j.error.message || '') ? '0x' : null) : j.result), () => answered(null));
     }
   });
@@ -2907,7 +3122,11 @@ async function pinName(t) {
 
 // ── activity, rebuilt from the key and the chain ────────────────────────────────────────────────────────────
 const TIMES = {}, DETAIL = {}, BQ = {};
-const timesSave = () => { if (S.key) vset('times', Object.fromEntries(Object.entries(TIMES).filter(([, v]) => v).slice(-600))); };
+let timesTimer = null;
+const timesSave = () => {
+  if (timesTimer) return;
+  timesTimer = setTimeout(() => { timesTimer = null; if (S.key) vset('times', Object.fromEntries(Object.entries(TIMES).filter(([, v]) => v).slice(-600))); }, 1_500);
+};
 // Reads asked for within a moment of each other go out as one batch per chain.
 function batched(c, method, params) {
   return new Promise((resolve, reject) => {
@@ -2915,8 +3134,11 @@ function batched(c, method, params) {
     q.items.push({ method, params, resolve, reject });
     clearTimeout(q.timer);
     q.timer = setTimeout(async () => {
-      const items = q.items.splice(0), out = await rpcOn(c).batch(items.map((x) => [x.method, x.params]));
-      items.forEach((x, i) => (out[i].error ? x.reject(out[i].error) : x.resolve(out[i].result)));
+      const items = q.items.splice(0);
+      try {
+        const out = await rpcOn(c).batch(items.map((x) => [x.method, x.params]));
+        items.forEach((x, i) => (out[i].error ? x.reject(out[i].error) : x.resolve(out[i].result)));
+      } catch (e) { items.forEach((x) => x.reject(e)); }
     }, 40);
   });
 }
@@ -2927,18 +3149,23 @@ function rowsOf(c) {
 // Rows from the relay's index lack the public amount, fee and recipient: read them from the transaction. A
 // withdrawal on Ethereum whose calls go through an L2's canonical bridge is a move to that chain.
 const BRIDGES = { Base: '3154cf16ccdb4c6d922629664174b904d80f2c35', 'Robinhood Chain': '1a07cc4bd17e0118bdb54d70990d2158abad7a2d' };
+const RETRY = {};
 async function detail(c, r) {
-  if (DETAIL[r.tx]) return;
+  if (DETAIL[r.tx] || Date.now() < (RETRY[r.tx] || 0)) return;
   const d = DETAIL[r.tx] = {}, rpc = (m, p) => batched(c, m, p);
+  let failed = false;
   if (r.ext === undefined) {
     const rc = await rpc('eth_getTransactionReceipt', [r.tx]).catch(() => null);
+    if (!rc) failed = true;
     const l = rc?.logs?.find((x) => lc(x.address) === lc(POOL) && x.topics[0] === T_TRANSACT);
     if (l) { const t = decodeTransact(l); Object.assign(d, { ext: String(t.ext), fee: String(t.fee), to: t.recipient }); }
   }
   if (c.chainId === 1 && BigInt(d.ext ?? r.ext ?? 0) < 0n) {
     const tx = await rpc('eth_getTransactionByHash', [r.tx]).catch(() => null);
+    if (!tx) failed = true;
     d.dest = Object.entries(BRIDGES).find(([, a]) => lc(tx?.input).includes(a))?.[0] ?? null;
   }
+  if (failed) { delete DETAIL[r.tx]; RETRY[r.tx] = Date.now() + 30_000; }
   paintActivity();
 }
 function describe(r) {
@@ -2954,22 +3181,23 @@ function paintActivity() {
   const el = $('#activity');
   if (!S.key) { $('#activity-at').textContent = ''; return mount(el, html`<p class="lede">Your payments, rebuilt on any device from your key and the chain. Your key is the only backup.</p>`); }
   const at = (r) => TIMES[`${r.c.chainId}:${r.block}`] || Infinity;
-  const rows = CHAINS.flatMap(rowsOf).sort((a, b) => at(b) - at(a)).slice(0, 40);
+  const rows = CHAINS.flatMap(rowsOf).sort((a, b) => (at(a) === at(b) ? b.block - a.block : at(b) - at(a))).slice(0, 40);
   const reading = CHAINS.some((c) => CH[c.chainId].syncing);
   $('#activity-at').textContent = reading ? 'reading…' : '';
   for (const r of rows) {
     if (r.ext === undefined || (r.c.chainId === 1 && BigInt(r.ext) < 0n && r.dest === undefined)) detail(r.c, r);
     const k = `${r.c.chainId}:${r.block}`;
-    if (!(k in TIMES)) { TIMES[k] = 0; batched(r.c, 'eth_getBlockByNumber', ['0x' + r.block.toString(16), false]).then((b) => { TIMES[k] = Number(BigInt(b.timestamp)); timesSave(); paintActivity(); }).catch(() => {}); }
+    if (!(k in TIMES) && Date.now() >= (RETRY[k] || 0)) { TIMES[k] = 0; batched(r.c, 'eth_getBlockByNumber', ['0x' + r.block.toString(16), false]).then((b) => { TIMES[k] = Number(BigInt(b.timestamp)); timesSave(); paintActivity(); }).catch(() => { delete TIMES[k]; RETRY[k] = Date.now() + 30_000; }); }
   }
+  const opened = el.querySelector('details')?.open;
   mount(el, html`
     <p class="lede">Rebuilt from your key and the chain: what came in, and what you sent with its fee. This browser keeps only a view of it, never a spend key.</p>
     ${rows.length ? html`<ul class="rows">${rows.map((r) => {
       const d = describe(r), t = TIMES[`${r.c.chainId}:${r.block}`];
-      return html`<li><div class="h"><b>${d.label}</b><span class="${d.in ? 'in' : ''}">${d.in ? '+' : d.v ? '−' : ''}${fmt(d.v)} ETH</span></div>
-        <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${fmt(d.fee)}` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
+      return html`<li><div class="h"><b>${d.label}</b><span class="${d.in ? 'in' : ''}">${d.in ? '+' : d.v ? '−' : ''}${ethStr(d.v)} ETH</span></div>
+        <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${ethStr(d.fee)}` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
     })}</ul>` : CHAINS.every((c) => CH[c.chainId].at) ? html`<p class="note">Nothing yet. Shield some ETH to start.</p>` : ''}
-    <details class="adv"><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads every chain again from the pool’s first block, without the relay’s index.</p><button class="btn ghost sm" type="button" id="rebuild">Rebuild</button></details>`);
+    <details class="adv" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads every chain again from the pool’s first block, without the relay’s index.</p><button class="btn ghost sm" type="button" id="rebuild">Rebuild</button></details>`);
   $('#rebuild').onclick = (e) => busy(e.currentTarget, async () => {
     const res = await Promise.allSettled(CHAINS.map(async (c) => { const W = walletOn(c); await W.rescan(); await syncChain(c, true); }));
     const bad = CHAINS.filter((c, i) => res[i].status === 'rejected').map((c) => c.name);
@@ -2997,6 +3225,7 @@ function paintDevice() {
 }
 // transact.wasm and transact_final.zkey from the ceremony bundle, checked against the same hashes.
 function loadFromDisk() {
+  if (S.busy) return toast('Wait for the current action to finish, then load the files.', true);
   const i = document.createElement('input');
   i.type = 'file'; i.multiple = true;
   i.onchange = async () => {
@@ -3039,14 +3268,19 @@ function renderSettings() {
     <div class="lbl"><span>Another mirror for the proving key</span></div><textarea id="e-mirror" spellcheck="false" style="min-height:38px" placeholder="https://…/ serving transact.wasm and transact_final.zkey">${ends.mirror || ''}</textarea>
     <div class="row2"><button class="btn" type="button" id="e-save">Save</button><button class="btn ghost" type="button" id="e-reset">Use the defaults</button></div>`);
   $$('textarea', el).forEach((t) => { if (t.placeholder === '' && !t.value) t.placeholder = CHAINS.find((c) => t.id === `e-rpc-${c.chainId}`)?.rpc.join('\n') || ''; });
-  const urls = (t) => t.split(/\s+/).filter((u) => /^https?:\/\//.test(u));
+  // Only https (or a node on this machine) can be reached from this page; a trailing slash would double the one a path adds.
+  const good = (u) => /^https:\/\/[^\s/]+/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(u);
+  const urls = (t) => [...new Set(t.split(/\s+/).filter(Boolean).map((u) => u.replace(/\/+$/, '')))];
   $('#e-save').onclick = () => {
-    const next = { rpc: {}, relay: {}, mirror: urls($('#e-mirror').value)[0] || '' };
+    const next = { rpc: {}, relay: {}, mirror: '' }, bad = [];
+    const take = (t) => { const l = urls(t); bad.push(...l.filter((u) => !good(u))); return l.filter(good); };
+    next.mirror = take($('#e-mirror').value)[0] || '';
     for (const c of CHAINS) {
-      const r = urls($(`#e-rpc-${c.chainId}`).value), rel = $(`#e-relay-${c.chainId}`).value.trim();
+      const r = take($(`#e-rpc-${c.chainId}`).value), rel = $(`#e-relay-${c.chainId}`).value.trim();
       if (r.length) next.rpc[c.chainId] = r;
-      if (rel) next.relay[c.chainId] = /^none$/i.test(rel) ? '' : urls(rel)[0] || '';
+      if (rel) next.relay[c.chainId] = /^none$/i.test(rel) ? '' : take(rel)[0] || '';
     }
+    if (bad.length) return toast(`${short(bad[0], 18)} is not an address this page can reach: use https://… for each.`, true);
     applyEndpoints(next);
   };
   $('#e-reset').onclick = () => applyEndpoints({});
@@ -3054,7 +3288,7 @@ function renderSettings() {
 function applyEndpoints(next) {
   ends = next; writeJson(ENDPOINTS, next);
   for (const k of Object.keys(RPC)) delete RPC[k];
-  for (const c of CHAINS) { CH[c.chainId].W = null; CH[c.chainId].quote = null; }
+  for (const c of CHAINS) { CH[c.chainId].W = null; CH[c.chainId].quote = null; CH[c.chainId].syncing = null; }
   $('#sheet-settings').close();
   toast('Saved.');
   render(); syncAll(true);
@@ -3096,7 +3330,8 @@ function applyHash() {
   const to = (q.get('pay') || words.find((w) => /^(tacit1|bp1)[a-z0-9]+$/i.test(w) || nameOk(w.toLowerCase())) || '').trim();
   if (to) {
     const only = (q.get('chains') || '').split(',').map(chainOf).filter(Boolean);
-    openRequest({ to, amount: parseEth(q.get('amount') || '') || null, note: (q.get('for') || '').trim().slice(0, 60), chains: only.length ? [...new Set(only)] : null });
+    const n = (q.get('n') || '').trim().toLowerCase(), ns = (q.get('ns') || '').trim().toLowerCase();
+    openRequest({ to, amount: parseEth(q.get('amount') || '') || null, note: (q.get('for') || '').trim().slice(0, 60), chains: only.length ? [...new Set(only)] : null, n: /^[0-9a-f]{1,64}$/.test(n) ? n : null, ns: /^[0-9a-f]{128}$/.test(ns) ? ns : null });
     return;
   }
   const tab = TABS.find(([k]) => words.includes(k) || q.get('tab') === k)?.[0];
@@ -3195,7 +3430,7 @@ applyHash();
 render();
 started = true;
 restoreWallet();
-caches.open(ARTIFACTS).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});
+Promise.resolve().then(() => caches.open(ARTIFACTS)).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});
 </script>
 </body>
 </html>

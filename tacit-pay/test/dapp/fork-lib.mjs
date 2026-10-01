@@ -15,7 +15,8 @@ import {config, text as PAGE_TEXT} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const {Interface} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const {Interface, id: keccakId} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const HEAD_ROOT = keccakId('root()').slice(2, 10), HEAD_NEXT = keccakId('nextIndex()').slice(2, 10);
 export const {POOL, ROUTER, CHAINS, RELAYERS, MAX_RELAY_FEE} = config;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -85,7 +86,12 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
       return json(route, 200, typeof relay.quote === 'function' ? relay.quote(q, f.c) : q);
     }
     if (path === '/events') return relay.events ? json(route, 200, relay.events(f.c, u)) : json(route, 503, {error: 'no index'});
-    if (path === '/reserve') return json(route, 404, {error: 'no reservations'});
+    if (path === '/reserve') return relay.reserve === 'tail' ? json(route, 403, {error: 'reservations are paused for this connection'}) : json(route, 404, {error: 'no reservations'});
+    if (path === '/head') {
+      const call = (d) => f.rpc('eth_call', [{to: POOL, data: d}, 'latest']);
+      const [root, size] = await Promise.all([call('0x' + HEAD_ROOT), call('0x' + HEAD_NEXT)]);
+      return json(route, 200, {root: String(BigInt(root)), size: String(BigInt(size)), pending: [], tail: {root: String(BigInt(root))}});
+    }
     if (path === '/cancel' || path === '/receive') return json(route, 200, {});
     if (path === '/relay') {
       if (relay.mode === 'error') return json(route, 500, {error: 'relay busy'});
@@ -206,5 +212,6 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
 
 /** A relay whose behaviour a test sets: mode 'send' (a faithful relayer: the pool's transact, sent from the relayer's
  *  own account), 'down', 'error' (HTTP 500), 'nowhere' (a hash that never lands), 'other' (a real hash of some other
- *  transaction, set as `other`). `quote` may override fields of the quote, or be a function that returns it. */
+ *  transaction, set as `other`), 'tail' as `reserve` (reservations refused with 403 and the queue's head served, as when a
+ *  relay has paused them for a connection). `quote` may override fields of the quote, or be a function that returns it. */
 export const mockRelay = (over = {}) => ({mode: 'send', fee: 5n * 10n ** 12n, quote: {}, events: null, other: null, calls: [], ...over});

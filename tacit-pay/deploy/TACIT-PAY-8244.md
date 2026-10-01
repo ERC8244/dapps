@@ -14,7 +14,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | page source | `dapp/page.html` |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -43,17 +43,33 @@ action; when a relay does not answer, the page offers the wallet.
 A link is the page's address plus a fragment:
 
 ```
-#pay=<tacit1…, bp1… or name.wei>&amount=<eth>&chain=<ethereum|base|robinhood>&chains=<a,b>&for=<note>
+#pay=<tacit1…, bp1… or name.wei>&n=<deposit key>&ns=<signature>&amount=<eth>&chain=<ethereum|base|robinhood>&chains=<a,b>&for=<note>
 ```
 
-`amount`, `chain`, `chains` and `for` are optional; `#name.wei` or `#tacit1…` alone also opens a request. The payer sees
+`n`, `ns`, `amount`, `chain`, `chains` and `for` are optional; `#name.wei` or `#tacit1…` alone also opens a request. The payer sees
 a request card: who is being paid (a name beside the address it resolved to), the amount and note, a chain picker
-that shows what the payer's wallet holds on each chain, and one button. A payer needs only a wallet: the page
-proves a deposit in their browser and the wallet sends it straight into the payee's private balance on the chain
-chosen, moving the wallet to that chain first (adding it when the wallet has never seen it). Their address and the
+that shows what the payer's wallet holds on each chain, and one button. A payer needs only a wallet, and has two ways to pay.
+When the link carries a deposit address (`n` and `ns`) the default is a plain transfer from the wallet to it: nothing
+to prove or download, and the same address works on every chain. When it does not, or the payer prefers no fee, the
+page proves a deposit in their browser and the wallet sends it straight into the payee's private balance. Either way
+the wallet is moved to the chain chosen first (and the chain added when the wallet has never seen it). Their address and the
 amount show on chain; whom they paid does not. The link stays in the address bar until it is dismissed or paid, so a
 reload, or a wallet app handing the page back, keeps the request. A payer who holds a Tacit key can pay from their
 private balance instead, and `chains=` offers the payer only some chains.
+
+**The deposit address in a link.** A link made by *Receive* carries a deposit address of its own, one nobody else has
+been given and kept until it is paid. `n` is the key it derives from and `ns` is the payee's signature over it, made
+with the key's view key. The payer's page takes the address only when the signature verifies against the key of the name
+or address being paid, and when the pool's router on that chain agrees the address belongs to `n`; otherwise it ignores
+the address, says so, and pays by proving. So a link cannot point a payment anywhere the payee did not sign, even when
+it is edited in transit. What arrives waits at the address until the relay moves it in (up to 0.25%, and only above the
+relay's minimum for that chain) or the payee takes it in at no fee. The payee's page, or any page opened with the same
+key, finds it from the key alone.
+
+**Amounts and IDs.** An amount reads a decimal comma as a point, a thousands comma as nothing, and refuses a lone comma
+before three digits (`1,500`) instead of guessing, the same as tacit.finance's pay pages. Every address shows a short
+ID, the same text on every page for the same address, so a payer can compare what they were given with what the payee
+sees under their own address.
 
 **Names.** A name is a payee when it has published a Tacit address as its `finance.tacit` text record (the key every
 Tacit app reads): `.wei` through the name service's `text(bytes32,string)`, `.eth` through the owner's resolver. What
@@ -179,6 +195,11 @@ root and a Chromium for playwright-core (`npx playwright-core install chromium`)
 node ../scripts/chunk.mjs tacit-pay            # out/TacitPay8244.chunk1..N.creation.txt
 forge test --match-path test/TacitPay8244.t.sol
 node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, names, endpoints, no network
+node test/dapp/tacit-pay.units.mjs             # amount parsing, an address's ID, how a failed log read is judged
+node test/dapp/tacit-pay.sig.mjs               # the page's signatures against an independent implementation
+node test/dapp/tacit-pay.engine.mjs            # the wallet engine on a chain in memory: merges, lagging nodes, an index that lies, batched reads
+node test/dapp/tacit-pay.unconfirmed.mjs       # a wallet payment the network never confirms is not sent a second time
+node test/dapp/tacit-pay.ens.mjs               # a .eth name's text record, set on a fork of the real registry, read, shown and linked
 node test/dapp/tacit-pay.wallets.mjs           # external wallets: picker, refusals, account and chain changes, no network
 node test/dapp/tacit-pay.fork.mjs              # every flow on anvil forks of all three chains, proofs made in the page
 node test/dapp/tacit-pay.links.mjs             # a real .wei name, a link, a payer paying it on every chain, recovery by key
@@ -207,8 +228,8 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), then point a `.wei` name at the contract.
 
 **Cost**, measured by deploying the chunks and the wrapper on a local anvil (Prague rules): a full chunk is 5,368,866
-gas and the last 1,092,512, so ten chunks are 49,412,306 gas, and the wrapper 1,552,168: 50,964,474 gas in all,
-about 0.051 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
+gas and the last 4,805,101, so ten chunks are 53,124,895 gas, and the wrapper 1,574,045: 54,698,940 gas in all,
+about 0.055 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
 
 ## Stewardship and the name
 

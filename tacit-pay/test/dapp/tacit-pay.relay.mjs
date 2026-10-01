@@ -140,6 +140,20 @@ if (!process.env.FAST) {
   relay.mode = 'send';
 }
 
+console.log('\na relay that has paused reservations for this connection');
+relay.reserve = 'tail';
+await fillSend(K1addr, '0.001');
+await route(/Sent by the relay/);
+await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
+const heads0 = calls('/head'), reserves0 = calls('/reserve');
+await p.click('#f-go');
+s = await p.status(/Sent|err/);
+ok(/Sent 0\.001 ETH privately/.test(s), 'the spend is proved against the queue’s head and sent without a slot', s);
+ok(calls('/reserve') > reserves0 && calls('/head') > heads0, 'after the reservation was refused, the head was asked for');
+bal -= 1n * 10n ** 15n + 5n * E12;
+ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
+relay.reserve = null;
+
 console.log('\na relay that errors');
 relay.mode = 'error';
 await fillSend(K1addr, '0.001');
@@ -167,8 +181,8 @@ relay.events = () => ({chainId: c.chainId, pool: POOL, through: tip + 1000, even
 const q = await lab.page();
 await q.openKey(K1);
 await q.chain(name);
-const got = await q.balance('0.007', 240e3);
-ok(got === '0.007', 'a wallet opened on it still finds what it was paid, read from the chain instead', `${got} (4 + 1 + 1 + 1 of the sends above)`);
+const got = await q.balance('0.008', 240e3);
+ok(got === '0.008', 'a wallet opened on it still finds what it was paid, read from the chain instead', `${got} (4 + 1 + 1 + 1 + 1 of the sends above)`);
 ok(calls('/events') > 0, 'the index was asked first');
 ok(!q.errors.length && !p.errors.length, 'no page errors', [...p.errors, ...q.errors].join(' | '));
 finish(() => lab.close());

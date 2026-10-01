@@ -9,7 +9,7 @@ import {TacitPay8244} from "../src/TacitPay8244.sol";
 ///         page, and the steward role must move only the way it says it does.
 contract TacitPay8244Test is Test {
     /// @dev The page's length, as manifest.json pins it.
-    uint256 constant PAGE_BYTES = 225980;
+    uint256 constant PAGE_BYTES = 243144;
 
     TacitPay8244 page;
     bytes html;

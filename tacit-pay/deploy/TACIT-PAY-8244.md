@@ -74,7 +74,9 @@ their SHA-256 equals the pins the page carries (also readable from the contract 
 ## What it talks to
 
 - **Chain state:** public nodes per chain, which the reader can replace under *Endpoints*; transactions through the
-  reader's wallet (EIP-1193, discovered with EIP-6963).
+  reader's wallet (EIP-1193, discovered with EIP-6963; a wallet that only sets `window.ethereum` works too). A wallet
+  still connected to the page is picked up on a later visit without a prompt, and is put on the chain (switched, or
+  added first) before a proof is started, not after it.
 - **Relays:** one per chain, for relayed spends, fee quotes, an index of pool events and watching deposit addresses.
   The reader can point a chain at another relay or none. A relay the reader sets is held to the fee ceiling but not
   to the default relay's address.
@@ -94,6 +96,7 @@ root and a Chromium for playwright-core (`npx playwright-core install chromium`)
 node ../scripts/chunk.mjs tacit-pay            # out/TacitPay8244.chunk1..N.creation.txt
 forge test --match-path test/TacitPay8244.t.sol
 node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, endpoints, no network
+node test/dapp/tacit-pay.wallets.mjs           # external wallets: picker, refusals, account and chain changes, no network
 node test/dapp/tacit-pay.fork.mjs              # every flow on an anvil fork of Base, proofs made in the page
 node test/dapp/tacit-pay.live.mjs              # read-only against mainnet: nodes, relays, routers, the proving key
 node ../scripts/serve.mjs tacit-pay            # localhost, real wallet, real chains
@@ -115,8 +118,8 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), then point a `.wei` name at the contract.
 
 **Cost**, measured by deploying the chunks and the wrapper on a local anvil (Prague rules): a full chunk is 5,368,866
-gas and the last 2,877,290, so eight chunks are 40,459,352 gas, and the wrapper 1,448,065: 41,907,417 gas in all,
-about 0.042 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
+gas and the last 3,999,288, so eight chunks are 41,581,350 gas, and the wrapper 1,453,536: 43,034,886 gas in all,
+about 0.043 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
 
 ## Stewardship and the name
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pTGHmh3OTFF6qBhWhLtKvVO3t8onOtBDellOC3lCHvE=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-UvaSMZVmCZOmKVMAYDNQe2H/8OLzCkSp84SqL1Cge8k=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Shield ETH, pay anyone privately, withdraw any part. Proved in your browser, recovered from your key. An onchain page: this document is served by a contract.">
@@ -118,6 +118,8 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .status { font-size: 12.5px; min-height: 20px; margin-top: 12px; overflow-wrap: anywhere; }
 .status:empty { display: none; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
+.note.err { color: var(--err); }
+.note.warn { color: var(--orange); }
 .route { margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
 .route b { font-weight: 500; color: var(--ink); }
 .addr { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); }
@@ -168,6 +170,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
 .picker button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 14px; background: var(--field); border: 1px solid var(--hair-2); cursor: pointer; text-align: left; }
 .picker button:hover { border-color: var(--ink); }
 .picker img { width: 28px; height: 28px; }
+.picker small { margin-left: auto; font-size: 12px; color: var(--mute); }
 .toasts { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: grid; gap: 8px; justify-items: center; pointer-events: none; z-index: 10; }
 .toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); }
 .toast.bad { background: var(--err); }
@@ -1792,12 +1795,14 @@ const REVERTS = Object.fromEntries([
   ['BadProof()', 'The proof did not check out.'], ['EthValueMismatch()', 'The amount sent did not match the proof.'],
   ['ValueOutOfRange()', 'That amount is out of range.'], ['PoolFull()', 'The pool is full.'], ['BadIntent()', 'The pool refused that sweep. Refresh and try again.'],
 ].map(([sig, text]) => [hex(selector(sig)), text]));
+const codeOf = (e) => e?.code ?? e?.error?.code ?? e?.data?.originalError?.code ?? e?.cause?.code;
 function errText(e) {
   for (let x = e; x; x = x.cause) for (const d of [x?.data, x?.data?.data, x?.rpc?.data, x?.rpc?.data?.data, x?.error?.data]) {
     if (typeof d === 'string' && REVERTS[d.slice(2, 10).toLowerCase()]) return REVERTS[d.slice(2, 10).toLowerCase()];
   }
   const m = String(e?.shortMessage || e?.message || e || 'Something went wrong');
-  if (e?.code === 4001 || /user (rejected|denied)|rejected the request|denied transaction/i.test(m)) return 'Cancelled in your wallet.';
+  if (codeOf(e) === 4001 || /user (rejected|denied)|rejected the request|denied transaction/i.test(m)) return 'Cancelled in your wallet.';
+  if (codeOf(e) === -32002 || /already (pending|processing)|request .{0,40}pending/i.test(m)) return 'Your wallet already has a request open. Open its popup or toolbar icon, approve or reject it there, then try again.';
   if (/insufficient funds/i.test(m)) return 'Not enough ETH in your wallet for this and its gas.';
   if (/failed to fetch|networkerror|load failed/i.test(m)) return 'Could not reach the network. Check your connection and try again.';
   if (/rate.?limit|too many requests|\b429\b/i.test(m)) return 'That network is busy right now. Try again in a moment.';
@@ -1908,55 +1913,111 @@ async function prove(input, chain) {
 const warm = () => { prover().catch(() => {}); };
 
 // ── an Ethereum wallet: opens the Tacit key, and sends what the relay does not ──────────────────────────────────
-const S = { key: null, provider: null, account: null, chain: chainOf(readJson('tacit-pay-chain-v1')) || CHAINS[1], tab: 'shield', from: 'wallet', route: readJson('tacit-pay-route-v1') || {}, busy: false };
+const S = { key: null, provider: null, wallet: null, account: null, chain: chainOf(readJson('tacit-pay-chain-v1')) || CHAINS[1], tab: 'shield', from: 'wallet', route: readJson('tacit-pay-route-v1') || {}, busy: false };
 const CH = Object.fromEntries(CHAINS.map((c) => [c.chainId, {}]));
-const WALLETS = [];
-window.addEventListener('eip6963:announceProvider', (e) => { const d = e.detail; if (d?.info && d.provider && !WALLETS.some((w) => w.info.uuid === d.info.uuid)) WALLETS.push(d); });
-window.dispatchEvent(new Event('eip6963:requestProvider'));
-function pickWallet() {
+// Wallets announce themselves; one that only sets window.ethereum is used when none does. The wallet last connected is
+// kept by its reverse-DNS name, as the announced ids change on every load.
+const WALLETS = [], BOUND = new WeakSet(), WK = 'tacit-pay-wallet-v1';
+let started = false, connecting = null;
+class Quiet extends Error {}
+window.addEventListener('eip6963:announceProvider', (e) => {
+  const d = e.detail;
+  if (!d?.info || !d.provider?.request || WALLETS.some((w) => w.info.uuid === d.info.uuid)) return;
+  WALLETS.push(d);
+  if (started) { restoreWallet(); refresh(); }
+});
+const askWallets = () => window.dispatchEvent(new Event('eip6963:requestProvider'));
+askWallets();
+const installed = () => (WALLETS.length ? WALLETS : window.ethereum?.request ? [{ info: { name: 'Browser wallet', rdns: 'window.ethereum' }, provider: window.ethereum }] : []);
+const NO_WALLET = 'No Ethereum wallet found in this browser. On a phone, open this page in your wallet app’s browser; on a computer, install a wallet extension. You can also paste a key.';
+const warn = (e) => { if (!(e instanceof Quiet)) toast(errText(e), codeOf(e) !== 4001); };
+// A wallet request, with a nudge when the wallet is slow to answer: its popup is often behind the window.
+async function ask(p, method, params = [], say = null) {
+  const t = say && setTimeout(() => say('Still waiting for your wallet. Look for its popup or its toolbar icon.'), 8000);
+  try { return await p.request({ method, params }); } finally { clearTimeout(t); }
+}
+function pickWallet(list) {
+  const last = store.get(WK), rows = [...list].sort((a, b) => (b.info.rdns === last) - (a.info.rdns === last));
   return new Promise((resolve) => {
     const d = $('#sheet-pick');
-    mount($('#pick-body'), html`${WALLETS.map((w) => html`<button type="button" data-uuid="${w.info.uuid}">${/^data:image\//.test(w.info.icon || '') ? html`<img src="${w.info.icon}" alt="">` : ''}<span>${w.info.name}</span></button>`)}`);
+    mount($('#pick-body'), html`${rows.map((w, i) => html`<button type="button" data-i="${i}">${/^data:image\//.test(w.info.icon || '') ? html`<img src="${w.info.icon}" alt="">` : ''}<span>${w.info.name}</span>${w.info.rdns === last ? html`<small>last used</small>` : ''}</button>`)}`);
     const none = () => resolve(null);
     d.addEventListener('close', none, { once: true });
-    $$('[data-uuid]', d).forEach((b) => b.onclick = () => { d.removeEventListener('close', none); d.close(); resolve(WALLETS.find((w) => w.info.uuid === b.dataset.uuid)?.provider); });
+    $$('[data-i]', d).forEach((b) => b.onclick = () => { d.removeEventListener('close', none); d.close(); resolve(rows[b.dataset.i]); });
     d.showModal();
   });
 }
-async function connect() {
-  window.dispatchEvent(new Event('eip6963:requestProvider'));
-  await sleep(150);
-  let p = S.provider;
-  if (!p) p = WALLETS.length > 1 ? await pickWallet() : WALLETS[0]?.provider || window.ethereum;
-  if (!p?.request) throw new Error('No Ethereum wallet found in this browser.');
-  const [a] = await p.request({ method: 'eth_requestAccounts' });
-  if (!isAddr(a || '')) throw new Error('Your wallet returned no account.');
-  if (!p.__tacitPay) {
-    p.__tacitPay = true;
+// Connecting asks the wallet for its accounts and nothing else; one request at a time, however many buttons ask.
+function connect(say) {
+  return (connecting ||= (async () => {
+    let w = S.wallet;
+    if (!w) {
+      askWallets(); await sleep(150);
+      const list = installed();
+      if (!list.length) throw new Error('Still no wallet found. Open this page in your wallet app’s browser, install a wallet extension, or paste a key.');
+      w = list.length > 1 ? await pickWallet(list) : list[0];
+      if (!w) throw new Quiet('closed');
+    }
+    say?.('Approve the connection in your wallet.');
+    const a = (await ask(w.provider, 'eth_requestAccounts', [], say))?.[0];
+    if (!isAddr(a || '')) throw new Error('Your wallet returned no account.');
+    bind(w, a);
+    return S.account;
+  })().finally(() => { connecting = null; }));
+}
+function bind(w, a) {
+  const p = w.provider;
+  if (!BOUND.has(p)) {
+    BOUND.add(p);
     p.on?.('accountsChanged', (accs) => {
-      S.account = accs?.[0] ? lc(accs[0]) : null;
-      if (S.key?.account && S.key.account !== S.account) { lock(); toast('Your wallet switched accounts, so the key it opened was locked.'); }
+      if (S.provider !== p) return;
+      const next = isAddr(accs?.[0] || '') ? lc(accs[0]) : null;
+      S.account = next;
+      if (next && S.key?.account && S.key.account !== next) { lock(); toast('Your wallet switched accounts, so the key it opened was locked.'); }
       render();
     });
   }
-  S.provider = p; S.account = lc(a);
-  render();
-  return S.account;
+  S.wallet = w; S.provider = p; S.account = lc(a);
+  store.set(WK, w.info.rdns || '');
+  refresh();
+}
+// What shows the wallet is redrawn; a sign-in that is waiting on the wallet is left as it is.
+function refresh() { paintWallet(); paintReq(); if (!$('#form [aria-busy="true"]')) renderForm(); }
+function forgetWallet() { S.wallet = S.provider = S.account = null; store.set(WK, ''); render(); }
+// A wallet still connected to this page answers for its accounts without a prompt, so a later visit starts connected.
+async function restoreWallet() {
+  const last = store.get(WK);
+  if (!last || S.wallet) return;
+  askWallets(); await sleep(150);
+  const w = installed().find((x) => x.info.rdns === last);
+  if (!w || S.wallet) return;
+  try { const a = (await w.provider.request({ method: 'eth_accounts' }))?.[0]; if (isAddr(a || '') && !S.wallet) bind(w, a); } catch {}
 }
 const CHAIN_ADD = {
   1: { chainName: 'Ethereum', rpcUrls: ['https://ethereum-rpc.publicnode.com'], blockExplorerUrls: ['https://etherscan.io'] },
   8453: { chainName: 'Base', rpcUrls: ['https://mainnet.base.org'], blockExplorerUrls: ['https://basescan.org'] },
   4663: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'], blockExplorerUrls: ['https://robinhoodchain.blockscout.com'] },
 };
-async function onChain(id) {
-  const want = '0x' + id.toString(16);
-  if (parseInt(await S.provider.request({ method: 'eth_chainId' }), 16) === id) return;
-  try { await S.provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: want }] }); }
+// The wallet is put on the chain before anything is proved: switched, or added first when it has never seen it.
+async function onChain(id, say) {
+  const now = async () => Number(await S.provider.request({ method: 'eth_chainId' })), name = CHAIN_ADD[id].chainName;
+  if (await now() === id) return;
+  const swap = () => ask(S.provider, 'wallet_switchEthereumChain', [{ chainId: '0x' + id.toString(16) }], say);
+  say?.(`Switch your wallet to ${name}.`);
+  try { await swap(); }
   catch (e) {
-    if (e?.code !== 4902 && e?.data?.originalError?.code !== 4902 && !/unrecogni[sz]ed|not been added|unknown chain/i.test(e?.message || '')) throw e;
-    await S.provider.request({ method: 'wallet_addEthereumChain', params: [{ chainId: want, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, ...CHAIN_ADD[id] }] });
+    if ([4200, -32601].includes(codeOf(e))) throw new Error(`Your wallet cannot switch networks from here. Switch it to ${name} yourself, then try again.`);
+    if (codeOf(e) !== 4902 && !/unrecogni[sz]ed|not been added|unknown chain|try adding/i.test(e?.message || '')) throw e;
+    say?.(`Add ${name} to your wallet.`);
+    await ask(S.provider, 'wallet_addEthereumChain', [{ chainId: '0x' + id.toString(16), nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, ...CHAIN_ADD[id] }], say);
+    if (await now() !== id) await swap();
   }
-  if (parseInt(await S.provider.request({ method: 'eth_chainId' }), 16) !== id) throw new Error(`Switch your wallet to ${CHAIN_ADD[id].chainName}.`);
+  if (await now() !== id) throw new Error(`Switch your wallet to ${name}, then try again.`);
+}
+// A spend the wallet sends is set up before its long proof: the wallet is connected, and on the chain.
+async function walletReady(c, say) {
+  if (!S.account) await connect(say);
+  await onChain(c.chainId, say);
 }
 const signerFor = (c) => ({
   get address() { return S.account; },
@@ -1967,23 +2028,24 @@ const signerFor = (c) => ({
 // The Tacit key is a hash of the wallet's signature over one fixed message, the same in every Tacit app, so the same
 // account opens the same key wherever it signs. A first signature is taken only when a second one is the same.
 const IDENTITY = ['Tacit identity', '', 'Signing this creates your Tacit private key. Anyone who has this signature controls all of your Tacit funds.', '', 'Sign it only in a Tacit app you trust. Every Tacit app asks for exactly this message.', '', 'network: mainnet', 'version: 1'].join('\n');
-async function openWithWallet() {
-  const a = await connect(), p = S.provider, msg = utf8(IDENTITY);
+async function openWithWallet(say = () => {}) {
+  const a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
   const code = await p.request({ method: 'eth_getCode', params: [a, 'latest'] }).catch(() => '0x');
   if (/^0x[0-9a-f]+$/i.test(code) && !/^0x0*$/i.test(code) && !/^0xef0100[0-9a-f]{40}$/i.test(code)) throw new Error('A smart-contract wallet signs differently each time, so it cannot hold a Tacit key. Use an ordinary account.');
-  const signed = async () => {
-    const b = unhex(await p.request({ method: 'personal_sign', params: ['0x' + hex(msg), a] }));
-    if (b.length !== 65) throw new Error('Your wallet returned a malformed signature.');
+  const anchor = `tacit-eth-identity-anchor:${a}`, first = !store.get(anchor);
+  const signed = async (text) => {
+    say(text);
+    const b = unhex(await ask(p, 'personal_sign', ['0x' + hex(msg), a], say));
+    if (b.length !== 65) throw new Error('Your wallet signs in a format that cannot hold a Tacit key (a smart-contract wallet does). Use an ordinary account.');
     if (b[64] < 27) b[64] += 27;
     return b;
   };
-  const sig = await signed();
+  const sig = await signed('Sign the message in your wallet to open your Tacit key.');
   const P = secp.recover(keccak(cat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg)), big(sig.subarray(0, 32)), big(sig.subarray(32, 64)), sig[64] - 27);
   const [x, y] = secp.affine(P);
   if ('0x' + hex(keccak(cat(be(x), be(y))).subarray(12)) !== a) throw new Error('That signature is from another account. Switch accounts and try again.');
   if (big(sig.subarray(32, 64)) > SN / 2n) throw new Error('Your wallet returned a non-canonical signature, so no key was derived from it.');
-  const anchor = `tacit-eth-identity-anchor:${a}`;
-  if (!store.get(anchor) && !same(await signed(), sig)) throw new Error('This wallet signed the message differently the second time, so it cannot hold a stable Tacit key. Nothing was opened.');
+  if (first && !same(await signed('Sign it once more. The first time, your wallet signs twice to check it signs the same way each time; later visits sign once.'), sig)) throw new Error('This wallet signed the message differently the second time, so it cannot hold a stable Tacit key. Nothing was opened.');
   let key = sha256(sig);
   while (!big(key) || big(key) >= SN) key = sha256(cat(key, utf8('tacit-prf-recovery')));
   const pub = hex(pubOf(key));
@@ -2085,7 +2147,7 @@ function paint() {
 function paintWallet() {
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.account ? ' live' : '');
   $('#wallet-label').textContent = S.key ? short(S.key.address, 6) : S.account ? short(S.account) : 'Open wallet';
-  if ($('#sheet-wallet').open) renderWalletSheet();
+  if ($('#sheet-wallet').open && !$('#sheet-wallet [aria-busy="true"]')) renderWalletSheet();
 }
 function paintChains() {
   mount($('#chains'), html`${CHAINS.map((c) => {
@@ -2111,9 +2173,11 @@ function paintTabs() {
   $$('#tabs [data-tab]').forEach((b) => b.onclick = () => { if (S.busy) return; S.tab = b.dataset.tab; mount($('#status'), ''); paintTabs(); renderForm(); });
 }
 function signIn(id) {
-  const last = readJson('tacit-pay-last-v1');
+  const last = readJson('tacit-pay-last-v1'), who = S.account || last?.account;
   return html`<div class="opts" id="${id}">
-    <button class="opt main" type="button" data-in="eth"><span class="opt-t">${ethIcon}${last?.account ? `Continue with ${short(last.account)}` : 'Ethereum wallet'}</span><span class="opt-m">One signature opens your Tacit key: the same key, with the same balances, as on tacit.finance.</span></button>
+    <button class="opt main" type="button" data-in="eth"><span class="opt-t">${ethIcon}${who ? `Continue with ${short(who)}` : 'Ethereum wallet'}</span><span class="opt-m">One signature opens your Tacit key: the same key, with the same balances, as on tacit.finance.</span></button>
+    <p class="note" data-say role="status" hidden></p>
+    ${!installed().length ? html`<p class="note">${NO_WALLET}</p>` : S.wallet && S.account ? html`<p class="note">${S.wallet.info.name} · ${short(S.account)} · <button class="link" type="button" data-in="switch">use another wallet</button></p>` : ''}
     <p class="note"><button class="link" type="button" data-in="paste">Paste a key instead</button></p>
     <div class="amt text" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" aria-label="Tacit key"><button class="link" type="button" data-in="key">open</button></div>
   </div>`;
@@ -2121,11 +2185,15 @@ function signIn(id) {
 function wireSignIn(root, after) {
   const box = $('.opts', root);
   if (!box) return;
+  // What the wallet is doing, and what went wrong, shows here where it was asked.
+  const say = (m, bad = false) => { const el = $('[data-say]', root); if (el) { el.hidden = !m; el.className = 'note' + (bad ? ' err' : ''); el.textContent = m || ''; } };
   $$('[data-in]', box).forEach((b) => b.onclick = () => {
     if (b.dataset.in === 'paste') { const p = $('.amt', box); p.hidden = false; $('input', p).focus(); return; }
+    if (b.dataset.in === 'switch') return forgetWallet();
+    say('');
     busy(b, async () => {
-      try { if (b.dataset.in === 'eth') await openWithWallet(); else openWithKey($('input', box).value); after?.(); }
-      catch (e) { if (!/cancel/i.test(e?.message || '') && e?.code !== 4001) toast(errText(e), true); }
+      try { if (b.dataset.in === 'eth') await openWithWallet(say); else openWithKey($('input', box).value); after?.(); }
+      catch (e) { say(e instanceof Quiet ? '' : errText(e), !(e instanceof Quiet) && codeOf(e) !== 4001); }
     });
   });
   $('input', box).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('[data-in="key"]', box).click(); });
@@ -2175,7 +2243,7 @@ async function act(btn, fn) {
   try { step('Getting ready'); await cur().syncing?.catch(() => {}); await fn(step, c); ok = true; }
   catch (e) {
     const offer = relayTrouble(e) && viaOf(S.tab) !== 'self' && (S.tab === 'send' || S.tab === 'withdraw');
-    mount(status, html`<span class="err">${errText(e)}</span>${offer ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}`);
+    mount(status, e instanceof Quiet ? '' : html`<span class="err">${errText(e)}</span>${offer ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}`);
   } finally {
     clearInterval(tick);
     btn.removeAttribute('aria-busy');
@@ -2218,7 +2286,7 @@ function formShield(f) {
       <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button></p>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
     $('#f-check').onclick = async () => { await W.watch(0).catch(() => {}); await syncChain(c, true); mount($('#status'), cur().waiting > 0n ? `${fmt(cur().waiting)} ETH is waiting at your deposit address.` : 'Nothing is waiting at your deposit address.'); renderForm(); };
-    $('#f-sweep')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => { const h = await W.sweep({ index: 0, onStep: step }); done(c, h, 'Taken in.'); }));
+    $('#f-sweep')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => { await walletReady(c, step); const h = await W.sweep({ index: 0, onStep: step }); done(c, h, 'Taken in.'); }));
     if (relayOf(c)) W.watch(0).catch(() => {});
   } else {
     mount(f, html`${seg}
@@ -2230,7 +2298,7 @@ function formShield(f) {
       <p class="note">Proved here, then sent from your wallet on ${c.full}: you pay the gas and there is no fee. The deposit shows on chain, from your wallet; whose balance it lands in does not.${S.key ? '' : html` To shield into your own balance, <button class="link" type="button" id="f-open">open your Tacit wallet</button>.`}</p>`);
     let wb = null;
     const amt = $('#f-samt'), to = $('#f-sto'), go = $('#f-go'), rc = $('#f-rcpt');
-    $('#f-conn')?.addEventListener('click', () => connect().catch((e) => toast(errText(e), true)));
+    $('#f-conn')?.addEventListener('click', () => connect().catch(warn));
     $('#f-open')?.addEventListener('click', () => openSheet());
     if (S.account) rpcOn(c)('eth_getBalance', [S.account, 'latest']).then((b) => { wb = BigInt(b); const e = $('#f-wb'); if (e) e.textContent = fmt(wb, 4); FORM.check?.(); }).catch(() => {});
     $('#f-max')?.addEventListener('click', () => { if (wb == null) return; const v = wb > c.gasReserve ? wb - c.gasReserve : 0n; amt.value = v ? plain(v) : ''; amt.dispatchEvent(new Event('input')); });
@@ -2247,11 +2315,12 @@ function formShield(f) {
       go.disabled = false;
     };
     go.onclick = () => {
-      if (!S.account) return connect().catch((e) => toast(errText(e), true));
+      if (!S.account) return connect().catch(warn);
       act(go, async (step) => {
         const a = parseEth(amt.value), t = target();
         if (!a) throw new Error('Enter an amount.');
         if (!t || t.error) throw new Error(t?.error || 'Enter who it is for.');
+        await walletReady(c, step);
         if (t.self) {
           const h = await walletOn(c).deposit({ amount: a, onStep: step });
           delete DRAFT['f-samt'];
@@ -2312,6 +2381,7 @@ function formSend(f) {
     const a = parseEth(amt.value), t = target(), via = viaOf(tab), W = walletOn(c);
     if (!a) throw new Error('Enter an amount.');
     if (!t || t.error) throw new Error(t?.error || 'Enter who to pay.');
+    if (via === 'self') await walletReady(c, step);
     const h = t.addr ? await W.withdraw({ to: t.addr, amount: a, via, onStep: step }) : await W.send({ to: t.r, amount: a, via, onStep: step });
     delete DRAFT['f-amt']; delete DRAFT['f-to'];
     if (REQ.v && !t.addr && same(t.r.raw, REQ.v.r.raw)) REQ.v.paid = { h, c, a };
@@ -2351,6 +2421,7 @@ function formWithdraw(f) {
   go.onclick = () => act(go, async (step) => {
     const a = parseEth(amt.value);
     if (!a) throw new Error('Enter an amount.');
+    if (viaOf(tab) === 'self') await walletReady(c, step);
     const h = await walletOn(c).withdraw({ to: to.value.trim(), amount: a, via: viaOf(tab), onStep: step });
     delete DRAFT['f-wamt'];
     done(c, h, `Withdrew ${fmt(a)} ETH.`);
@@ -2415,6 +2486,7 @@ function paintReq() {
     const a = r.amount ?? parseEth($('#req-amt')?.value);
     if (!a) return toast('Enter an amount.', true);
     act(e.currentTarget, async (step, ch) => {
+      await walletReady(ch, step);
       const h = await shieldTo(ch, r.r, a, step);
       r.paid = { h, c: ch, a };
       done(ch, h, `Paid ${fmt(a)} ETH into their private balance.`);
@@ -2526,11 +2598,13 @@ function renderWalletSheet() {
     <div class="addr"><code>${S.key.address}</code></div>
     <p class="note">Your Tacit address${S.key.account ? `, opened with ${short(S.key.account)}` : ''}.</p>
     <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div>
-    <div class="kv" style="margin-top:14px"><span>Pays gas when you send it yourself</span>${S.account ? html`<b>${short(S.account, 6)}</b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
+    <div class="kv" style="margin-top:14px"><span>Pays gas when you send it yourself</span>${S.account ? html`<b>${S.wallet?.info.name ? `${S.wallet.info.name} · ` : ''}<span class="nw">${short(S.account)}</span></b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
+    ${S.account ? html`<p class="note"><button class="link" type="button" id="w-swap">Use another wallet</button></p>` : ''}
     <p class="note">Your wallet, or your key, is the only way back to these funds. The key stays in this tab.</p>`);
   $('#w-copy').onclick = () => copy(S.key.address, 'Address copied');
   $('#w-lock').onclick = () => { lock(); renderWalletSheet(); };
-  $('#w-conn')?.addEventListener('click', () => connect().then(renderWalletSheet).catch((e) => toast(errText(e), true)));
+  $('#w-conn')?.addEventListener('click', () => connect().then(renderWalletSheet).catch(warn));
+  $('#w-swap')?.addEventListener('click', forgetWallet);
 }
 function renderSettings() {
   const el = $('#settings-body');
@@ -2692,6 +2766,8 @@ function qrSvg(text) {
 // ── start ───────────────────────────────────────────────────────────────────────────────────────────────────
 applyHash();
 render();
+started = true;
+restoreWallet();
 caches.open(ARTIFACTS).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});
 </script>
 </body>

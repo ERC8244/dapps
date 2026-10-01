@@ -72,7 +72,9 @@ await ctx.addInitScript(`(() => {
 const p = await ctx.newPage();
 const errors = [];
 p.on('pageerror', (e) => errors.push(String(e)));
-p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
+// Chains the flows do not use are read from public nodes; one of them (Robinhood's) now and then answers with a doubled
+// CORS header, which the page rides out on its second node.
+p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|multiple values '\*,\*'/.test(m.text())) errors.push(m.text()); });
 await p.goto(`http://127.0.0.1:${server.address().port}/`);
 
 const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');

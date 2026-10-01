@@ -1,0 +1,13 @@
+{
+  "name": "tacit-pay",
+  "title": "anon.wei — tacit pay, private ETH payments",
+  "description": "Onchain front end for private ETH payments on Ethereum, Base and Robinhood Chain: shield from any wallet into anyone’s private balance, pay privately, withdraw any part. Proved in the reader’s browser, recovered from the reader’s key.",
+  "page": "dapp/page.html",
+  "bytes": 185082,
+  "sha256": "72575dae660732e128577604e50c144e57cf239182e43a37543d50e3000b1d22",
+  "chunks": {
+    "artifact": "TacitPay8244",
+    "maxPayload": 24575,
+    "prefix": "00"
+  }
+}

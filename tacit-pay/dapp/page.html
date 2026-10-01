@@ -1,0 +1,2698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pTGHmh3OTFF6qBhWhLtKvVO3t8onOtBDellOC3lCHvE=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<title>tacit pay</title>
+<meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Shield ETH, pay anyone privately, withdraw any part. Proved in your browser, recovered from your key. An onchain page: this document is served by a contract.">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%230a0a0a'/%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23f4efe6' stroke-width='2.5'/%3E%3Cpath d='M17.5 7L13 22.5Q13 25 18 24' fill='none' stroke='%23f7931a' stroke-width='2.8' stroke-linecap='round'/%3E%3Cpath d='M10 11L21 11' stroke='%23f7931a' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA; --ink: #1A1A1A; --mute: #6B6557;
+  --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
+  --orange: #f7931a; --eth: #627eea; --ok: #0a7d3a; --err: #b8341d;
+  --scrim: rgba(26,26,26,.36); --lift: 0 22px 44px -28px rgba(26,26,26,.45);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --tap: 44px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15130E; --card: #1F1C15; --field: #191711; --ink: #EDE5CF; --mute: #A39B85;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
+    --eth: #8ea2f0; --ok: #8fcf9a; --err: #f08a6c; --scrim: rgba(0,0,0,.6); --lift: 0 22px 44px -28px rgba(0,0,0,.9);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body {
+  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
+  background-image: radial-gradient(var(--hair) 1px, transparent 1px); background-size: 24px 24px;
+  padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
+}
+a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+button { font: inherit; color: inherit; letter-spacing: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.num { font-variant-numeric: tabular-nums; }
+.mute { color: var(--mute); } .err { color: var(--err); } .ok { color: var(--ok); } .warn { color: var(--orange); }
+.nw { white-space: nowrap; }
+.shell { max-width: 600px; margin: 0 auto; padding-bottom: 56px; }
+.tk { width: 40px; height: 40px; display: block; flex: none; border-radius: 50%; }
+.tk.sm { width: 18px; height: 18px; display: inline-block; vertical-align: -4px; }
+
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0; }
+.brand { display: inline-flex; align-items: center; gap: 10px; }
+.brand .tk { width: 30px; height: 30px; }
+.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand i { font: 500 10px/1 var(--mono); font-style: normal; letter-spacing: .16em; text-transform: uppercase; color: var(--mute); border: 1px solid var(--hair-2); padding: 4px 6px 3px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; padding: 0 14px; background: var(--card); border: 1px solid var(--hair-2); cursor: pointer; white-space: nowrap; }
+.chip:hover { border-color: var(--ink); }
+.chip span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
+.dot.on { background: var(--ok); } .dot.live { background: var(--orange); }
+
+.hero { padding: 40px 0 28px; }
+.hero h1 { font: 400 clamp(40px, 9vw, 64px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 18px; }
+.hero h1 em { font-style: italic; }
+.hero p { color: var(--mute); margin: 0; max-width: 48ch; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 20px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--mute); }
+.facts li { display: inline-flex; align-items: center; gap: 8px; }
+.facts li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--eth); }
+
+.card { background: var(--card); border: 1px solid var(--hair); padding: 22px; margin: 0 0 14px; }
+.card.app { border-color: var(--ink); box-shadow: var(--lift); }
+.card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 10px; }
+.card-h h2 { font: 400 28px/1.05 var(--serif); letter-spacing: -.01em; margin: 0; }
+.card-h span { font-size: 12px; color: var(--mute); text-align: right; }
+.lede { color: var(--mute); font-size: 13px; margin: 0 0 14px; }
+
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--hair-2); margin: 0 0 18px; }
+.seg button { min-height: var(--tap); padding: 8px 10px; background: none; border: 0; cursor: pointer; color: var(--mute); line-height: 1.25; }
+.seg button + button { border-left: 1px solid var(--hair-2); }
+.seg button small { display: block; font-size: 11px; opacity: .85; font-variant-numeric: tabular-nums; }
+.seg button[aria-selected="true"] { background: var(--ink); color: var(--card); }
+.seg button:disabled { cursor: not-allowed; }
+.seg.sub { border-color: var(--hair); margin-bottom: 16px; }
+.seg.sub button { min-height: 36px; font-size: 12.5px; }
+.seg.sub button + button { border-color: var(--hair); }
+
+.bal { display: flex; align-items: center; gap: 14px; padding: 14px 0; margin-bottom: 16px; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.bal .v { font: 500 30px/1.1 var(--mono); letter-spacing: -.02em; }
+.bal .v.t { font: 400 28px/1.05 var(--serif); }
+.bal .u { color: var(--mute); font-size: 12.5px; }
+.bal .side { margin-left: auto; text-align: right; font-size: 12px; color: var(--mute); }
+
+.lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--mute); margin: 14px 0 6px; }
+.lbl button, .link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font-size: 12.5px; }
+.lbl button:hover, .link:hover { color: var(--ink); }
+.amt { display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair); border-bottom-color: var(--ink); }
+.amt:focus-within { border-color: var(--ink); }
+.amt input { flex: 1; min-width: 0; font: 500 24px/1.2 var(--mono); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; padding: 12px 14px; outline: none; }
+.amt .u { display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 4px; color: var(--mute); white-space: nowrap; }
+.amt.text input { font: 400 14px/1.4 var(--mono); padding: 14px; }
+.amt .link { flex: none; padding: 0 14px; }
+input::placeholder { color: var(--mute); opacity: .7; }
+
+.kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
+.kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
+.rcpt { margin-top: 14px; padding-top: 8px; border-top: 1px dashed var(--hair-2); }
+.btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 18px; padding: 10px 16px; font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; }
+.btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.btn.ghost:hover:not(:disabled) { border-color: var(--ink); }
+.btn.sm { width: auto; min-height: 38px; margin: 0; padding: 6px 14px; font-size: 12.5px; }
+.btn[aria-busy="true"]::after, .spin { content: ''; display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.spin { width: 10px; height: 10px; margin-right: 8px; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row2 .btn { margin-top: 10px; }
+.status { font-size: 12.5px; min-height: 20px; margin-top: 12px; overflow-wrap: anywhere; }
+.status:empty { display: none; }
+.note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
+.route { margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
+.route b { font-weight: 500; color: var(--ink); }
+.addr { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); }
+.addr code { flex: 1; min-width: 0; font: 400 12.5px/1.5 var(--mono); overflow-wrap: anywhere; word-break: break-all; }
+.addr .link { flex: none; }
+.blk + .blk { margin-top: 18px; }
+.callout { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; margin: 14px 0 0; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
+.opts { display: grid; gap: 8px; }
+.opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); }
+.opt:hover:not(:disabled) { border-color: var(--ink); }
+.opt.main { border-color: var(--ink); background: var(--card); }
+.opt-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+.opt-m { font-size: 12px; color: var(--mute); }
+.opt[aria-busy="true"] .opt-t::after { content: ''; width: 11px; height: 11px; margin-left: auto; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.req { padding: 16px; margin: 0 0 18px; background: var(--field); border: 1px solid var(--ink); }
+.req-a { font: 400 44px/1 var(--serif); letter-spacing: -.02em; margin: 4px 0 6px; }
+.req-a small { font: 500 14px var(--mono); color: var(--mute); letter-spacing: 0; }
+.req-m { font-size: 12.5px; color: var(--mute); overflow-wrap: anywhere; }
+.qrbox { display: flex; justify-content: center; margin: 16px 0 2px; }
+.qr { display: block; width: min(264px, 100%); height: auto; border: 1px solid var(--hair); }
+.meter { height: 3px; margin: 10px 0 4px; background: var(--hair); overflow: hidden; }
+.meter i { display: block; height: 100%; width: var(--p, 0%); background: var(--eth); transition: width .2s; }
+.rows { list-style: none; margin: 14px 0 0; padding: 0; border-top: 1px solid var(--hair); }
+.rows li { display: grid; gap: 3px; padding: 11px 0; border-bottom: 1px solid var(--hair); }
+.rows .h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.rows .h b { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.rows .h span { flex: none; font-variant-numeric: tabular-nums; }
+.rows .f { font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
+.rows .in { color: var(--ok); }
+.adv { margin-top: 12px; }
+.adv > summary { cursor: pointer; font-size: 12.5px; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; }
+.adv textarea { width: 100%; min-height: 64px; font: 12px/1.5 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 8px 10px; resize: vertical; }
+.foot-a { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; margin-top: 14px; }
+.sk { display: inline-block; width: var(--w, 6ch); max-width: 100%; height: .9em; vertical-align: -.08em; border-radius: 2px; background: var(--hair); }
+.stale { color: var(--mute); }
+footer { display: grid; gap: 10px; margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--hair-2); color: var(--mute); font-size: 12px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+footer a { color: var(--mute); }
+footer a:hover { color: var(--ink); }
+dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 40px 90px -40px rgba(0,0,0,.6); }
+dialog.sheet::backdrop { background: var(--scrim); }
+.sheet-in { padding: 24px 24px 28px; }
+.sheet-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.sheet-head h2 { font: 400 30px/1 var(--serif); margin: 0; }
+.x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
+.x:hover { color: var(--ink); border-color: var(--hair-2); }
+.picker { display: grid; gap: 8px; }
+.picker button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 14px; background: var(--field); border: 1px solid var(--hair-2); cursor: pointer; text-align: left; }
+.picker button:hover { border-color: var(--ink); }
+.picker img { width: 28px; height: 28px; }
+.toasts { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: grid; gap: 8px; justify-items: center; pointer-events: none; z-index: 10; }
+.toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); }
+.toast.bad { background: var(--err); }
+@media (max-width: 640px) {
+  .hero { padding: 24px 0 22px; }
+  .card { padding: 18px 16px; }
+  .seg button { padding: 8px 6px; }
+  .bal .v { font-size: 26px; }
+  dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="tk-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></symbol>
+    <symbol id="tk-peth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="2.4 1.4"/><g fill="#8ea2f0"><path fill-opacity=".7" d="M16.3 7v6.6l5.6 2.5z"/><path d="M16.3 7L10.7 16.1l5.6-2.5z"/><path fill-opacity=".7" d="M16.3 20.4v4.5l5.6-7.8z"/><path d="M16.3 24.9v-4.5l-5.6-3.3z"/><path fill-opacity=".35" d="M16.3 19.4l5.6-3.3-5.6-2.5z"/><path fill-opacity=".7" d="M10.7 16.1l5.6 3.3v-5.8z"/></g></symbol>
+  </defs>
+</svg>
+
+<div class="shell">
+  <header class="top">
+    <span class="brand"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>pay</i></span>
+    <button class="chip" id="wallet" type="button" aria-haspopup="dialog"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Open wallet</span></button>
+  </header>
+
+  <section class="hero">
+    <h1>Pay in ETH,<br><em>privately</em>.</h1>
+    <p>Shield ETH on Ethereum, Base or Robinhood Chain, pay anyone privately, and take out any part. Who you pay and how much stay hidden; shielding and withdrawing show on chain.</p>
+    <ul class="facts"><li>Proved in your browser</li><li>Recovered from your key</li><li>Served by a contract</li></ul>
+  </section>
+
+  <main>
+    <section class="card app" aria-label="Private ETH">
+      <div class="req" id="req" hidden></div>
+      <div class="seg" role="tablist" aria-label="Chain" id="chains"></div>
+      <div class="bal" id="bal"></div>
+      <div class="seg sub" role="tablist" aria-label="Action" id="tabs"></div>
+      <div id="form"></div>
+      <div class="status" role="status" aria-live="polite" id="status"></div>
+    </section>
+
+    <section class="card" aria-labelledby="activity-h">
+      <div class="card-h"><h2 id="activity-h">Activity</h2><span id="activity-at"></span></div>
+      <div id="activity"></div>
+    </section>
+
+    <section class="card" aria-labelledby="device-h">
+      <div class="card-h"><h2 id="device-h">Proved here</h2><span id="device-at"></span></div>
+      <div id="device"></div>
+    </section>
+  </main>
+
+  <footer>
+    <nav aria-label="Pool contracts"><span>Pool</span><span id="contracts"></span></nav>
+    <nav aria-label="More"><a href="https://tacit.finance" rel="noopener">tacit.finance</a><a href="https://github.com/src-company/tacit/blob/main/docs/EVM-POOL.md" rel="noopener">How the pool works</a><a href="https://eip.tools/eip/8244" rel="noopener">ERC-8244</a><button class="link" type="button" id="settings-open">Endpoints</button></nav>
+    <span id="served">tacit pay · an onchain page</span>
+    <span id="newer" class="warn" hidden></span>
+  </footer>
+</div>
+
+<dialog class="sheet" id="sheet-wallet" aria-labelledby="wallet-h">
+  <div class="sheet-in">
+    <div class="sheet-head"><h2 id="wallet-h" tabindex="-1">Wallet</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="wallet-body"></div>
+  </div>
+</dialog>
+<dialog class="sheet" id="sheet-pick" aria-label="Choose a wallet">
+  <div class="sheet-in">
+    <div class="sheet-head"><h2 tabindex="-1">Choose a wallet</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="pick-body" class="picker"></div>
+  </div>
+</dialog>
+<dialog class="sheet" id="sheet-settings" aria-labelledby="settings-h">
+  <div class="sheet-in">
+    <div class="sheet-head"><h2 id="settings-h" tabindex="-1">Endpoints</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="settings-body"></div>
+  </div>
+</dialog>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script type="text/x-prover" id="prover">
+// Groth16 over BN254 for transact.circom, from the ceremony's proving key (.zkey) and the circuit's witness program
+// (.wasm). Field arithmetic runs in WebAssembly that this file writes itself: elements are eight little-endian 32-bit
+// limbs in Montgomery form (R = 2^256), which is how the proving key stores its points and coefficients, so its
+// sections are used as they are read.
+//
+//   const p = makeProver({ zkey, wasm });       zkey, wasm: bytes
+//   p.witness(input)  → Uint32Array, 8 limbs per signal (normal form)
+//   p.prove(input)    → { proof, publicSignals } in the shape snarkjs returns
+//
+// The work splits into parts a page can spread over workers: qap(witness) → scalars for H, msm(name, scalars) → a
+// point, finish(points) → the proof.
+
+const PRIME_Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+const PRIME_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+// ── WebAssembly, written out ────────────────────────────────────────────────────────────────────────────────
+// Three functions per field — mul, add, sub over (out, a, b) pointers — for the base field q and the scalar field r.
+function fieldModule() {
+  const uleb = (n) => { const o = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b); } while (n); return o; };
+  const sleb = (v) => { v = BigInt(v); const o = []; for (;;) { const b = Number(v & 0x7fn); v >>= 7n; if ((v === 0n && !(b & 0x40)) || (v === -1n && (b & 0x40))) { o.push(b); return o; } o.push(b | 0x80); } };
+  const get = (i) => [0x20, ...uleb(i)], set = (i) => [0x21, ...uleb(i)], tee = (i) => [0x22, ...uleb(i)];
+  const k64 = (v) => [0x42, ...sleb(v)];
+  const load = (p, off) => [...get(p), 0x35, 0x02, ...uleb(off)];          // i64.load32_u
+  const store = (p, off, val) => [...get(p), ...val, 0x3e, 0x02, ...uleb(off)]; // i64.store32
+  const ADD = 0x7c, SUB = 0x7d, MUL = 0x7e, AND = 0x83, SHR = 0x88, LTU = 0x54, SELECT = 0x1b;
+  const LO = k64(0xffffffff), H32 = [...k64(32), SHR];
+  const limbs = (x) => Array.from({ length: 8 }, (_, i) => Number((x >> BigInt(32 * i)) & 0xffffffffn));
+
+  // r = t − n if t ≥ n else t, where t is limbs T(0..7) with T(8) above them; D(j) are scratch locals.
+  function reduce(n, T, top, D, W, X) {
+    const c = [...k64(0), ...set(W)];
+    for (let j = 0; j < 8; j++) {
+      c.push(...get(T(j)), ...k64(n[j]), SUB, ...get(W), SUB, ...tee(X), ...LO, AND, ...set(D(j)));
+      c.push(...get(X), ...k64(63), SHR, ...set(W));
+    }
+    for (let j = 0; j < 8; j++) c.push(...store(0, 4 * j, [...get(T(j)), ...get(D(j)), ...get(top), ...get(W), LTU, SELECT]));
+    return c;
+  }
+  // Locals: 0 out, 1 a, 2 b (i32); then i64: T(0..9) 3–12, C 13, X 14, M 15, B 16, D(0..7) 17–24. Operands are
+  // read from memory where they are used, which keeps few values live: the multiply runs from registers.
+  const T = (j) => 3 + j, C = 13, X = 14, M = 15, B = 16, D = (j) => 17 + j;
+  function mul(p) {
+    const n = limbs(p);
+    let inv = 1n;
+    for (let i = 0; i < 6; i++) inv = (inv * (2n - (p & 0xffffffffn) * inv)) & 0xffffffffn;
+    const ninv = Number((0x100000000n - inv) & 0xffffffffn);
+    const c = [];
+    for (let i = 0; i < 8; i++) {
+      c.push(...load(2, 4 * i), ...set(B), ...k64(0), ...set(C));
+      for (let j = 0; j < 8; j++) {
+        c.push(...get(T(j)), ...load(1, 4 * j), ...get(B), MUL, ADD, ...get(C), ADD, ...tee(X), ...H32, ...set(C));
+        c.push(...get(X), ...LO, AND, ...set(T(j)));
+      }
+      c.push(...get(T(8)), ...get(C), ADD, ...tee(X), ...LO, AND, ...set(T(8)), ...get(X), ...H32, ...set(T(9)));
+      c.push(...get(T(0)), ...k64(ninv), MUL, ...LO, AND, ...set(M));
+      c.push(...get(T(0)), ...get(M), ...k64(n[0]), MUL, ADD, ...H32, ...set(C));
+      for (let j = 1; j < 8; j++) {
+        c.push(...get(T(j)), ...get(M), ...k64(n[j]), MUL, ADD, ...get(C), ADD, ...tee(X), ...H32, ...set(C));
+        c.push(...get(X), ...LO, AND, ...set(T(j - 1)));
+      }
+      c.push(...get(T(8)), ...get(C), ADD, ...tee(X), ...LO, AND, ...set(T(7)));
+      c.push(...get(T(9)), ...get(X), ...H32, ADD, ...set(T(8)));
+    }
+    return [...c, ...reduce(n, T, T(8), D, C, X)];
+  }
+  function add(p) {
+    const n = limbs(p), c = [...k64(0), ...set(C)];
+    for (let j = 0; j < 8; j++) {
+      c.push(...load(1, 4 * j), ...load(2, 4 * j), ADD, ...get(C), ADD, ...tee(X), ...LO, AND, ...set(T(j)));
+      c.push(...get(X), ...H32, ...set(C));
+    }
+    return [...c, ...get(C), ...set(T(8)), ...reduce(n, T, T(8), D, C, X)];
+  }
+  function sub(p) {
+    const n = limbs(p), c = [...k64(0), ...set(C)];
+    for (let j = 0; j < 8; j++) {
+      c.push(...load(1, 4 * j), ...load(2, 4 * j), SUB, ...get(C), SUB, ...tee(X), ...LO, AND, ...set(T(j)));
+      c.push(...get(X), ...k64(63), SHR, ...set(C));
+    }
+    // C = 1 when a < b: add n back.
+    c.push(...k64(0), ...set(M));
+    for (let j = 0; j < 8; j++) {
+      c.push(...get(T(j)), ...k64(n[j]), ...get(C), MUL, ADD, ...get(M), ADD, ...tee(X), ...LO, AND, ...set(T(j)));
+      c.push(...get(X), ...H32, ...set(M));
+    }
+    for (let j = 0; j < 8; j++) c.push(...store(0, 4 * j, get(T(j))));
+    return c;
+  }
+  const bodies = [mul(PRIME_Q), add(PRIME_Q), sub(PRIME_Q), mul(PRIME_R), add(PRIME_R), sub(PRIME_R)];
+  const names = ['qm', 'qa', 'qs', 'rm', 'ra', 'rs'];
+  const vec = (xs) => [...uleb(xs.length), ...xs.flat()];
+  const section = (id, bytes) => [id, ...uleb(bytes.length), ...bytes];
+  const str = (s) => vec([...s].map((ch) => [ch.charCodeAt(0)]));
+  const code = bodies.map((b) => { const f = [...uleb(1), ...uleb(22), 0x7e, ...b, 0x0b]; return [...uleb(f.length), ...f]; });
+  return new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...section(1, vec([[0x60, 3, 0x7f, 0x7f, 0x7f, 0]])),
+    ...section(2, vec([[...str('e'), ...str('m'), 0x02, 0x00, 0x01]])),
+    ...section(3, vec(bodies.map(() => [0]))),
+    ...section(7, vec(names.map((s, i) => [...str(s), 0x00, i]))),
+    ...section(10, vec(code)),
+  ]);
+}
+
+// ── memory and fields ───────────────────────────────────────────────────────────────────────────────────────
+function makeMemory() {
+  const mem = new WebAssembly.Memory({ initial: 16 });
+  const ex = new WebAssembly.Instance(new WebAssembly.Module(fieldModule()), { e: { m: mem } }).exports;
+  let top = 64, u32 = new Uint32Array(mem.buffer), u8 = new Uint8Array(mem.buffer);
+  const alloc = (bytes) => {
+    const p = top;
+    top = (top + bytes + 63) & ~63;
+    if (top > mem.buffer.byteLength) { mem.grow(Math.ceil((top - mem.buffer.byteLength) / 65536)); u32 = new Uint32Array(mem.buffer); u8 = new Uint8Array(mem.buffer); }
+    return p;
+  };
+  return { ex, alloc, get u32() { return u32; }, get u8() { return u8; }, mark: () => top, reset: (t) => { top = t; } };
+}
+
+const toLimbs = (x, u32, p) => { for (let i = 0; i < 8; i++) { u32[(p >> 2) + i] = Number(x & 0xffffffffn); x >>= 32n; } };
+const fromLimbs = (u32, p) => { let x = 0n; for (let i = 7; i >= 0; i--) x = (x << 32n) | BigInt(u32[(p >> 2) + i]); return x; };
+const modp = (x, p) => { x %= p; return x < 0n ? x + p : x; };
+function powMod(b, e, p) { let r = 1n; b = modp(b, p); while (e > 0n) { if (e & 1n) r = r * b % p; b = b * b % p; e >>= 1n; } return r; }
+const invMod = (a, p) => powMod(a, p - 2n, p);
+const MONT = (x, p) => modp(x << 256n, p);
+
+// Fq and Fq2 (u² = −1) over pointers, with the operations a curve needs.
+function fields(M) {
+  const { ex } = M, tmp = M.alloc(32 * 8);
+  const t = (i) => tmp + 32 * i;
+  const isZero = (a, n8) => { const u = M.u32; for (let i = a >> 2, e = (a + n8) >> 2; i < e; i++) if (u[i]) return false; return true; };
+  const copy = (r, a, n8) => { if (r !== a) M.u32.copyWithin(r >> 2, a >> 2, (a + n8) >> 2); };
+  const zero = (r, n8) => M.u32.fill(0, r >> 2, (r + n8) >> 2);
+  const one = M.alloc(32);
+  toLimbs(MONT(1n, PRIME_Q), M.u32, one);
+  const fq = {
+    n8: 32, mul: ex.qm, add: ex.qa, sub: ex.qs, sqr: (r, a) => ex.qm(r, a, a),
+    isZero: (a) => isZero(a, 32), copy: (r, a) => copy(r, a, 32), zero: (r) => zero(r, 32), one: (r) => copy(r, one, 32),
+  };
+  const { qm, qa, qs } = ex;
+  const fq2 = {
+    n8: 64,
+    add: (r, a, b) => { qa(r, a, b); qa(r + 32, a + 32, b + 32); },
+    sub: (r, a, b) => { qs(r, a, b); qs(r + 32, a + 32, b + 32); },
+    mul: (r, a, b) => {
+      qm(t(0), a, b); qm(t(1), a + 32, b + 32); qa(t(2), a, a + 32); qa(t(3), b, b + 32); qm(t(2), t(2), t(3));
+      qs(r, t(0), t(1)); qs(t(2), t(2), t(0)); qs(r + 32, t(2), t(1));
+    },
+    sqr: (r, a) => { qa(t(0), a, a + 32); qs(t(1), a, a + 32); qm(t(2), a, a + 32); qm(r, t(0), t(1)); qa(r + 32, t(2), t(2)); },
+    isZero: (a) => isZero(a, 64), copy: (r, a) => copy(r, a, 64), zero: (r) => zero(r, 64),
+    one: (r) => { copy(r, one, 32); zero(r + 32, 32); },
+  };
+  return { fq, fq2 };
+}
+
+// Jacobian points over a field F (a = 0 curves): X ‖ Y ‖ Z, Z = 0 at infinity; affine X ‖ Y, all-zero at infinity.
+function curve(F, M) {
+  const n = F.n8, scratch = M.alloc(n * 12), T = Array.from({ length: 12 }, (_, i) => scratch + n * i);
+  const Y = (p) => p + n, Z = (p) => p + 2 * n;
+  const isZeroAffine = (p) => F.isZero(p) && F.isZero(Y(p));
+  const fromAffine = (r, p) => { if (isZeroAffine(p)) { F.zero(Z(r)); return; } F.copy(r, p); F.copy(Y(r), Y(p)); F.one(Z(r)); };
+  const copy = (r, p) => { F.copy(r, p); F.copy(Y(r), Y(p)); F.copy(Z(r), Z(p)); };
+  function dbl(r, p) {
+    if (F.isZero(Z(p))) { F.zero(Z(r)); return; }
+    const [a, b, c, d, e, f, z3, y3] = T;
+    F.sqr(a, p); F.sqr(b, Y(p)); F.sqr(c, b);
+    F.add(d, p, b); F.sqr(d, d); F.sub(d, d, a); F.sub(d, d, c); F.add(d, d, d);
+    F.add(e, a, a); F.add(e, e, a); F.sqr(f, e);
+    F.mul(z3, Y(p), Z(p)); F.add(z3, z3, z3);
+    F.sub(r, f, d); F.sub(r, r, d);
+    F.sub(y3, d, r); F.mul(y3, e, y3);
+    F.add(c, c, c); F.add(c, c, c); F.add(c, c, c);
+    F.sub(Y(r), y3, c);
+    F.copy(Z(r), z3);
+  }
+  // r = p + q, q affine and not at infinity.
+  function madd(r, p, q) {
+    if (F.isZero(Z(p))) { F.copy(r, q); F.copy(Y(r), Y(q)); F.one(Z(r)); return; }
+    const [z1z1, u2, s2, h, hh, i4, j, rr, v, z3, y1j] = T;
+    F.sqr(z1z1, Z(p)); F.mul(u2, q, z1z1);
+    F.mul(s2, Y(q), Z(p)); F.mul(s2, s2, z1z1);
+    F.sub(h, u2, p); F.sub(rr, s2, Y(p)); F.add(rr, rr, rr);
+    if (F.isZero(h)) { if (F.isZero(rr)) dbl(r, p); else F.zero(Z(r)); return; }
+    F.sqr(hh, h); F.add(i4, hh, hh); F.add(i4, i4, i4); F.mul(j, h, i4); F.mul(v, p, i4);
+    F.add(z3, Z(p), h); F.sqr(z3, z3); F.sub(z3, z3, z1z1); F.sub(z3, z3, hh);
+    F.mul(y1j, Y(p), j); F.add(y1j, y1j, y1j);
+    F.sqr(r, rr); F.sub(r, r, j); F.sub(r, r, v); F.sub(r, r, v);
+    F.sub(Y(r), v, r); F.mul(Y(r), rr, Y(r)); F.sub(Y(r), Y(r), y1j);
+    F.copy(Z(r), z3);
+  }
+  // r = p + q, both Jacobian; r may be p, not q.
+  function add(r, p, q) {
+    if (F.isZero(Z(q))) { if (r !== p) copy(r, p); return; }
+    if (F.isZero(Z(p))) { copy(r, q); return; }
+    const [z1z1, z2z2, u1, u2, s1, s2, h, i4, j, rr, v, z3] = T;
+    F.sqr(z1z1, Z(p)); F.sqr(z2z2, Z(q));
+    F.mul(u1, p, z2z2); F.mul(u2, q, z1z1);
+    F.mul(s1, Y(p), Z(q)); F.mul(s1, s1, z2z2);
+    F.mul(s2, Y(q), Z(p)); F.mul(s2, s2, z1z1);
+    F.sub(h, u2, u1); F.sub(rr, s2, s1); F.add(rr, rr, rr);
+    if (F.isZero(h)) { if (F.isZero(rr)) dbl(r, p); else F.zero(Z(r)); return; }
+    F.add(i4, h, h); F.sqr(i4, i4); F.mul(j, h, i4); F.mul(v, u1, i4);
+    F.add(z3, Z(p), Z(q)); F.sqr(z3, z3); F.sub(z3, z3, z1z1); F.sub(z3, z3, z2z2); F.mul(z3, z3, h);
+    F.sqr(r, rr); F.sub(r, r, j); F.sub(r, r, v); F.sub(r, r, v);
+    F.mul(s1, s1, j); F.add(s1, s1, s1);
+    F.sub(Y(r), v, r); F.mul(Y(r), rr, Y(r)); F.sub(Y(r), Y(r), s1);
+    F.copy(Z(r), z3);
+  }
+  // Σ scalars[i]·bases[i], Pippenger with c-bit windows. scalars: 8 limbs each, normal form, below 2^254.
+  function msm(out, bases, scal, count) {
+    const aff = 2 * n, jac = 3 * n;
+    const c = count > 1 << 15 ? 13 : count > 1 << 12 ? 12 : count > 64 ? 8 : 4;
+    const nb = 1 << c, mark = M.mark(), buckets = M.alloc(nb * jac), run = M.alloc(jac), acc = M.alloc(jac);
+    const used = new Uint8Array(nb), live = [];
+    for (let i = 0; i < count; i++) {
+      let z = true;
+      for (let k = 0; k < 8; k++) if (scal[8 * i + k]) { z = false; break; }
+      if (!z && !isZeroAffine(bases + i * aff)) live.push(i);
+    }
+    F.zero(Z(out));
+    for (let w = Math.ceil(254 / c) - 1; w >= 0; w--) {
+      for (let k = 0; k < c; k++) dbl(out, out);
+      used.fill(0);
+      const bit = w * c, limb = bit >>> 5, off = bit & 31, wide = off + c > 32 && limb < 7;
+      for (const i of live) {
+        let d = scal[8 * i + limb] >>> off;
+        if (wide) d |= scal[8 * i + limb + 1] << (32 - off);
+        d &= nb - 1;
+        if (!d) continue;
+        const b = buckets + d * jac;
+        if (used[d]) madd(b, b, bases + i * aff); else { fromAffine(b, bases + i * aff); used[d] = 1; }
+      }
+      F.zero(Z(run)); F.zero(Z(acc));
+      for (let d = nb - 1; d > 0; d--) {
+        if (used[d]) add(run, run, buckets + d * jac);
+        add(acc, acc, run);
+      }
+      add(out, out, acc);
+    }
+    M.reset(mark);
+  }
+  // r = k·p for a BigInt k ≥ 0, p Jacobian.
+  function times(r, p, k) {
+    const mark = M.mark(), q = M.alloc(3 * n);
+    copy(q, p);
+    F.zero(Z(r));
+    for (let i = k.toString(2).length - 1; i >= 0; i--) { dbl(r, r); if ((k >> BigInt(i)) & 1n) add(r, r, q); }
+    M.reset(mark);
+  }
+  return { n, dbl, madd, add, msm, times, fromAffine, copy, isZeroAffine, zero: (p) => F.zero(Z(p)) };
+}
+
+// ── the proving key ─────────────────────────────────────────────────────────────────────────────────────────
+function readZkey(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (String.fromCharCode(...bytes.subarray(0, 4)) !== 'zkey') throw new Error('not a proving key');
+  const sections = {};
+  for (let o = 12; o < bytes.length;) {
+    const id = dv.getUint32(o, true), size = Number(dv.getBigUint64(o + 4, true));
+    sections[id] = bytes.subarray(o + 12, o + 12 + size);
+    o += 12 + size;
+  }
+  if (new DataView(sections[1].buffer, sections[1].byteOffset).getUint32(0, true) !== 1) throw new Error('not a Groth16 proving key');
+  const h = sections[2], hv = new DataView(h.buffer, h.byteOffset, h.byteLength);
+  const word = (o) => { let x = 0n; for (let i = 31; i >= 0; i--) x = (x << 8n) | BigInt(h[o + i]); return x; };
+  if (hv.getUint32(0, true) !== 32 || word(4) !== PRIME_Q || hv.getUint32(36, true) !== 32 || word(40) !== PRIME_R) throw new Error('proving key is not over BN254');
+  let o = 72;
+  const nVars = hv.getUint32(o, true), nPublic = hv.getUint32(o + 4, true), domainSize = hv.getUint32(o + 8, true);
+  o += 12;
+  const take = (len) => { const s = h.slice(o, o + len); o += len; return s; };
+  const head = { alpha1: take(64), beta1: take(64), beta2: take(128), gamma2: take(128), delta1: take(64), delta2: take(128) };
+  return { nVars, nPublic, domainSize, head, coeffs: sections[4], A: sections[5], B1: sections[6], B2: sections[7], C: sections[8], H: sections[9] };
+}
+
+// ── the witness, from the circuit's program ─────────────────────────────────────────────────────────────────
+function makeWitness(module) {
+  const inst = new WebAssembly.Instance(module, { runtime: {
+    exceptionHandler: (code) => { throw new Error(`the circuit rejected this input (${code})`); },
+    printErrorMessage() {}, writeBufferMessage() {}, showSharedRWMemory() {},
+  } });
+  const e = inst.exports;
+  if (e.getFieldNumLen32() !== 8) throw new Error('unexpected circuit field');
+  const size = e.getWitnessSize();
+  const fnv = (s) => { let h = 0xcbf29ce484222325n; for (let i = 0; i < s.length; i++) h = ((h ^ BigInt(s.charCodeAt(i))) * 0x100000001b3n) & 0xffffffffffffffffn; return h; };
+  const flat = (v) => (Array.isArray(v) ? v.flatMap(flat) : [v]);
+  return function witness(input) {
+    e.init(0);
+    for (const [k, v] of Object.entries(input)) {
+      const h = fnv(k), hi = Number(h >> 32n), lo = Number(h & 0xffffffffn), xs = flat(v);
+      if (e.getInputSignalSize(hi, lo) !== xs.length) throw new Error(`input ${k} has the wrong size`);
+      xs.forEach((x, i) => {
+        let y = modp(BigInt(x), PRIME_R);
+        for (let j = 0; j < 8; j++) { e.writeSharedRWMemory(j, Number(y & 0xffffffffn)); y >>= 32n; }
+        e.setInputSignal(hi, lo, i);
+      });
+    }
+    const w = new Uint32Array(size * 8);
+    for (let i = 0; i < size; i++) { e.getWitness(i); for (let j = 0; j < 8; j++) w[8 * i + j] = e.readSharedRWMemory(j); }
+    return w;
+  };
+}
+
+// ── the prover ──────────────────────────────────────────────────────────────────────────────────────────────
+// key: readZkey() output or a share of it — the header, and any of the coefficients and the point sections
+// A, B1, B2, C, H (whole, or one slice of each). wasm: the circuit's witness program (bytes or a Module), if this
+// instance computes witnesses. The QAP runs where the coefficients are.
+function makeProver({ key, wasm = null }) {
+  const k = key instanceof Uint8Array ? readZkey(key) : key;
+  const M = makeMemory(), { fq, fq2 } = fields(M), G1 = curve(fq, M), G2 = curve(fq2, M);
+  const put = (bytes) => { const p = M.alloc(bytes.length); M.u8.set(bytes, p); return p; };
+  const head = Object.fromEntries(Object.entries(k.head).map(([name, b]) => [name, put(b)]));
+  const bases = {};
+  for (const name of ['A', 'B1', 'B2', 'C', 'H']) if (k[name]) bases[name] = put(k[name]);
+  const witness = wasm ? makeWitness(wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)) : null;
+
+  // The QAP: A·w and B·w over the domain, C = A∘B, each moved to the odd coset; → (A·B − C) there, normal form.
+  let qap = null;
+  if (k.coeffs) {
+    const n = k.domainSize, bits = Math.log2(n), r = M.ex;
+    const coeffs = put(k.coeffs), nCoef = M.u32[coeffs >> 2];
+    const a = M.alloc(32 * n), b = M.alloc(32 * n), c = M.alloc(32 * n), w = M.alloc(32 * k.nVars), t = M.alloc(32), f = M.alloc(32);
+    const tw = M.alloc(16 * n), twi = M.alloc(16 * n), one = M.alloc(32), ninv = M.alloc(32), shift = M.alloc(32), swap = M.alloc(32);
+    // Roots of unity as the proving key was made: the first non-residue g, ω_s = g^((r−1)/2^s), squared down.
+    let g = 2n;
+    while (powMod(g, (PRIME_R - 1n) / 2n, PRIME_R) !== PRIME_R - 1n) g++;
+    let s = 0n, odd = PRIME_R - 1n;
+    while (!(odd & 1n)) { odd >>= 1n; s++; }
+    const root = (lg) => powMod(powMod(g, odd, PRIME_R), 1n << (s - BigInt(lg)), PRIME_R);
+    const wn = root(bits), wi = invMod(wn, PRIME_R);
+    for (let i = 0, x = 1n, y = 1n; i < n / 2; i++, x = x * wn % PRIME_R, y = y * wi % PRIME_R) {
+      toLimbs(MONT(x, PRIME_R), M.u32, tw + 32 * i); toLimbs(MONT(y, PRIME_R), M.u32, twi + 32 * i);
+    }
+    toLimbs(1n, M.u32, one);
+    toLimbs(MONT(invMod(BigInt(n), PRIME_R), PRIME_R), M.u32, ninv);
+    toLimbs(MONT(root(bits + 1), PRIME_R), M.u32, shift);
+    const fft = (p, inverse) => {
+      const u = M.u32, tab = inverse ? twi : tw, q = p >> 2;
+      for (let i = 1, j = 0; i < n; i++) {
+        let bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { u.copyWithin(swap >> 2, q + 8 * i, q + 8 * i + 8); u.copyWithin(q + 8 * i, q + 8 * j, q + 8 * j + 8); u.copyWithin(q + 8 * j, swap >> 2, (swap >> 2) + 8); }
+      }
+      for (let len = 2; len <= n; len <<= 1) {
+        const half = len >> 1, step = n / len;
+        for (let i = 0; i < n; i += len) for (let j = 0; j < half; j++) {
+          const x = p + 32 * (i + j), y = x + 32 * half;
+          r.rm(t, y, tab + 32 * j * step); r.rs(y, x, t); r.ra(x, x, t);
+        }
+      }
+      if (inverse) for (let i = 0; i < n; i++) r.rm(p + 32 * i, p + 32 * i, ninv);
+    };
+    qap = (wit) => {
+      const u = M.u32;
+      u.set(wit, w >> 2);
+      u.fill(0, a >> 2, (a + 32 * n) >> 2); u.fill(0, b >> 2, (b + 32 * n) >> 2);
+      for (let i = 0; i < nCoef; i++) {
+        const o = coeffs + 4 + 44 * i, dst = (u[o >> 2] ? b : a) + 32 * u[(o >> 2) + 1];
+        r.rm(t, o + 12, w + 32 * u[(o >> 2) + 2]); r.ra(dst, dst, t);
+      }
+      for (let i = 0; i < n; i++) r.rm(c + 32 * i, a + 32 * i, b + 32 * i);
+      for (const p of [a, b, c]) {
+        fft(p, true);
+        toLimbs(MONT(1n, PRIME_R), M.u32, f);
+        for (let i = 0; i < n; i++) { r.rm(p + 32 * i, p + 32 * i, f); r.rm(f, f, shift); }
+        fft(p, false);
+      }
+      for (let i = 0; i < n; i++) { const x = 32 * i; r.rm(a + x, a + x, b + x); r.rs(a + x, a + x, c + x); r.rm(a + x, a + x, one); }
+      return M.u32.slice(a >> 2, (a + 32 * n) >> 2);
+    };
+  }
+
+  // One multi-exponentiation over the bases this instance holds → its Jacobian point, as bytes.
+  function msm(name, scal) {
+    const G = name === 'B2' ? G2 : G1, mark = M.mark(), out = M.alloc(3 * G.n);
+    G.msm(out, bases[name], scal, scal.length / 8);
+    const res = M.u8.slice(out, out + 3 * G.n);
+    M.reset(mark);
+    return res;
+  }
+
+  const rinv = invMod(1n << 256n, PRIME_Q);
+  const big = (p, len) => Array.from({ length: len }, (_, i) => fromLimbs(M.u32, p + 32 * i) * rinv % PRIME_Q);
+  const affine1 = (p) => {
+    const [x, y, z] = big(p, 3), zi = invMod(z, PRIME_Q), zi2 = zi * zi % PRIME_Q;
+    return [x * zi2 % PRIME_Q, y * zi2 % PRIME_Q * zi % PRIME_Q];
+  };
+  const affine2 = (p) => {
+    const [x0, x1, y0, y1, z0, z1] = big(p, 6), q = PRIME_Q;
+    const mul = ([a0, a1], [b0, b1]) => [modp(a0 * b0 - a1 * b1, q), modp(a0 * b1 + a1 * b0, q)];
+    const ni = invMod(modp(z0 * z0 + z1 * z1, q), q), zi = [z0 * ni % q, modp(-z1 * ni, q)], zi2 = mul(zi, zi);
+    return [mul([x0, x1], zi2), mul([y0, y1], mul(zi2, zi))];
+  };
+  const random = () => { let x = 0n; for (const v of crypto.getRandomValues(new Uint8Array(64))) x = (x << 8n) | BigInt(v); return x % PRIME_R; };
+
+  // points: { A, B1, B2, C, H }, each a list of partial sums from msm(). → the proof, as snarkjs shapes it.
+  function finish(points) {
+    const mark = M.mark(), pt = {};
+    for (const [name, parts] of Object.entries(points)) {
+      const G = name === 'B2' ? G2 : G1, sum = M.alloc(3 * G.n), tmp = M.alloc(3 * G.n);
+      G.zero(sum);
+      for (const p of parts) { M.u8.set(p, tmp); G.add(sum, sum, tmp); }
+      pt[name] = sum;
+    }
+    const h = {};
+    for (const name of ['alpha1', 'beta1', 'delta1']) { h[name] = M.alloc(96); G1.fromAffine(h[name], head[name]); }
+    for (const name of ['beta2', 'delta2']) { h[name] = M.alloc(192); G2.fromAffine(h[name], head[name]); }
+    const r = random(), s = random(), t1 = M.alloc(96), t2 = M.alloc(192), { A: pa, B1: pb1, B2: pb, C: pc } = pt;
+    G1.add(pa, pa, h.alpha1); G1.times(t1, h.delta1, r); G1.add(pa, pa, t1);
+    G2.add(pb, pb, h.beta2); G2.times(t2, h.delta2, s); G2.add(pb, pb, t2);
+    G1.add(pb1, pb1, h.beta1); G1.times(t1, h.delta1, s); G1.add(pb1, pb1, t1);
+    G1.add(pc, pc, pt.H);
+    G1.times(t1, pa, s); G1.add(pc, pc, t1);
+    G1.times(t1, pb1, r); G1.add(pc, pc, t1);
+    G1.times(t1, h.delta1, modp(-r * s, PRIME_R)); G1.add(pc, pc, t1);
+    const A = affine1(pa), B = affine2(pb), C = affine1(pc);
+    M.reset(mark);
+    return { pi_a: [String(A[0]), String(A[1]), '1'], pi_b: [B[0].map(String), B[1].map(String), ['1', '0']], pi_c: [String(C[0]), String(C[1]), '1'], protocol: 'groth16', curve: 'bn128' };
+  }
+
+  const publicSignals = (w) => Array.from({ length: k.nPublic }, (_, i) => String(fromLimbs(w, 32 * (i + 1))));
+  // Everything on this instance, one after another.
+  function prove(input) {
+    const w = witness(input), h = qap(w), one = (name, sc) => [msm(name, sc)];
+    const points = { A: one('A', w), B1: one('B1', w), B2: one('B2', w), C: one('C', w.subarray(8 * (k.nPublic + 1))), H: one('H', h) };
+    return { proof: finish(points), publicSignals: publicSignals(w) };
+  }
+  return { witness, qap, msm, finish, prove, publicSignals, nPublic: k.nPublic };
+}
+
+// The key split for `n` workers: each takes an equal slice of every point section; the first keeps the coefficients.
+function shareKey(k, n) {
+  const sizes = { A: 64, B1: 64, B2: 128, C: 64, H: 64 }, shares = [];
+  for (let j = 0; j < n; j++) {
+    const share = { nVars: k.nVars, nPublic: k.nPublic, domainSize: k.domainSize, head: k.head, ranges: {} };
+    for (const [name, size] of Object.entries(sizes)) {
+      const count = k[name].length / size, from = Math.floor(count * j / n), to = Math.floor(count * (j + 1) / n);
+      share[name] = k[name].slice(from * size, to * size);
+      share.ranges[name] = [from, to];
+    }
+    if (j === 0) share.coeffs = k.coeffs;
+    shares.push(share);
+  }
+  return shares;
+}
+
+// In a worker: { op, id, … } in, { id, ok, … } out.
+//   split { key, n }      → { shares } for the other workers; this one keeps the first share
+//   init  { share, wasm } → {}
+//   witness { input }     → { w, publicSignals }
+//   qap { w }             → { h }
+//   msm { jobs: [[name, scalars]…] } → { points }
+//   finish { points }     → { proof }
+if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
+  let P = null;
+  self.onmessage = ({ data: m }) => {
+    try {
+      let out = {}, transfer = [];
+      if (m.op === 'split') {
+        const shares = shareKey(readZkey(new Uint8Array(m.key)), m.n);
+        P = makeProver({ key: shares[0], wasm: m.wasm });
+        out = { shares: shares.slice(1), ranges: shares.map((s) => s.ranges) };
+        transfer = shares.slice(1).flatMap((s) => ['A', 'B1', 'B2', 'C', 'H'].map((x) => s[x].buffer));
+      } else if (m.op === 'init') P = makeProver({ key: m.share });
+      else if (m.op === 'witness') { const w = P.witness(m.input); out = { w, publicSignals: P.publicSignals(w) }; transfer = [w.buffer]; }
+      else if (m.op === 'qap') { const h = P.qap(m.w); out = { h }; transfer = [h.buffer]; }
+      else if (m.op === 'msm') out = { points: m.jobs.map(([name, sc]) => P.msm(name, sc)) };
+      else if (m.op === 'finish') out = { proof: P.finish(m.points) };
+      else throw new Error(`unknown op ${m.op}`);
+      self.postMessage({ id: m.id, ok: true, ...out }, transfer);
+    } catch (e) {
+      self.postMessage({ id: m.id, ok: false, error: String(e?.message || e) });
+    }
+  };
+}
+</script>
+<script type="module">
+// ── bytes ───────────────────────────────────────────────────────────────────────────────────────────────────
+const te = new TextEncoder();
+const utf8 = (s) => te.encode(s);
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const unhex = (h) => {
+  const s = String(h).replace(/^0x/i, '');
+  if (s.length % 2 || /[^0-9a-f]/i.test(s)) throw new Error('not hex');
+  return Uint8Array.from(s.match(/../g) || [], (x) => parseInt(x, 16));
+};
+const cat = (...xs) => { const o = new Uint8Array(xs.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of xs) { o.set(x, i); i += x.length; } return o; };
+const big = (b) => { let x = 0n; for (const c of b) x = (x << 8n) | BigInt(c); return x; };
+const be = (x, n = 32) => { x = BigInt(x); const o = new Uint8Array(n); for (let i = n - 1; i >= 0; i--) { o[i] = Number(x & 255n); x >>= 8n; } return o; };
+const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const lc = (s) => String(s || '').toLowerCase();
+const isAddr = (s) => /^0x[0-9a-fA-F]{40}$/.test(s);
+const mod = (x, p) => { x %= p; return x < 0n ? x + p : x; };
+function pow(b, e, p) { let r = 1n; b = mod(b, p); for (; e > 0n; e >>= 1n) { if (e & 1n) r = r * b % p; b = b * b % p; } return r; }
+function inv(a, p) { let [r0, r1, s0, s1] = [mod(a, p), p, 1n, 0n]; while (r1) { const q = r0 / r1; [r0, r1, s0, s1] = [r1, r0 - q * r1, s1, s0 - q * s1]; } return mod(s0, p); }
+const randomBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+// ── SHA-256 and HMAC ────────────────────────────────────────────────────────────────────────────────────────
+// Its constants are the fractional parts of the first primes' square and cube roots, computed here.
+const sha256 = (() => {
+  const primes = [];
+  for (let n = 2; primes.length < 64; n++) if (primes.every((p) => n % p)) primes.push(n);
+  const root = (x, k) => { let r = 1n << BigInt(Math.ceil(x.toString(2).length / k)); for (;;) { const s = ((BigInt(k) - 1n) * r + x / r ** BigInt(k - 1)) / BigInt(k); if (s >= r) return r; r = s; } };
+  const frac = (p, k) => Number(root(BigInt(p) << BigInt(32 * k), k) & 0xffffffffn);
+  const K = Uint32Array.from(primes, (p) => frac(p, 3)), IV = Uint32Array.from(primes.slice(0, 8), (p) => frac(p, 2));
+  const W = new Uint32Array(64), H = new Uint32Array(8);
+  const rot = (x, n) => (x >>> n) | (x << (32 - n));
+  return (msg) => {
+    const n = ((msg.length + 72) >> 6) << 6, buf = new Uint8Array(n), dv = new DataView(buf.buffer);
+    buf.set(msg); buf[msg.length] = 0x80;
+    dv.setUint32(n - 8, Math.floor(msg.length / 0x20000000)); dv.setUint32(n - 4, msg.length << 3);
+    H.set(IV);
+    for (let o = 0; o < n; o += 64) {
+      for (let i = 0; i < 16; i++) W[i] = dv.getUint32(o + 4 * i);
+      for (let i = 16; i < 64; i++) {
+        const a = W[i - 15], b = W[i - 2];
+        W[i] = W[i - 16] + (rot(a, 7) ^ rot(a, 18) ^ (a >>> 3)) + W[i - 7] + (rot(b, 17) ^ rot(b, 19) ^ (b >>> 10));
+      }
+      let [a, b, c, d, e, f, g, h] = H;
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + W[i]) | 0;
+        const t2 = ((rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    const out = new Uint8Array(32), ov = new DataView(out.buffer);
+    H.forEach((x, i) => ov.setUint32(4 * i, x));
+    return out;
+  };
+})();
+function hmac(key, msg) {
+  const k = new Uint8Array(64);
+  k.set(key.length > 64 ? sha256(key) : key);
+  return sha256(cat(k.map((x) => x ^ 0x5c), sha256(cat(k.map((x) => x ^ 0x36), msg))));
+}
+
+// ── Keccak-256 ──────────────────────────────────────────────────────────────────────────────────────────────
+// Rotation offsets, the lane permutation and the round constants follow from their definitions.
+const keccak = (() => {
+  const RHO = new Array(25).fill(0), PI = new Array(25).fill(0);
+  for (let t = 0, x = 1, y = 0; t < 24; t++) { RHO[x + 5 * y] = ((t + 1) * (t + 2) / 2) % 64; [x, y] = [y, (2 * x + 3 * y) % 5]; }
+  for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) PI[y + 5 * ((2 * x + 3 * y) % 5)] = x + 5 * y;
+  const RC = [];
+  for (let i = 0, r = 1; i < 24; i++) {
+    let c = 0n;
+    for (let j = 0; j < 7; j++) { if (r & 1) c |= 1n << BigInt((1 << j) - 1); r = ((r << 1) ^ ((r >> 7) * 0x71)) & 0xff; }
+    RC.push([Number(c & 0xffffffffn), Number(c >> 32n)]);
+  }
+  const s = new Uint32Array(50), b = new Uint32Array(50), C = new Uint32Array(10);
+  const rotl = (lo, hi, n) => (n === 0 ? [lo, hi] : n < 32 ? [(lo << n) | (hi >>> (32 - n)), (hi << n) | (lo >>> (32 - n))] : n === 32 ? [hi, lo] : [(hi << (n - 32)) | (lo >>> (64 - n)), (lo << (n - 32)) | (hi >>> (64 - n))]);
+  function f() {
+    for (let round = 0; round < 24; round++) {
+      for (let x = 0; x < 5; x++) for (let k = 0; k < 2; k++) C[2 * x + k] = s[2 * x + k] ^ s[2 * x + 10 + k] ^ s[2 * x + 20 + k] ^ s[2 * x + 30 + k] ^ s[2 * x + 40 + k];
+      for (let x = 0; x < 5; x++) {
+        const p = (x + 4) % 5, q = (x + 1) % 5;
+        const [rl, rh] = rotl(C[2 * q], C[2 * q + 1], 1);
+        for (let y = 0; y < 25; y += 5) { s[2 * (x + y)] ^= C[2 * p] ^ rl; s[2 * (x + y) + 1] ^= C[2 * p + 1] ^ rh; }
+      }
+      for (let i = 0; i < 25; i++) { const j = PI[i], [lo, hi] = rotl(s[2 * j], s[2 * j + 1], RHO[j]); b[2 * i] = lo; b[2 * i + 1] = hi; }
+      for (let y = 0; y < 25; y += 5) for (let x = 0; x < 5; x++) for (let k = 0; k < 2; k++) {
+        s[2 * (x + y) + k] = b[2 * (x + y) + k] ^ (~b[2 * ((x + 1) % 5 + y) + k] & b[2 * ((x + 2) % 5 + y) + k]);
+      }
+      s[0] ^= RC[round][0]; s[1] ^= RC[round][1];
+    }
+  }
+  return (msg) => {
+    s.fill(0);
+    const rate = 136, n = Math.floor(msg.length / rate) * rate + rate, buf = new Uint8Array(n);
+    buf.set(msg); buf[msg.length] ^= 0x01; buf[n - 1] ^= 0x80;
+    const dv = new DataView(buf.buffer);
+    for (let o = 0; o < n; o += rate) { for (let i = 0; i < rate / 4; i++) s[i] ^= dv.getUint32(o + 4 * i, true); f(); }
+    const out = new Uint8Array(32), ov = new DataView(out.buffer);
+    for (let i = 0; i < 8; i++) ov.setUint32(4 * i, s[i], true);
+    return out;
+  };
+})();
+const keccakHex = (...parts) => '0x' + hex(keccak(cat(...parts)));
+const selector = (sig) => keccak(utf8(sig)).subarray(0, 4);
+
+// ── secp256k1 ───────────────────────────────────────────────────────────────────────────────────────────────
+const SP = 2n ** 256n - 2n ** 32n - 977n;
+const SN = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const secp = (() => {
+  const p = SP, m = (x) => mod(x, p);
+  const dbl = ([X, Y, Z]) => {
+    if (!Z || !Y) return [0n, 1n, 0n];
+    const A = X * X % p, B = Y * Y % p, C = B * B % p, D = m(2n * (m((X + B) ** 2n) - A - C)), E = 3n * A % p;
+    const X3 = m(E * E - 2n * D);
+    return [X3, m(E * (D - X3) - 8n * C), 2n * Y * Z % p];
+  };
+  const add = (P, Q) => {
+    if (!P[2]) return Q;
+    if (!Q[2]) return P;
+    const Z1Z1 = P[2] * P[2] % p, Z2Z2 = Q[2] * Q[2] % p;
+    const U1 = P[0] * Z2Z2 % p, U2 = Q[0] * Z1Z1 % p, S1 = P[1] * Q[2] % p * Z2Z2 % p, S2 = Q[1] * P[2] % p * Z1Z1 % p;
+    const H = m(U2 - U1), r = m(2n * (S2 - S1));
+    if (!H) return r ? [0n, 1n, 0n] : dbl(P);
+    const I = 4n * H * H % p, J = H * I % p, V = U1 * I % p, X3 = m(r * r - J - 2n * V);
+    return [X3, m(r * (V - X3) - 2n * S1 * J), m(((P[2] + Q[2]) ** 2n - Z1Z1 - Z2Z2) * H)];
+  };
+  const mul = (P, k) => {
+    k = mod(k, SN);
+    let R = [0n, 1n, 0n];
+    for (let i = BigInt(k.toString(2).length - 1); i >= 0n; i--) { R = dbl(R); if ((k >> i) & 1n) R = add(R, P); }
+    return R;
+  };
+  const affine = ([X, Y, Z]) => { if (!Z) throw new Error('point at infinity'); const zi = inv(Z, p), z2 = zi * zi % p; return [X * z2 % p, Y * z2 % p * zi % p]; };
+  const G = [0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n, 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n, 1n];
+  const table = [G];
+  for (let i = 1; i < 256; i++) table.push(dbl(table[i - 1]));
+  const mulG = (k) => { k = mod(k, SN); let R = [0n, 1n, 0n]; for (let i = 0; k; i++, k >>= 1n) if (k & 1n) R = add(R, table[i]); return R; };
+  const compress = (P) => { const [x, y] = affine(P); return cat([y & 1n ? 3 : 2], be(x)); };
+  const lift = (x, odd) => {
+    if (x >= p) throw new Error('not a point');
+    let y = pow(x * x * x + 7n, (p + 1n) / 4n, p);
+    if (y * y % p !== m(x * x * x + 7n)) throw new Error('not a point');
+    if ((y & 1n) !== BigInt(odd)) y = p - y;
+    return [x, y, 1n];
+  };
+  const decompress = (b) => { if (b.length !== 33 || (b[0] !== 2 && b[0] !== 3)) throw new Error('not a compressed point'); return lift(big(b.subarray(1)), b[0] & 1); };
+  // The public key behind an Ethereum signature (r, s, recovery id) over a 32-byte hash.
+  const recover = (hash, r, s, rec) => {
+    if (!r || r >= SN || !s || s >= SN) throw new Error('bad signature');
+    const R = lift(r, rec & 1), ri = inv(r, SN), e = big(hash);
+    return add(mulG(mod(-e * ri, SN)), mul(R, s * ri % SN));
+  };
+  return { G, mul, mulG, add, affine, compress, decompress, recover };
+})();
+const pubOf = (priv) => secp.compress(secp.mulG(big(priv)));
+
+// ── BN254 scalar field: Poseidon ────────────────────────────────────────────────────────────────────────────
+// circomlib's Poseidon (x^5, 8 full rounds). Its round constants and MDS matrix come from the Grain LFSR exactly
+// as the Poseidon reference generates them, so nothing is stored.
+const FR = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const poseidon = (() => {
+  const PARTIAL = { 3: 57, 4: 56, 5: 60, 6: 60, 8: 64 }, cache = {};
+  function params(t) {
+    const bits = [];
+    const put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >> i) & 1); };
+    put(1, 2); put(0, 4); put(254, 12); put(t, 12); put(8, 10); put(PARTIAL[t], 10);
+    for (let i = 0; i < 30; i++) bits.push(1);
+    let at = 0;
+    const step = () => { const b = bits[at + 62] ^ bits[at + 51] ^ bits[at + 38] ^ bits[at + 23] ^ bits[at + 13] ^ bits[at]; bits.push(b); at++; return b; };
+    for (let i = 0; i < 160; i++) step();
+    const bit = () => { for (;;) { const a = step(), b = step(); if (a) return b; } };
+    const field = () => { let x = 0n; for (let i = 0; i < 254; i++) x = (x << 1n) | BigInt(bit()); return x; };
+    const C = [];
+    for (let i = 0; i < (8 + PARTIAL[t]) * t; i++) { let x = field(); while (x >= FR) x = field(); C.push(x); }
+    let M;
+    for (;;) {
+      let xs = Array.from({ length: 2 * t }, () => field() % FR);
+      while (new Set(xs.map(String)).size !== xs.length) xs = Array.from({ length: 2 * t }, () => field() % FR);
+      M = xs.slice(0, t).map((a) => xs.slice(t).map((b) => (a + b) % FR));
+      if (M.flat().every((v) => v)) break;
+    }
+    return { C, M: M.map((row) => row.map((v) => inv(v, FR))) };
+  }
+  return (inputs) => {
+    const t = inputs.length + 1, { C, M } = cache[t] ||= params(t), rounds = 8 + PARTIAL[t];
+    let s = [0n, ...inputs.map((x) => mod(BigInt(x), FR))];
+    const p5 = (x) => { const x2 = x * x % FR; return x2 * x2 % FR * x % FR; };
+    for (let r = 0; r < rounds; r++) {
+      s = s.map((x, i) => x + C[r * t + i]);
+      if (r < 4 || r >= rounds - 4) s = s.map(p5); else s[0] = p5(s[0]);
+      s = M.map((row) => row.reduce((a, v, j) => a + v * s[j], 0n) % FR);
+    }
+    return s[0];
+  };
+})();
+const H = (xs) => poseidon(xs);
+
+// ── BabyJubJub (circomlib's twisted Edwards curve over the BN254 scalar field) ─────────────────────────────────
+const BJ_L = 2736030358979909402780800718157159386076813972158567259200215660948447373041n;
+const B8 = [5299619240641551281634865583518297030282874472190772894086521144482721001553n, 16950150798460657717958625567821834550301663161624707787222815936182638968203n];
+const bj = (() => {
+  const A = 168700n, D = 168696n, m = (x) => mod(x, FR);
+  const padd = ([X1, Y1, Z1], [X2, Y2, Z2]) => {
+    const a = m(Z1 * Z2), b = m(a * a), c = m(X1 * X2), d = m(Y1 * Y2), e = m(D * c % FR * d), f = m(b - e), g = m(b + e);
+    return [m(a * f % FR * m((X1 + Y1) * (X2 + Y2) - c - d)), m(a * g % FR * m(d - A * c)), m(f * g)];
+  };
+  const affine = ([X, Y, Z]) => { const zi = inv(Z, FR); return [m(X * zi), m(Y * zi)]; };
+  const mulPoint = (P, k) => { let r = [0n, 1n, 1n], acc = [P[0], P[1], 1n]; for (; k > 0n; k >>= 1n) { if (k & 1n) r = padd(r, acc); acc = padd(acc, acc); } return affine(r); };
+  const table = [[B8[0], B8[1], 1n]];
+  for (let i = 1; i < 253; i++) table.push(padd(table[i - 1], table[i - 1]));
+  const mulB8 = (k) => { let e = mod(BigInt(k), BJ_L), r = [0n, 1n, 1n]; for (let i = 0; e > 0n; i++, e >>= 1n) if (e & 1n) r = padd(r, table[i]); return affine(r); };
+  const add = (P, Q) => affine(padd([P[0], P[1], 1n], [Q[0], Q[1], 1n]));
+  const half = (FR - 1n) / 2n;
+  const pack = (P) => { const b = be(P[1]).reverse(); if (P[0] > half) b[31] |= 0x80; return b; };
+  // Tonelli–Shanks: FR − 1 = 2^28·odd.
+  const sqrt = (n) => {
+    if (n === 0n) return 0n;
+    if (pow(n, half, FR) !== 1n) return null;
+    let q = FR - 1n, s = 0n;
+    while (!(q & 1n)) { q >>= 1n; s++; }
+    let z = 2n;
+    while (pow(z, half, FR) !== FR - 1n) z++;
+    let [M, c, t, r] = [s, pow(z, q, FR), pow(n, q, FR), pow(n, (q + 1n) / 2n, FR)];
+    while (t !== 1n) {
+      let i = 0n, u = t;
+      while (u !== 1n) { u = u * u % FR; i++; }
+      const b = pow(c, 1n << (M - i - 1n), FR);
+      [M, c, t, r] = [i, b * b % FR, t * b % FR * b % FR, r * b % FR];
+    }
+    return r;
+  };
+  const unpack = (bytes) => {
+    const b = Uint8Array.from(bytes), sign = !!(b[31] & 0x80);
+    b[31] &= 0x7f;
+    const y = big(b.reverse());
+    if (y >= FR) return null;
+    const y2 = y * y % FR, den = m(A - D * y2);
+    if (!den) return null;
+    let x = sqrt(m(1n - y2) * inv(den, FR) % FR);
+    if (x === null) return null;
+    if ((x > half) !== sign) x = m(-x);
+    const P = [x, y], Q = mulPoint(P, BJ_L);
+    return Q[0] === 0n && Q[1] === 1n ? P : null;
+  };
+  return { mulB8, add, pack, unpack };
+})();
+
+// ── pool keys, notes and the tree (transact.circom) ────────────────────────────────────────────────────────
+// hsX(tag, m) = (sha256(tag ‖ m ‖ 0) ‖ sha256(tag ‖ m ‖ 1)) mod X; Hs(m) = keccak(m) mod n (secp), never 0.
+const asBytes = (x) => (typeof x === 'string' ? utf8(x) : x);
+const wide = (tag, ...parts) => { const m = cat(...[tag, ...parts].map(asBytes)); return big(cat(sha256(cat(m, [0])), sha256(cat(m, [1])))); };
+const hsL = (tag, ...parts) => { const x = wide(tag, ...parts) % BJ_L; if (!x) throw new Error('zero scalar'); return x; };
+const hsP = (tag, ...parts) => wide(tag, ...parts) % FR;
+const Hs = (...parts) => { const x = big(keccak(cat(...parts.map(asBytes)))) % SN; if (!x) throw new Error('zero scalar'); return x; };
+
+const TREE_DEPTH = 32;
+const VMAX = 1n << 120n;
+const ZEROS = [0n];
+for (let i = 1; i <= TREE_DEPTH; i++) ZEROS.push(H([ZEROS[i - 1], ZEROS[i - 1]]));
+const npkOf = (Ak, NK) => H([Ak[0], Ak[1], NK[0], NK[1]]);
+const leafOf = (asset, v, npk, rho) => { if (v < 0n || v >= VMAX) throw new Error('value out of range'); return H([asset, v, npk, rho]); };
+const nullifier = (nk, leaf, index) => H([nk, leaf, BigInt(index)]);
+function noteTweaks(s) { return { tA: hsL('tacit-btc-pool-zk-auth-tweak-v1', s), tN: hsL('tacit-btc-pool-zk-nk-tweak-v1', s), rho: hsP('tacit-btc-pool-zk-rho-v1', s) }; }
+// Sender side: the note keys for an address's (A, N) under shared secret s.
+function outputKeys(A, N, s) {
+  const { tA, tN, rho } = noteTweaks(s);
+  return { npk: npkOf(bj.add(A, bj.mulB8(tA)), bj.add(N, bj.mulB8(tN))), rho };
+}
+// Recipient side: the spend and nullifier keys of a note under s.
+function ownedKeys(w, s) {
+  const { tA, tN, rho } = noteTweaks(s), sk = (w.a + tA) % BJ_L, nk = (w.n + tN) % BJ_L;
+  if (!sk || !nk) throw new Error('degenerate note key');
+  return { sk, nk, npk: npkOf(bj.mulB8(sk), bj.mulB8(nk)), rho };
+}
+// EdDSA-Poseidon, as circomlib verifies it.
+function sign(sk, M) {
+  const A = bj.mulB8(sk), r = hsL('tacit-btc-pool-zk-eddsa-nonce-v1', be(sk), be(M)), R8 = bj.mulB8(r);
+  return { R8, S: (r + 8n * H([R8[0], R8[1], A[0], A[1], M]) * sk) % BJ_L };
+}
+function rootFromPath(leaf, index, path) {
+  let cur = BigInt(leaf);
+  for (let d = 0; d < TREE_DEPTH; d++) cur = (BigInt(index) >> BigInt(d)) & 1n ? H([path[d], cur]) : H([cur, path[d]]);
+  return cur;
+}
+// The pool's tree kept incrementally: its right edge, size, root, and the paths of the leaves it tracks.
+function incTree(state = null) {
+  let size = state ? Number(state.size) : 0, root = state ? BigInt(state.root) : ZEROS[TREE_DEPTH];
+  const filled = state ? state.filled.map(BigInt) : ZEROS.slice(0, TREE_DEPTH);
+  const tracked = new Map(state ? Object.entries(state.tracked).map(([i, p]) => [Number(i), p.map(BigInt)]) : []);
+  function append(leaves, track = []) {
+    const n = leaves.length;
+    if (!n) return;
+    const start = size;
+    for (const i of track) tracked.set(Number(i), Array(TREE_DEPTH).fill(null));
+    let cur = leaves.map(BigInt), lo = start;
+    for (let L = 0; L < TREE_DEPTH; L++) {
+      const hi = lo + cur.length - 1, prev = filled[L];
+      for (const [i, path] of tracked) {
+        const s = Math.floor(i / 2 ** L) ^ 1;
+        if (s >= lo && s <= hi) path[L] = cur[s - lo];
+        else if (path[L] === null) path[L] = s < lo ? prev : ZEROS[L];
+      }
+      const lastEven = hi % 2 === 0 ? hi : hi - 1;
+      if (lastEven >= lo) filled[L] = cur[lastEven - lo];
+      const next = [];
+      for (let q = Math.floor(lo / 2); q <= Math.floor(hi / 2); q++) next.push(H([2 * q < lo ? prev : cur[2 * q - lo], 2 * q + 1 <= hi ? cur[2 * q + 1 - lo] : ZEROS[L]]));
+      cur = next; lo = Math.floor(lo / 2);
+    }
+    root = cur[0]; size = start + n;
+  }
+  return {
+    get size() { return size; }, get root() { return root; }, append,
+    path(i) { const p = tracked.get(Number(i)); if (!p) throw new Error('leaf is not tracked'); return p.slice(); },
+    // Level-1 siblings of the next pair slot: where the next insertion goes.
+    insertPath() { const o = []; for (let d = 1; d < TREE_DEPTH; d++) o.push(Math.floor(size / 2 ** d) % 2 ? filled[d] : ZEROS[d]); return o; },
+    untrack: (i) => tracked.delete(Number(i)),
+    toJSON: () => ({ size, root: String(root), filled: filled.map(String), tracked: Object.fromEntries([...tracked].map(([i, p]) => [i, p.map(String)])) }),
+    clone() { return incTree(JSON.parse(JSON.stringify(this.toJSON()))); },
+  };
+}
+function insertRoot(pair, start, path) {
+  let cur = H(pair), i = BigInt(start) >> 1n;
+  for (let d = 0; d < TREE_DEPTH - 1; d++) cur = (i >> BigInt(d)) & 1n ? H([path[d], cur]) : H([cur, path[d]]);
+  return cur;
+}
+
+// One transact(): inputs [{ v, rho, nk, sk, index } | { dummy: true } | null] × 2 (a dummy is a zero-value note
+// with fresh keys, so its nullifier is unique; null is an empty slot, nullifier 0), outputs [{ v, npk, rho } | null]
+// × 2. → the circuit's input signals, as decimal strings.
+function buildWitness({ asset, tree, inputs, outputs, extAmount, fee, extDataHash: eh }) {
+  if (tree.size % 2) throw new Error('pool size must be even');
+  const pa = mod(BigInt(extAmount) - BigInt(fee), FR);
+  const rnd = (n) => big(randomBytes(n));
+  const ins = inputs.map((x) => {
+    if (!x) return { v: 0n, rho: 0n, nk: 1n, sk: 1n, index: 0n, path: Array(TREE_DEPTH).fill(0n), nf: 0n };
+    if (x.dummy) {
+      const sk = 1n + rnd(64) % (BJ_L - 1n), nk = 1n + rnd(64) % (BJ_L - 1n), rho = rnd(64) % FR, index = rnd(4);
+      const leaf = leafOf(asset, 0n, npkOf(bj.mulB8(sk), bj.mulB8(nk)), rho);
+      return { v: 0n, rho, nk, sk, index, path: Array(TREE_DEPTH).fill(0n), nf: nullifier(nk, leaf, index) };
+    }
+    const leaf = leafOf(asset, BigInt(x.v), npkOf(bj.mulB8(x.sk), bj.mulB8(x.nk)), x.rho), path = tree.path(x.index);
+    if (rootFromPath(leaf, x.index, path) !== tree.root) throw new Error('input is not the leaf at its index');
+    return { ...x, v: BigInt(x.v), index: BigInt(x.index), path, nf: nullifier(x.nk, leaf, x.index) };
+  });
+  const outs = outputs.map((o) => (o ? { v: BigInt(o.v), npk: o.npk, rho: o.rho, leaf: leafOf(asset, BigInt(o.v), o.npk, o.rho) } : { v: 0n, npk: 0n, rho: 0n, leaf: 0n }));
+  if (ins.reduce((s, x) => s + x.v, 0n) + BigInt(extAmount) - BigInt(fee) !== outs.reduce((s, o) => s + o.v, 0n)) throw new Error('value not conserved');
+  const nf = ins.map((x) => x.nf), outLeaf = outs.map((o) => o.leaf);
+  const M = H([asset, ...nf, ...outLeaf, pa, eh]);
+  const sigs = ins.map((x) => sign(x.sk, M));
+  const insPath = tree.insertPath(), newRoot = insertRoot(outLeaf, tree.size, insPath);
+  const input = {
+    root: tree.root, oldRoot: tree.root, newRoot, startIndex: tree.size, publicAmount: pa, extDataHash: eh, asset, nf, outLeaf,
+    inV: ins.map((x) => x.v), inRho: ins.map((x) => x.rho), inNk: ins.map((x) => x.nk), inAk: ins.map((x) => bj.mulB8(x.sk)),
+    inIndex: ins.map((x) => x.index), inPath: ins.map((x) => x.path), sigR8: sigs.map((s) => s.R8), sigS: sigs.map((s) => s.S),
+    outV: outs.map((o) => o.v), outNpk: outs.map((o) => o.npk), outRho: outs.map((o) => o.rho), insPath,
+  };
+  const str = (x) => (Array.isArray(x) ? x.map(str) : String(x));
+  return { input: Object.fromEntries(Object.entries(input).map(([k, v]) => [k, str(v)])), nf, outLeaf };
+}
+
+// ── addresses ───────────────────────────────────────────────────────────────────────────────────────────────
+const bech32m = (() => {
+  const CH = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l', GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  const polymod = (vs) => { let c = 1; for (const v of vs) { const b = c >>> 25; c = ((c & 0x1ffffff) << 5) ^ v; for (let i = 0; i < 5; i++) if ((b >>> i) & 1) c ^= GEN[i]; } return c >>> 0; };
+  const expand = (hrp) => [...[...hrp].map((c) => c.charCodeAt(0) >> 5), 0, ...[...hrp].map((c) => c.charCodeAt(0) & 31)];
+  const regroup = (data, from, to, pad) => {
+    let acc = 0, bits = 0; const out = [];
+    for (const v of data) { acc = (acc << from) | v; bits += from; while (bits >= to) { bits -= to; out.push((acc >>> bits) & ((1 << to) - 1)); } }
+    if (pad) { if (bits) out.push((acc << (to - bits)) & ((1 << to) - 1)); } else if (bits >= from || ((acc << (to - bits)) & ((1 << to) - 1))) throw new Error('bad padding');
+    return out;
+  };
+  return {
+    encode(hrp, bytes) {
+      const d = regroup(bytes, 8, 5, true), pm = polymod([...expand(hrp), ...d, 0, 0, 0, 0, 0, 0]) ^ 0x2bc830a3;
+      return hrp + '1' + [...d, ...[0, 1, 2, 3, 4, 5].map((i) => (pm >>> (5 * (5 - i))) & 31)].map((x) => CH[x]).join('');
+    },
+    decode(str) {
+      if (str !== str.toLowerCase() && str !== str.toUpperCase()) throw new Error('mixed case');
+      const s = str.toLowerCase(), at = s.lastIndexOf('1');
+      if (at < 1 || at + 7 > s.length) throw new Error('malformed address');
+      const hrp = s.slice(0, at), d = [...s.slice(at + 1)].map((c) => { const i = CH.indexOf(c); if (i < 0) throw new Error('bad character'); return i; });
+      if (polymod([...expand(hrp), ...d]) !== 0x2bc830a3) throw new Error('bad checksum');
+      return { hrp, bytes: Uint8Array.from(regroup(d.slice(0, -6), 5, 8, false)) };
+    },
+  };
+})();
+
+// A Tacit key's pool wallet: seed = HMAC-SHA256(key, "tacit-btc-pool-seed-v1"), keys under the "mainnet" tag. The
+// address (bp1…) is V (secp view key) ‖ A ‖ N (BabyJub), 97 bytes.
+function poolKeys(key) {
+  const seed = hmac(key, utf8('tacit-btc-pool-seed-v1')), net = utf8('mainnet');
+  const v = Hs('tacit-btc-pool-wallet-view-v1', net, seed);
+  const a = hsL('tacit-btc-pool-zk-wallet-spend-v1', 'mainnet', seed), n = hsL('tacit-btc-pool-zk-wallet-nk-v1', 'mainnet', seed);
+  const V = secp.mulG(v), A = bj.mulB8(a), N = bj.mulB8(n), raw = cat(secp.compress(V), bj.pack(A), bj.pack(N));
+  return { v, V, a, n, A, N, raw, address: bech32m.encode('bp', raw) };
+}
+// { V, A, N } from a 97-byte pool payload, every key checked.
+function poolRecipient(raw) {
+  if (raw.length !== 97) throw new Error('not a pool address');
+  const A = bj.unpack(raw.subarray(33, 65)), N = bj.unpack(raw.subarray(65, 97));
+  if (!A || !N || (!A[0] && A[1] === 1n) || (!N[0] && N[1] === 1n)) throw new Error('not a pool address');
+  return { V: secp.decompress(raw.subarray(0, 33)), A, N, raw };
+}
+// A recipient as written: a bp1… pool address, or a tacit1… address that carries one (its pool lane, flag 0x04).
+function parseRecipient(text) {
+  const s = String(text).trim(), lo = s.toLowerCase();
+  if (/^bp1/.test(lo)) {
+    const { hrp, bytes } = bech32m.decode(s);
+    if (hrp !== 'bp') throw new Error('not a pool address');
+    return poolRecipient(bytes);
+  }
+  if (/^tacit1/.test(lo)) {
+    const { hrp, bytes } = bech32m.decode(s);
+    if (hrp !== 'tacit' || bytes[0] !== 0) throw new Error('not a Tacit address');
+    const flags = bytes[1];
+    if (!(flags & 0x01) || ((flags & 0x02) && (flags & 0x80))) throw new Error('not a Tacit address');
+    if (!(flags & 0x04)) throw new Error('This Tacit address is from before pool payments. Ask for their pool address (bp1…).');
+    const at = 68 + (flags & 0x02 ? 33 : 0), want = at + 97;
+    if ((flags & 0x78) ? bytes.length < want : bytes.length !== want) throw new Error('not a Tacit address');
+    for (let o = 2; o < at; o += 33) secp.decompress(bytes.subarray(o, o + 33));
+    return poolRecipient(bytes.subarray(at, want));
+  }
+  throw new Error('Enter a pool address (bp1…) or a Tacit address (tacit1…).');
+}
+// The unified tacit1… address: Bitcoin spend and BIP-352 scan keys, the Ethereum-side key marked as the spend key
+// (0x80) and the pool keys (0x04).
+function tacitAddress(key, pool) {
+  const spend = pubOf(key), tag = sha256(utf8('BIP0352/ScanKey'));
+  const scan = secp.compress(secp.mulG(big(sha256(cat(tag, tag, key))) % SN));
+  return bech32m.encode('tacit', cat([0x00, 0x85], spend, scan, pool.raw));
+}
+
+// ── notes ───────────────────────────────────────────────────────────────────────────────────────────────────
+// Memo, 65 bytes per output: pk_eph (33) ‖ ct (16) ‖ tag (16), sealed to the recipient's view key V:
+//   s = compress(e·V) = compress(v·pk_eph), k = keccak("tacit-evm-pool-aead-v1" ‖ s),
+//   ct = be16(value) ⊕ keccak(k ‖ 0x0000)[0..16), tag = keccak("tacit-evm-pool-aead-tag-v1" ‖ k ‖ ct)[0..16).
+// A memo counts only when Poseidon(asset, value, npk, rho) is the output's leaf.
+function sealValue(s, v) {
+  const k = keccak(cat(utf8('tacit-evm-pool-aead-v1'), s)), ks = keccak(cat(k, [0, 0])), ct = be(v, 16).map((b, i) => b ^ ks[i]);
+  return cat(ct, keccak(cat(utf8('tacit-evm-pool-aead-tag-v1'), k, ct)).subarray(0, 16));
+}
+function openValue(s, sealed) {
+  const k = keccak(cat(utf8('tacit-evm-pool-aead-v1'), s)), ct = sealed.subarray(0, 16);
+  if (!same(sealed.subarray(16, 32), keccak(cat(utf8('tacit-evm-pool-aead-tag-v1'), k, ct)).subarray(0, 16))) return null;
+  const ks = keccak(cat(k, [0, 0]));
+  return big(ct.map((b, i) => b ^ ks[i]));
+}
+function randomScalar() { for (;;) { const s = big(randomBytes(32)) % SN; if (s) return s; } }
+function sealNote({ to, value, asset, e = randomScalar() }) {
+  const v = BigInt(value), s = secp.compress(secp.mul(to.V, e)), o = outputKeys(to.A, to.N, s);
+  return { v, npk: o.npk, rho: o.rho, leaf: leafOf(asset, v, o.npk, o.rho), memo: cat(secp.compress(secp.mulG(e)), sealValue(s, v)) };
+}
+function openNote(keys, { memo, leaf, asset }) {
+  if (memo.length !== 65) return null;
+  let s;
+  try { s = secp.compress(secp.mul(secp.decompress(memo.subarray(0, 33)), keys.v)); } catch { return null; }
+  const v = openValue(s, memo.subarray(33));
+  if (v === null || v >= VMAX) return null;
+  const o = ownedKeys(keys, s);
+  return leafOf(asset, v, o.npk, o.rho) === BigInt(leaf) ? { v, ...o, s } : null;
+}
+// A spend's one-time key for output k, derived from the sender's view key, the spend's first nullifier and the
+// attempt (appended when non-zero), so it never repeats and the sender can find the payment again:
+// HMAC(sha256("tacit-evm-pool-eph-v1" ‖ v), chainId ‖ nf ‖ k [‖ attempt]) mod n.
+function paymentKey(keys, chainId, nf, k, attempt = 0) {
+  const e = big(hmac(sha256(cat(utf8('tacit-evm-pool-eph-v1'), be(keys.v))), cat(be(chainId), be(nf), [k], attempt ? [attempt] : []))) % SN;
+  if (!e) throw new Error('degenerate payment key');
+  return e;
+}
+
+// ── the pool's public values ────────────────────────────────────────────────────────────────────────────────
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const word = (x) => be(mod(BigInt(x), 1n << 256n));
+const addrWord = (a) => { if (!/^0x[0-9a-fA-F]{40}$/.test(a)) throw new Error('bad address'); return be(BigInt(a)); };
+const poolAsset = (chainId, pool) => big(keccak(cat(word(chainId), addrWord(pool), addrWord(ZERO_ADDRESS)))) % FR;
+function extDataHash({ chainId, pool, recipient, extAmount, relayer, fee, memo0, memo1 }) {
+  return big(keccak(cat(word(chainId), addrWord(pool), addrWord(recipient), word(extAmount), addrWord(relayer), word(fee), keccak(memo0), keccak(memo1)))) % FR;
+}
+
+// ── ABI ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Types: 'address', 'uint256', 'uint16', 'bytes32', 'bytes', { array: T }, { tuple: [T…] }.
+function abi(types, values) {
+  const dyn = (t) => t === 'bytes' || !!t.array || (!!t.tuple && t.tuple.some(dyn));
+  const one = (t, v) => {
+    if (t === 'bytes') { const b = typeof v === 'string' ? unhex(v) : v; return cat(word(b.length), b, new Uint8Array((32 - b.length % 32) % 32)); }
+    if (t.array) return cat(word(v.length), abi(v.map(() => t.array), v));
+    if (t.tuple) return abi(t.tuple, v);
+    if (t === 'address') return addrWord(v);
+    return word(v);
+  };
+  const parts = types.map((t, i) => one(t, values[i]));
+  let off = types.reduce((n, t, i) => n + (dyn(t) ? 32 : parts[i].length), 0);
+  const heads = [], tails = [];
+  types.forEach((t, i) => { if (dyn(t)) { heads.push(word(off)); tails.push(parts[i]); off += parts[i].length; } else heads.push(parts[i]); });
+  return cat(...heads, ...tails);
+}
+const calldata = (sig, types, values) => '0x' + hex(cat(selector(sig), abi(types, values)));
+const PAIR = { tuple: ['uint256', 'uint256'] };
+const TX_TYPES = [PAIR, { tuple: [PAIR, PAIR] }, PAIR, { tuple: Array(11).fill('uint256') }, 'address', 'uint256', 'address', 'uint256', 'bytes', 'bytes'];
+const TX_SIG = '(uint256[2],uint256[2][2],uint256[2],uint256[11],address,int256,address,uint256,bytes,bytes)';
+const txValues = (t) => [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, BigInt.asUintN(256, BigInt(t.extAmount)), t.relayer, t.fee, t.memo0, t.memo1];
+
+// ── receive boxes ───────────────────────────────────────────────────────────────────────────────────────────
+// Box i is a standing ETH address for one note key of the wallet; anyone pays it, anyone sweeps it into the pool, and
+// the router computes the note. The key derives from the wallet's nullifier secret, so the seed alone finds every box.
+const RECEIVE_FEE_BPS = 25;
+const RECEIVE_TAG = keccak(utf8('tacit-evm-pool-receive-box-v1'));
+function receiveKeys(keys, i) {
+  const s = cat([0], keccak(cat(utf8('tacit-evm-pool-receive-key-v1'), be(keys.n), be(i))));
+  return ownedKeys(keys, s);
+}
+function checksum(a20) {
+  const h = hex(a20), k = keccak(utf8(h));
+  return '0x' + [...h].map((c, i) => ((k[i >> 1] >> (i % 2 ? 0 : 4)) & 15) >= 8 ? c.toUpperCase() : c).join('');
+}
+// The router's box clone (its implementation is the router's first CREATE) at keccak(tag ‖ npk ‖ feeBps).
+function receiveBoxAddress(router, npk, feeBps = RECEIVE_FEE_BPS) {
+  const r = addrWord(router).subarray(12), impl = keccak(cat([0xd6, 0x94], r, [1])).subarray(12);
+  const init = keccak(cat(unhex('602d5f8160095f39f35f5f365f5f37365f73'), impl, unhex('5af43d5f5f3e6029573d5ffd5b3d5ff3')));
+  return checksum(keccak(cat([0xff], r, keccak(cat(RECEIVE_TAG, be(npk), be(feeBps))), init)).subarray(12));
+}
+const receiveRho = (box, n) => big(keccak(cat(RECEIVE_TAG, addrWord(box), be(n)))) % FR;
+
+// ── chain reads ─────────────────────────────────────────────────────────────────────────────────────────────
+// A JSON-RPC reader over several endpoints: each call tries them in order, and a revert is final at the first.
+function jsonRpc(urls) {
+  let id = 0;
+  return async (method, params = []) => {
+    const errs = [];
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout(25_000) });
+        const j = await r.json();
+        if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
+        return j.result;
+      } catch (e) {
+        if (e.rpc && /revert/i.test(e.message) && (method === 'eth_call' || method === 'eth_estimateGas')) throw e;
+        errs.push(e);
+      }
+    }
+    throw Object.assign(errs[errs.length - 1] || new Error('no endpoint'), { all: errs });
+  };
+}
+const errorText = (e) => (e.all || [e]).map((x) => `${x.message} ${JSON.stringify(x.rpc?.data ?? '')}`).join(' ');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Logs in [from, to], in ranges the endpoints accept: a limit an endpoint names is taken, otherwise the range shrinks.
+async function getLogs(rpc, address, topics, from, to, chunk = 50_000) {
+  const out = [];
+  for (let a = from, step = chunk, busy = 0; a <= to;) {
+    const b = Math.min(to, a + step - 1);
+    try {
+      out.push(...await rpc('eth_getLogs', [{ address, topics, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }]));
+      a = b + 1;
+    } catch (e) {
+      const m = errorText(e);
+      if (/rate.?limit|too many requests|\b429\b/i.test(m) && !/range|blocks?\b/i.test(m) && ++busy <= 6) { await sleep(1500 * busy); continue; }
+      if (step > 1 && /range|limit|too many|too large|exceed|\d{4,} blocks?/i.test(m)) {
+        const named = [...m.matchAll(/(\d[\d,]*)\s*(?:blocks?|range)\b/gi)].map((x) => Number(x[1].replace(/,/g, ''))).filter((n) => n > 0 && n < step);
+        step = named.length ? Math.max(...named) : Math.max(1, Math.floor(step / 4));
+        continue;
+      }
+      throw e;
+    }
+  }
+  return out;
+}
+const T_TRANSACT = keccakHex(utf8('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)'));
+const T_RECEIVED = keccakHex(utf8('Received(address,uint256,uint256,uint256,uint256,uint256)'));
+function decodeTransact(log) {
+  const d = unhex(log.data), w = (i) => big(d.subarray(32 * i, 32 * i + 32));
+  const bytesAt = (i) => { const o = Number(w(i)), n = Number(big(d.subarray(o, o + 32))); return d.slice(o + 32, o + 32 + n); };
+  return {
+    nf: [BigInt(log.topics[1]), BigInt(log.topics[2])], outLeaf: [w(0), w(1)], firstIndex: Number(w(2)),
+    recipient: '0x' + w(4).toString(16).padStart(40, '0'), ext: BigInt.asIntN(256, w(5)), fee: w(7),
+    memo: [bytesAt(8), bytesAt(9)], block: Number(BigInt(log.blockNumber)), tx: log.transactionHash,
+  };
+}
+function decodeReceived(log) {
+  const d = unhex(log.data), w = (i) => big(d.subarray(32 * i, 32 * i + 32));
+  return { box: String(log.topics[1]).toLowerCase(), index: Number(w(0)), value: w(1), rho: w(2), fee: w(3), block: Number(BigInt(log.blockNumber)), tx: log.transactionHash };
+}
+const topicOf = (a) => '0x' + a.slice(2).toLowerCase().padStart(64, '0');
+
+// Each chain's relay address and the most a relayed spend may pay it. A quote is signed into the proof, so one from
+// another chain or pool, from an unexpected address, or above the ceiling is refused before anything is signed.
+const RELAYERS = { 1: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0', 8453: '0xfA2afbaB631C7Eda7CeA6AE1440605C504E322Ec', 4663: '0xc1F8DAc6BC910A5A794b4795b5F9997e0E8A5Fad' };
+const MAX_RELAY_FEE = { 1: 5n * 10n ** 16n, 8453: 2n * 10n ** 15n, 4663: 2n * 10n ** 15n };
+
+// Stored state is sealed under keys from the view scalar: "enc1:" ‖ hex(nonce16 ‖ ciphertext ‖ tag16), a keccak
+// counter stream and tag. Another script on the same origin reading storage sees balances only as ciphertext.
+const stateKeys = (v, nonce) => [1, 2].map((i) => keccak(cat(utf8('tacit-evm-pool-state-v1'), [i], be(v), nonce)));
+const stateStream = (key, n) => { const o = new Uint8Array(Math.ceil(n / 32) * 32); for (let i = 0; i * 32 < n; i++) o.set(keccak(cat(key, be(i, 4))), 32 * i); return o.subarray(0, n); };
+function sealState(v, text) {
+  const nonce = randomBytes(16), pt = utf8(text), [enc, mac] = stateKeys(v, nonce), ks = stateStream(enc, pt.length), ct = pt.map((b, i) => b ^ ks[i]);
+  return 'enc1:' + hex(cat(nonce, ct, keccak(cat(mac, ct)).subarray(0, 16)));
+}
+function openState(v, stored) {
+  if (!stored?.startsWith('enc1:')) return null;
+  const b = unhex(stored.slice(5));
+  if (b.length < 32) return null;
+  const nonce = b.subarray(0, 16), ct = b.subarray(16, b.length - 16), [enc, mac] = stateKeys(v, nonce);
+  if (!same(b.subarray(b.length - 16), keccak(cat(mac, ct)).subarray(0, 16))) return null;
+  const ks = stateStream(enc, ct.length);
+  return new TextDecoder().decode(ct.map((x, i) => x ^ ks[i]));
+}
+
+// ── the wallet, on one chain ────────────────────────────────────────────────────────────────────────────────
+// chain: { chainId, pool, router, rpc, deployBlock, confirmations, keeper (relay base URL or null) }.
+// keys: poolKeys(key). prove(input) → { proof, publicSignals }. store: { get(k), set(k, v) } or null.
+// signer: { address, ready(), send({ to, data, value }) → tx hash } for the user's own wallet, or null.
+//
+// What is stored is view-level only: the tree's right edge, the paths of unspent notes, and each note's index,
+// value, rho and shared secret. Spend keys are derived again from the key whenever they are needed.
+function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed = true }) {
+  const asset = poolAsset(chain.chainId, chain.pool), keeper = chain.keeper;
+  const REFUND_GAP = 20, skey = `tacit-evm-pool-v1:${chain.chainId}:${chain.pool.toLowerCase()}:${keys.address}`;
+  const boxOf = (i) => receiveBoxAddress(chain.router, receiveKeys(keys, i).npk);
+  const blank = () => ({ block: chain.deployBlock - 1, tree: incTree(), notes: [], rows: [], nextRefund: 1, attempts: {} });
+  let saved = blank(), view = null;
+  try {
+    const o = JSON.parse(openState(keys.v, store?.get(skey)) || 'null');
+    if (o?.tree) saved = { ...blank(), ...o, tree: incTree(o.tree) };
+  } catch { saved = blank(); }
+  const withKeys = (n) => {
+    const k = n.kind === 'receive' ? receiveKeys(keys, n.box) : ownedKeys(keys, unhex(n.s));
+    return { ...n, sk: k.sk, nk: k.nk, nf: nullifier(k.nk, BigInt(n.leaf), n.index) };
+  };
+  saved.notes = saved.notes.map(withKeys);
+  const persist = () => {
+    try { store?.set(skey, sealState(keys.v, JSON.stringify({ ...saved, tree: saved.tree.toJSON(), notes: saved.notes.map(({ sk, nk, nf, ...n }) => n) }))); } catch {}
+  };
+  // A spend built again from the same note (a new quote, so new change) takes the next attempt, so two memos never
+  // share a one-time key; the count is kept with the state, for the latest 64 notes.
+  function nextAttempt(nf) {
+    const k = String(nf), a = saved.attempts[k] ?? 0;
+    delete saved.attempts[k];
+    saved.attempts[k] = (a + 1) % 16;
+    for (const old of Object.keys(saved.attempts).slice(0, -64)) delete saved.attempts[old];
+    persist();
+    return a;
+  }
+
+  // Box 0 is the deposit address; boxes after it are one-time ones (payment links, refunds), watched up to
+  // REFUND_GAP past the last one used, so a wallet rebuilt from the key finds them all.
+  const boxes = new Map();
+  const boxTopics = () => {
+    for (let i = 0; i < saved.nextRefund + REFUND_GAP; i++) if (![...boxes.values()].includes(i)) boxes.set(topicOf(boxOf(i)), i);
+    return [...boxes.keys()];
+  };
+
+  // Appends transacts to a copy of `state`, in order: a note of ours is spent where its nullifier appears, and a leaf
+  // is ours when its memo opens under this key or a Received event of one of our boxes names it. Each transaction
+  // that touched this key leaves a row: what it used of ours, what it kept or brought in, and (from logs) its
+  // public amount, fee and recipient.
+  function absorb(state, transacts, receipts) {
+    const notes = new Map(state.notes.map((n) => [n.index, n])), byNf = new Map(state.notes.map((n) => [String(n.nf), n]));
+    const tree = state.tree.clone(), rows = [...state.rows], received = new Map(receipts.map((r) => [r.index, r]));
+    for (const t of transacts) {
+      let used = 0n, kept = 0n, box = null;
+      for (const nf of t.nf) {
+        const n = nf && byNf.get(String(nf));
+        if (n) { used += BigInt(n.v); byNf.delete(String(nf)); notes.delete(n.index); tree.untrack(n.index); }
+      }
+      if (t.outLeaf[0] || t.outLeaf[1]) {
+        if (t.firstIndex !== tree.size) throw new Error(`leaf ${t.firstIndex} out of order (have ${tree.size})`);
+        const track = [], found = [];
+        for (let k = 0; k < 2; k++) {
+          const index = t.firstIndex + k, leaf = t.outLeaf[k], r = received.get(index);
+          if (!leaf) continue;
+          let n = null;
+          if (r) {
+            const i = boxes.get(r.box);
+            if (i !== undefined && r.value && leafOf(asset, r.value, receiveKeys(keys, i).npk, r.rho) === leaf) {
+              n = { index, leaf: String(leaf), v: String(r.value), rho: String(r.rho), kind: 'receive', box: i };
+              box = { i, fee: String(r.fee) };
+              if (i >= state.nextRefund) state = { ...state, nextRefund: i + 1 };
+            }
+          } else {
+            const o = openNote(keys, { memo: t.memo[k], leaf, asset });
+            if (o && o.v > 0n) n = { index, leaf: String(leaf), v: String(o.v), rho: String(o.rho), s: hex(o.s), kind: 'memo' };
+          }
+          if (n) { n = withKeys({ ...n, block: t.block, tx: t.tx }); track.push(index); found.push(n); kept += BigInt(n.v); }
+        }
+        tree.append(t.outLeaf, track);
+        for (const n of found) { notes.set(n.index, n); byNf.set(String(n.nf), n); }
+      }
+      if (used || kept) rows.push({ tx: t.tx, block: t.block, used: String(used), kept: String(kept), ...(box && { box: box.i, boxFee: box.fee }), ...(t.ext !== undefined && { ext: String(t.ext), fee: String(t.fee), to: t.recipient }) });
+    }
+    return { ...state, tree, notes: [...notes.values()].sort((x, y) => x.index - y.index), rows: rows.slice(-300) };
+  }
+
+  const keeperFetch = async (path, init = {}) => {
+    if (!keeper) throw new Error('no relay for this chain');
+    for (let i = 0; ; i++) {
+      const r = await fetch(keeper + path, { ...init, signal: AbortSignal.timeout(path === '/relay' ? 180_000 : 30_000) });
+      if (r.status !== 429 || i >= 4) return r;
+      await sleep((Number(r.headers.get('retry-after')) || 3) * 1000 * (0.5 + Math.random()));
+    }
+  };
+  const wantRelayer = chain.relayer === undefined ? RELAYERS[chain.chainId] : chain.relayer, maxFee = MAX_RELAY_FEE[chain.chainId];
+  function vet(q) {
+    if (Number(q.chainId) !== chain.chainId || lc(q.pool) !== lc(chain.pool)) throw new Error('The relay quoted another chain or pool, so nothing was signed.');
+    if (!isAddr(q.relayer || '') || (wantRelayer && lc(q.relayer) !== lc(wantRelayer))) throw new Error('The relay quoted an address this page does not expect, so nothing was signed.');
+    if (!/^\d+$/.test(String(q.fee)) || BigInt(q.fee) > maxFee) throw new Error('The relay quoted a fee above this page’s limit, so nothing was signed.');
+    return q;
+  }
+  const keeperGet = async (path) => { const r = await keeperFetch(path), j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `relay returned ${r.status}`); return path.startsWith('/quote') ? vet(j) : j; };
+  const keeperPost = async (path, body) => { const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
+  const poolCall = (sig, types, values) => chain.rpc('eth_call', [{ to: chain.pool, data: calldata(sig, types, values) }, 'latest']);
+
+  // Confirmed history from the relay's index. A page counts only if the tree it builds is one the pool has held at
+  // that size, so the index cannot invent leaves. No nullifier is sent to a node to ask whether it is spent: a spend
+  // the index left out shows when the chain logs reach it, or as a refused spend, which rebuilds from the chain. An
+  // index that withholds a memo could hide a note, so the state is rebuilt from chain logs alone once a week.
+  async function fromIndex(safe) {
+    boxTopics();
+    let cand = saved;
+    for (let page = 0; page < 10_000; page++) {
+      const from = cand.block + 1;
+      if (from > safe) break;
+      const r = await keeperGet(`/events?from=${from}`);
+      if (Number(r.chainId) !== chain.chainId || lc(r.pool) !== lc(chain.pool)) throw new Error('index is for another pool');
+      const through = Math.min(Number(r.through), safe);
+      if (through < from) break;
+      const evs = r.events.filter((e) => e.block >= from && e.block <= through);
+      const ts = evs.filter((e) => e.kind === 'transact').map((e) => ({
+        nf: [BigInt(e.nf0), BigInt(e.nf1)], outLeaf: [BigInt(e.outLeaf0), BigInt(e.outLeaf1)], firstIndex: Number(e.firstIndex),
+        memo: [unhex(e.memo0 || '0x'), unhex(e.memo1 || '0x')], block: e.block, tx: e.tx,
+      })).sort((x, y) => x.block - y.block || x.firstIndex - y.firstIndex);
+      const rs = evs.filter((e) => e.kind === 'received' && boxes.has(topicOf(e.box))).map((e) => ({
+        box: topicOf(e.box), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx,
+      }));
+      const next = { ...absorb(cand, ts, rs), block: through };
+      if (next.tree.size !== cand.tree.size) await held(next.tree);
+      cand = next;
+    }
+    if (cand !== saved) { saved = cand; persist(); }
+  }
+  // A tree counts only if the pool has held its root at its size.
+  async function held(tree) {
+    if (BigInt(await poolCall('rootSize(bytes32)', ['uint256'], [tree.root])) !== BigInt(tree.size)) throw new Error('these events do not match the pool');
+  }
+  const WEEK = 7 * 24 * 3600 * 1000;
+  async function chainCheck(safe) {
+    boxTopics();
+    const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], chain.deployBlock, safe), getLogs(chain.rpc, chain.router, [T_RECEIVED, boxTopics()], chain.deployBlock, safe)]);
+    const full = { ...absorb({ ...blank(), nextRefund: saved.nextRefund }, tl.map(decodeTransact).sort((x, y) => x.block - y.block || x.firstIndex - y.firstIndex), rl.map(decodeReceived)), block: saved.block };
+    if (full.tree.size !== saved.tree.size) return;
+    await held(full.tree);
+    const have = new Set(saved.notes.map((n) => n.index));
+    if (full.notes.some((n) => !have.has(n.index))) saved = { ...full, attempts: saved.attempts, nextRefund: Math.max(saved.nextRefund, full.nextRefund) };
+    saved.checkedAt = Date.now();
+    persist();
+  }
+
+  // New events since the last read: those `confirmations` deep are kept, the rest are read again next time. One read
+  // at a time, each building on the last.
+  let reading = Promise.resolve();
+  const sync = () => (reading = reading.catch(() => {}).then(readNew));
+  async function readNew() {
+    const tip = Number(BigInt(await chain.rpc('eth_blockNumber'))), safe = tip - chain.confirmations;
+    if (keeper && feed && saved.block < safe) {
+      const fed = await fromIndex(safe).then(() => true, () => false);
+      if (fed && saved.block >= safe && Date.now() - (saved.checkedAt ?? 0) > WEEK) await chainCheck(safe).catch(() => {});
+    }
+    const from = saved.block + 1;
+    if (from <= tip) {
+      const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], from, tip), getLogs(chain.rpc, chain.router, [T_RECEIVED, boxTopics()], from, tip)]);
+      const ts = tl.map(decodeTransact).sort((x, y) => x.block - y.block || x.firstIndex - y.firstIndex), rs = rl.map(decodeReceived);
+      if (safe >= from) {
+        const next = { ...absorb(saved, ts.filter((t) => t.block <= safe), rs.filter((r) => r.block <= safe)), block: safe };
+        if (next.tree.size !== saved.tree.size) await held(next.tree);
+        saved = next;
+        persist();
+      }
+      view = absorb(saved, ts.filter((t) => t.block > safe), rs.filter((r) => r.block > safe));
+    }
+    return summary();
+  }
+  // Forgets the synced state and rebuilds it from chain logs alone.
+  async function rescan() {
+    await reading.catch(() => {});
+    saved = { ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund }; view = null; persist();
+    const f = feed; feed = false;
+    try { return await sync(); } finally { feed = f; }
+  }
+  const state = () => view || saved;
+  const pending = new Set();
+  const unspent = () => state().notes.filter((n) => !pending.has(String(n.nf)));
+  const summary = () => { const u = unspent(); return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size }; };
+
+  // Up to two notes covering `need`, the smallest that do; null if no two do.
+  function select(need) {
+    const u = unspent().sort((a, b) => (BigInt(a.v) < BigInt(b.v) ? -1 : 1)), one = u.find((n) => BigInt(n.v) >= need);
+    if (one) return [one];
+    for (let i = u.length - 1; i > 0; i--) for (let j = i - 1; j >= 0; j--) if (BigInt(u[i].v) + BigInt(u[j].v) >= need) return [u[i], u[j]];
+    return null;
+  }
+  const toTx = ({ proof, publicSignals }, rest) => ({
+    pA: proof.pi_a.slice(0, 2), pB: [[proof.pi_b[0][1], proof.pi_b[0][0]], [proof.pi_b[1][1], proof.pi_b[1][0]]], pC: proof.pi_c.slice(0, 2),
+    publicInputs: publicSignals, ...rest,
+  });
+  const RACED = new Set(['StaleRoot()', 'WrongInsertionIndex()', 'UnknownMembershipRoot()'].map((s) => '0x' + hex(selector(s)))), SPENT = '0x' + hex(selector('AlreadyNullified()'));
+  const revertData = (e) => { for (let x = e; x; x = x.cause) { const d = x.rpc?.data?.data ?? x.rpc?.data ?? x.data?.data ?? x.data; if (typeof d === 'string' && d.startsWith('0x')) return d; } return ''; };
+  // From the user's wallet, after checking the call on chain. → tx hash, or null when another transaction got in first.
+  async function sendSelf(to, data, value, onStep) {
+    if (!signer) throw new Error('Connect a wallet to send this yourself.');
+    await signer.ready();
+    try { await chain.rpc('eth_call', [{ from: signer.address, to, data, value: '0x' + value.toString(16) }, 'latest']); }
+    catch (e) { if (RACED.has(revertData(e).slice(0, 10))) return null; throw e; }
+    onStep('confirm in your wallet');
+    return signer.send({ to, data, value });
+  }
+  async function landed(hash) {
+    for (let i = 0; i < 120; i++) {
+      const r = await chain.rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
+      if (r) return r.status === '0x1';
+      await sleep(2000);
+    }
+    return true;
+  }
+  async function waitFor(ok, ms = 120_000) {
+    for (const t0 = Date.now(); ;) { await sync(); if (ok()) return; if (Date.now() - t0 > ms) throw new Error('timed out waiting for the chain'); await sleep(3000); }
+  }
+  // A slot in the relay's queue and the tree to prove against: this wallet's plus what is queued ahead of the slot.
+  // → { id, tree }, 'stale' (a spend of these notes is queued: wait), or null (prove against the pool's head).
+  async function reserve(sealed, ins) {
+    let r;
+    try {
+      const res = await keeperPost('/reserve', { outLeaf0: String(sealed[0]?.leaf ?? 0n), outLeaf1: String(sealed[1]?.leaf ?? 0n), nfs: ins.map((n) => String(n.nf)) });
+      if (res.status === 409) return 'stale';
+      if (res.status !== 200) return null;
+      r = res.body;
+    } catch { return null; }
+    for (let i = 0; i < 3; i++) {
+      if (BigInt(r.root) !== state().tree.root) await sync();
+      if (BigInt(r.root) === state().tree.root) {
+        const c = state().tree.clone();
+        c.append(r.pending.flatMap((x) => [BigInt(x.outLeaf0), BigInt(x.outLeaf1)]));
+        if (c.root === BigInt(r.oldRoot) && c.size === Number(r.start)) return { id: r.id, tree: c };
+        break;
+      }
+      await sleep(1000);
+    }
+    await keeperPost('/cancel', { reservation: r.id }).catch(() => {});
+    return null;
+  }
+
+  // One transaction: spends `ins`, creates `outs` ([{ to, value } | null] × 2), moves `ext` across the pool's edge
+  // (> 0 in from the signer, < 0 out to `recipient`). With a relay quote `q` the relay sends it for q.fee; without,
+  // the signer does. Proves again when another transaction lands first. → tx hash.
+  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep }) {
+    const attempt = ins.length ? nextAttempt(ins[0].nf) : 0, eOf = (k) => (ins.length ? paymentKey(keys, chain.chainId, ins[0].nf, k, attempt) : undefined);
+    const sealed = outs.map((o, k) => (o ? sealNote({ to: o.to, value: o.value, asset, e: eOf(k) }) : null));
+    const memo0 = sealed[0]?.memo ?? new Uint8Array(), memo1 = sealed[1]?.memo ?? new Uint8Array();
+    const fee = q ? BigInt(q.fee) : 0n, relayer = q ? q.relayer : ZERO_ADDRESS;
+    const inputs = [...ins.map((n) => ({ v: BigInt(n.v), rho: BigInt(n.rho), nk: n.nk, sk: n.sk, index: n.index })), ...Array(2 - ins.length).fill({ dummy: true })];
+    const eh = extDataHash({ chainId: chain.chainId, pool: chain.pool, recipient, extAmount: ext, relayer, fee, memo0, memo1 });
+    for (let round = 0; round < 8; round++) {
+      if (round) { onStep('another payment landed first, proving again'); await sleep(Math.min(8000, 500 * 2 ** round) * (0.5 + Math.random())); await sync(); }
+      let tree = state().tree, slot = null, h;
+      if (q && sealed.some(Boolean)) {
+        const r = await reserve(sealed, ins);
+        if (r === 'stale') continue;
+        if (r) { slot = r.id; tree = r.tree; }
+      }
+      const w = buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => o && { v: o.v, npk: o.npk, rho: o.rho }), extAmount: ext, fee, extDataHash: eh });
+      onStep('proving');
+      let proved;
+      try { proved = await prove(w.input, chain); } catch (e) { if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {}); throw e; }
+      const tx = toTx(proved, { recipient, extAmount: String(ext), relayer, fee: String(fee), memo0: '0x' + hex(memo0), memo1: '0x' + hex(memo1) });
+      if (q) {
+        onStep('sending through the relay');
+        const r = await keeperPost('/relay', { tx, ...(slot ? { reservation: slot } : {}) });
+        if (r.status === 409 && r.body.stale) continue;
+        if (r.status === 429) { await sleep(5000); continue; }
+        if (r.status !== 200 || !r.body.txHash) {
+          if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {});
+          if (/AlreadyNullified|already spent/i.test(r.body.error || '')) await rescan().catch(() => {});
+          throw new Error(r.body.error || `relay returned ${r.status}`);
+        }
+        h = r.body.txHash;
+      } else {
+        try { h = await sendSelf(chain.pool, calldata(`transact${TX_SIG}`, TX_TYPES, txValues(tx)), ext > 0n ? ext : 0n, onStep); }
+        catch (e) { if (revertData(e).slice(0, 10) === SPENT) await rescan().catch(() => {}); throw e; }
+        if (!h) continue;
+      }
+      for (const n of ins) pending.add(String(n.nf));
+      onStep('waiting for the block');
+      if (await landed(h)) {
+        const used = new Set(ins.map((n) => String(n.nf)));
+        await waitFor(() => !state().notes.some((n) => used.has(String(n.nf))), 60_000).catch(() => {});
+        return h;
+      }
+      for (const n of ins) pending.delete(String(n.nf));
+    }
+    // Nothing landed: rebuild from the chain, so a note an index wrongly showed as unspent is dropped.
+    await rescan().catch(() => {});
+    throw new Error('The pool kept moving. Try again.');
+  }
+  const quoteFor = async (via) => (via === 'self' || !keeper ? null : keeperGet('/quote'));
+  // Notes covering `need`: two of them, combining the two largest first (paying a fee each time) while two do not.
+  async function prepare(need, q, onStep) {
+    const fee = q ? BigInt(q.fee) : 0n;
+    for (let i = 0; i < 8; i++) {
+      const pick = select(need);
+      if (pick) return pick;
+      const u = unspent().sort((a, b) => (BigInt(b.v) < BigInt(a.v) ? -1 : 1));
+      if (u.length < 2 || BigInt(u[0].v) + BigInt(u[1].v) <= fee) break;
+      const total = BigInt(u[0].v) + BigInt(u[1].v);
+      onStep('combining two notes first');
+      await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - fee }, null], q, onStep });
+      await waitFor(() => unspent().some((n) => BigInt(n.v) === total - fee));
+    }
+    throw new Error('Your private balance does not cover this amount and its fee.');
+  }
+  const maxOf = (fee) => { const u = unspent().map((n) => BigInt(n.v)).sort((a, b) => (b < a ? -1 : 1)), t = (u[0] ?? 0n) + (u[1] ?? 0n); if (t <= fee) throw new Error('Your private balance does not cover its fee.'); return t - fee; };
+  async function spend({ to, amount, via, out, onStep }) {
+    await sync();
+    const q = await quoteFor(via), fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
+    if (a <= 0n) throw new Error('Enter an amount.');
+    const ins = await prepare(a + fee, q, onStep), change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
+    return out
+      ? transact({ ins, outs: [change > 0n ? { to: keys, value: change } : null, null], ext: -a, recipient: to, q, onStep })
+      : transact({ ins, outs: [{ to, value: a }, { to: keys, value: change }], q, onStep });
+  }
+
+  return {
+    asset, sync, summary, notes: unspent, history: () => state().rows,
+    receiveBox: (i = 0) => boxOf(i),
+    quote: () => keeperGet('/quote'),
+    // Asks the relay to watch a deposit address, so what arrives there moves in without anyone asking.
+    watch: (i = 0) => keeperPost('/receive', { chainId: chain.chainId, npk: String(receiveKeys(keys, i).npk), feeBps: RECEIVE_FEE_BPS }),
+    waiting: async (i = 0) => BigInt(await chain.rpc('eth_getBalance', [boxOf(i), 'latest'])),
+    connect(s) { signer = s; },
+    rescan,
+    // Whether the deposit address can be shown: the pool and router have code, and the router's own box for this key
+    // is the address computed here.
+    async ready() {
+      for (const a of [chain.pool, chain.router]) if (!/^0x[0-9a-f]{2,}$/i.test(await chain.rpc('eth_getCode', [a, 'latest']))) return false;
+      const r = await chain.rpc('eth_call', [{ to: chain.router, data: calldata('receiveBoxOf(uint256,uint16)', ['uint256', 'uint16'], [receiveKeys(keys, 0).npk, RECEIVE_FEE_BPS]) }, 'latest']);
+      return lc('0x' + String(r).slice(-40)) === lc(boxOf(0));
+    },
+    // Pays `amount` wei (or 'max') privately to a pool recipient ({ V, A, N }). → tx hash.
+    send: ({ to, amount, via = null, onStep = () => {} }) => spend({ to, amount, via, out: false, onStep }),
+    // Pays `amount` wei (or 'max') out of the pool to an 0x address. → tx hash.
+    withdraw({ to, amount, via = null, onStep = () => {} }) {
+      if (!/^0x[0-9a-fA-F]{40}$/.test(to) || !BigInt(to)) throw new Error('Enter an 0x address.');
+      return spend({ to, amount, via, out: true, onStep });
+    },
+    // Shields `amount` wei from the signer into a note for `to` ({ V, A, N }), this wallet by default. → tx hash.
+    async deposit({ amount, to = keys, onStep = () => {} }) {
+      const a = BigInt(amount);
+      if (a <= 0n) throw new Error('Enter an amount.');
+      const before = (await sync()).balance;
+      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep });
+      if (to === keys) await waitFor(() => summary().balance >= before + a, 60_000).catch(() => {});
+      return h;
+    },
+    // Moves what waits at deposit address `index` into a note here, sent from the signer: no fee. → tx hash.
+    async sweep({ index = 0, onStep = () => {} } = {}) {
+      const { npk } = receiveKeys(keys, index), box = boxOf(index);
+      for (let round = 0; round < 4; round++) {
+        await sync();
+        const [bal, n] = await Promise.all([chain.rpc('eth_getBalance', [box, 'latest']), chain.rpc('eth_call', [{ to: chain.router, data: calldata('receiveCount(address)', ['address'], [box]) }, 'latest'])]);
+        const amount = BigInt(bal);
+        if (!amount) throw new Error('Nothing is waiting at that address.');
+        const eh = extDataHash({ chainId: chain.chainId, pool: chain.pool, recipient: ZERO_ADDRESS, extAmount: amount, relayer: ZERO_ADDRESS, fee: 0n, memo0: new Uint8Array(), memo1: new Uint8Array() });
+        const w = buildWitness({ asset, tree: state().tree, inputs: [null, null], outputs: [{ v: amount, npk, rho: receiveRho(box, BigInt(n)) }, null], extAmount: amount, fee: 0n, extDataHash: eh });
+        onStep('proving');
+        const tx = toTx(await prove(w.input, chain), { recipient: ZERO_ADDRESS, extAmount: String(amount), relayer: ZERO_ADDRESS, fee: '0', memo0: '0x', memo1: '0x' });
+        const h = await sendSelf(chain.router, calldata(`sweepReceive(uint256,uint16,${TX_SIG})`, ['uint256', 'uint16', { tuple: TX_TYPES }], [npk, RECEIVE_FEE_BPS, txValues(tx)]), 0n, onStep);
+        if (h) { onStep('waiting for the block'); await landed(h); return h; }
+        onStep('another payment landed first, proving again');
+      }
+      throw new Error('The pool kept moving. Try again.');
+    },
+  };
+}
+
+// ── the pool, on three chains ───────────────────────────────────────────────────────────────────────────────
+// The same contracts at the same addresses on each chain; verified on each chain's explorer.
+const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
+const ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
+const VERIFIER = '0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153';
+const relayAt = (sub) => `https://tacit-evm-pool-keeper${sub}.onrender.com/evm-pool/keeper`;
+const CHAINS = [
+  { chainId: 1, key: 'ethereum', name: 'Ethereum', full: 'Ethereum', explorer: 'https://etherscan.io', relay: relayAt(''), deployBlock: 26069245, confirmations: 3, gasReserve: 3n * 10n ** 15n,
+    rpc: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co', 'https://eth.drpc.org', 'https://1rpc.io/eth'] },
+  { chainId: 8453, key: 'base', name: 'Base', full: 'Base', explorer: 'https://basescan.org', relay: relayAt('-base'), deployBlock: 51864014, confirmations: 10, gasReserve: 10n ** 14n,
+    rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'] },
+  { chainId: 4663, key: 'robinhood', name: 'Robinhood', full: 'Robinhood Chain', explorer: 'https://robinhoodchain.blockscout.com', relay: relayAt('-robinhood'), deployBlock: 73991661, confirmations: 10, gasReserve: 10n ** 14n,
+    rpc: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood.drpc.org'] },
+];
+// The ceremony's proving key and the circuit's witness program: 176 contributions, then a Bitcoin block as beacon.
+// Fetched once from whichever mirror answers, used only when the SHA-256 below matches, then kept in this browser.
+const CEREMONY = {
+  bundle: 'bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy', contributions: 176, beacon: 968840,
+  wasm: { name: 'transact.wasm', sha256: '02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1', bytes: 4916992 },
+  zkey: { name: 'transact_final.zkey', sha256: '40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b', bytes: 28558285 },
+};
+const MIRRORS = ['https://tacit.finance/evm-pool/', `https://ipfs.filebase.io/ipfs/${CEREMONY.bundle}/`, `https://${CEREMONY.bundle}.ipfs.dweb.link/`, `https://ipfs.io/ipfs/${CEREMONY.bundle}/`];
+
+// ── small things ────────────────────────────────────────────────────────────────────────────────────────────
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const short = (a, n = 4) => (a && a.length > 2 * n + 4 ? `${a.slice(0, n + 2)}…${a.slice(-n)}` : a || '');
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const readJson = (k) => { try { return JSON.parse(store.get(k) || 'null'); } catch { return null; } };
+const writeJson = (k, v) => store.set(k, JSON.stringify(v));
+const chainOf = (x) => CHAINS.find((c) => c.chainId === Number(x) || c.key === lc(x));
+const payable = (a) => isAddr(a) && BigInt(a) !== 0n && ![lc(POOL), lc(ROUTER)].includes(lc(a));
+
+class Raw { constructor(s) { this.s = s; } }
+const esc = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const part = (v) => (v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : v == null || v === false ? '' : String(v).replace(/[&<>"']/g, (c) => esc[c]));
+const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i - 1]) + s));
+const mount = (el, view) => { if (el) el.innerHTML = view instanceof Raw ? view.s : part(view); };
+
+function fmt(v, max = 6) {
+  v = BigInt(v);
+  const neg = v < 0n, a = neg ? -v : v, base = 10n ** 18n;
+  let whole = a / base, f = (a % base).toString().padStart(18, '0').slice(0, max);
+  if ((a % base).toString().padStart(18, '0')[max] >= '5') { const b = (BigInt(f || '0') + 1n).toString().padStart(max, '0'); if (b.length > max) { whole += 1n; f = '0'.repeat(max); } else f = b; }
+  f = f.replace(/0+$/, '');
+  return (neg ? '-' : '') + whole.toLocaleString('en-US') + (f ? '.' + f : '');
+}
+const ethStr = (v) => (BigInt(v) > 0n && BigInt(v) < 5n * 10n ** 11n ? '<0.000001' : fmt(v));
+const plain = (v) => fmt(v, 18).replace(/,/g, '');
+function parseEth(s) {
+  let t = String(s || '').trim();
+  if (/^\d*,\d+$/.test(t)) t = t.replace(',', '.');
+  if (!/^\d*\.?\d*$/.test(t) || t === '' || t === '.') return null;
+  const [w, f = ''] = t.split('.');
+  if (f.length > 18) return null;
+  return BigInt(w || '0') * 10n ** 18n + BigInt((f + '0'.repeat(18)).slice(0, 18));
+}
+const ago = (sec) => {
+  const d = Math.max(0, Date.now() / 1000 - sec);
+  if (d < 90) return 'just now';
+  if (d < 3600) return `${Math.round(d / 60)} min ago`;
+  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+  return new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+function toast(msg, bad = false) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (bad ? ' bad' : '');
+  el.textContent = msg;
+  $('#toasts').append(el);
+  setTimeout(() => el.remove(), bad ? 7000 : 4200);
+}
+const copy = (text, done = 'Copied') => navigator.clipboard.writeText(text).then(() => toast(done), () => toast('Could not copy.', true));
+async function busy(btn, fn) {
+  if (btn.getAttribute('aria-busy') === 'true') return;
+  btn.setAttribute('aria-busy', 'true'); btn.disabled = true;
+  try { return await fn(); } finally { btn.removeAttribute('aria-busy'); btn.disabled = false; }
+}
+
+// Pool and router reverts, by selector.
+const REVERTS = Object.fromEntries([
+  ['StaleRoot()', 'Another payment landed first. Try again.'], ['WrongInsertionIndex()', 'Another payment landed first. Try again.'],
+  ['UnknownMembershipRoot()', 'Another payment landed first. Try again.'], ['AlreadyNullified()', 'That note is already spent. Refresh and try again.'],
+  ['BadProof()', 'The proof did not check out.'], ['EthValueMismatch()', 'The amount sent did not match the proof.'],
+  ['ValueOutOfRange()', 'That amount is out of range.'], ['PoolFull()', 'The pool is full.'], ['BadIntent()', 'The pool refused that sweep. Refresh and try again.'],
+].map(([sig, text]) => [hex(selector(sig)), text]));
+function errText(e) {
+  for (let x = e; x; x = x.cause) for (const d of [x?.data, x?.data?.data, x?.rpc?.data, x?.rpc?.data?.data, x?.error?.data]) {
+    if (typeof d === 'string' && REVERTS[d.slice(2, 10).toLowerCase()]) return REVERTS[d.slice(2, 10).toLowerCase()];
+  }
+  const m = String(e?.shortMessage || e?.message || e || 'Something went wrong');
+  if (e?.code === 4001 || /user (rejected|denied)|rejected the request|denied transaction/i.test(m)) return 'Cancelled in your wallet.';
+  if (/insufficient funds/i.test(m)) return 'Not enough ETH in your wallet for this and its gas.';
+  if (/failed to fetch|networkerror|load failed/i.test(m)) return 'Could not reach the network. Check your connection and try again.';
+  if (/rate.?limit|too many requests|\b429\b/i.test(m)) return 'That network is busy right now. Try again in a moment.';
+  if (/timed? ?out|timeout|aborted/i.test(m)) return 'The network took too long to answer. Try again.';
+  return m.replace(/^Error:\s*/, '').slice(0, 240);
+}
+const relayTrouble = (e) => /relay|failed to fetch|\b5\d\d\b|timed? ?out/i.test(String(e?.message || e));
+
+// ── endpoints ───────────────────────────────────────────────────────────────────────────────────────────────
+// The reader's own choices come first: nodes per chain, a relay per chain (or none), and a mirror for the key.
+const ENDPOINTS = 'tacit-pay-endpoints-v1';
+let ends = readJson(ENDPOINTS) || {};
+const nodesOf = (c) => (ends.rpc?.[c.chainId]?.length ? ends.rpc[c.chainId] : c.rpc);
+const relayOf = (c) => (ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || null : c.relay);
+const mirrors = () => [...(ends.mirror ? [ends.mirror.replace(/\/?$/, '/')] : []), ...MIRRORS];
+const RPC = {};
+const rpcOn = (c) => (RPC[c.chainId] ||= jsonRpc(nodesOf(c)));
+
+// ── the prover: workers made from the script above, holding the ceremony's key between them ──────────────────
+const PROVER = { state: 'idle', got: 0, total: CEREMONY.wasm.bytes + CEREMONY.zkey.bytes, err: null, ms: null, saved: false };
+const ARTIFACTS = 'tacit-pay-artifacts-v1';
+const sha256hex = async (b) => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', b)));
+async function artifact(a, onBytes) {
+  const key = `${location.origin}/${a.name}?sha256=${a.sha256}`;
+  let cache = null;
+  try { cache = await caches.open(ARTIFACTS); } catch {}
+  const hit = await cache?.match(key).catch(() => null);
+  if (hit) {
+    const b = new Uint8Array(await hit.arrayBuffer());
+    if (await sha256hex(b) === a.sha256) { onBytes(b.length); return b; }
+    await cache.delete(key).catch(() => {});
+  }
+  for (const base of mirrors()) {
+    let got = 0;
+    try {
+      const r = await fetch(base + a.name);
+      if (!r.ok) continue;
+      const reader = r.body.getReader(), parts = [];
+      for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; onBytes(value.length); }
+      const b = cat(...parts);
+      if (await sha256hex(b) !== a.sha256) { onBytes(-got); continue; }
+      await cache?.put(key, new Response(b)).catch(() => {});
+      return b;
+    } catch { onBytes(-got); }
+  }
+  throw new Error(`The proving key could not be fetched from any mirror. Add one under Endpoints, or load the files from disk.`);
+}
+function proverPool(src, n) {
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  const workers = Array.from({ length: n }, () => {
+    const w = new Worker(url), wk = { w, seq: 0, wait: new Map() };
+    w.onmessage = ({ data }) => { const p = wk.wait.get(data.id); if (!p) return; wk.wait.delete(data.id); data.ok ? p.resolve(data) : p.reject(new Error(data.error)); };
+    w.onerror = (e) => { e.preventDefault(); pool.dead = true; for (const p of wk.wait.values()) p.reject(new Error('Proving stopped on this device, likely short of memory. Close other tabs and try again.')); wk.wait.clear(); };
+    return wk;
+  });
+  const call = (wk, msg, transfer = []) => new Promise((resolve, reject) => { const id = ++wk.seq; wk.wait.set(id, { resolve, reject }); wk.w.postMessage({ ...msg, id }, transfer); });
+  let ranges = null;
+  const pool = {
+    dead: false,
+    async load(zkey, wasm) {
+      const r = await call(workers[0], { op: 'split', key: zkey.buffer, wasm: wasm.buffer, n }, [zkey.buffer, wasm.buffer]);
+      ranges = r.ranges;
+      await Promise.all(r.shares.map((share, j) => call(workers[j + 1], { op: 'init', share })));
+    },
+    // The witness and the QAP run on the first worker; every worker takes its slice of each multi-exponentiation.
+    async prove(input) {
+      const { w, publicSignals } = await call(workers[0], { op: 'witness', input });
+      const sl = (x, [a, b], off = 0) => x.slice(8 * (a + off), 8 * (b + off)), np = publicSignals.length + 1;
+      const qap = call(workers[0], { op: 'qap', w: w.slice() });
+      const abc = workers.map((wk, j) => call(wk, { op: 'msm', jobs: [['A', sl(w, ranges[j].A)], ['B1', sl(w, ranges[j].B1)], ['B2', sl(w, ranges[j].B2)], ['C', sl(w, ranges[j].C, np)]] }));
+      const { h } = await qap;
+      const hs = workers.map((wk, j) => call(wk, { op: 'msm', jobs: [['H', sl(h, ranges[j].H)]] }));
+      const [a, b] = [await Promise.all(abc), await Promise.all(hs)];
+      const points = { A: a.map((x) => x.points[0]), B1: a.map((x) => x.points[1]), B2: a.map((x) => x.points[2]), C: a.map((x) => x.points[3]), H: b.map((x) => x.points[0]) };
+      return { proof: (await call(workers[0], { op: 'finish', points })).proof, publicSignals };
+    },
+    stop() { for (const wk of workers) wk.w.terminate(); },
+  };
+  return pool;
+}
+let proverP = null;
+function prover(files = null) {
+  if (proverP) return proverP;
+  const made = proverP = (async () => {
+    Object.assign(PROVER, { state: 'loading', got: 0, err: null }); paintDevice();
+    const onBytes = (k) => { PROVER.got += k; paintMeter(); };
+    const [wasm, zkey] = files || await Promise.all([artifact(CEREMONY.wasm, onBytes), artifact(CEREMONY.zkey, onBytes)]);
+    const pool = proverPool($('#prover').textContent, Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1)));
+    try { await pool.load(zkey, wasm); } catch (e) { pool.stop(); throw e; }
+    Object.assign(PROVER, { state: 'ready', saved: true }); paintDevice();
+    return pool;
+  })().catch((e) => { if (proverP === made) proverP = null; Object.assign(PROVER, { state: 'idle', err: e }); paintDevice(); throw e; });
+  return made;
+}
+// Every proof is checked against the pool's own verifier before anything is sent.
+const VERIFY = calldata.bind(null, 'verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[11])', [PAIR, { tuple: [PAIR, PAIR] }, PAIR, { tuple: Array(11).fill('uint256') }]);
+async function prove(input, chain) {
+  const pool = await prover(), t = performance.now();
+  let out;
+  try { out = await pool.prove(input); }
+  catch (e) { if (pool.dead) { pool.stop(); proverP = null; Object.assign(PROVER, { state: 'idle', saved: true }); paintDevice(); } throw e; }
+  PROVER.ms = performance.now() - t; paintDevice();
+  const { proof: p, publicSignals } = out;
+  const ok = await chain.rpc('eth_call', [{ to: VERIFIER, data: VERIFY([p.pi_a.slice(0, 2), [[p.pi_b[0][1], p.pi_b[0][0]], [p.pi_b[1][1], p.pi_b[1][0]]], p.pi_c.slice(0, 2), publicSignals]) }, 'latest']);
+  if (BigInt(ok) !== 1n) throw new Error('The proof did not check out against the pool’s verifier, so nothing was sent.');
+  return out;
+}
+const warm = () => { prover().catch(() => {}); };
+
+// ── an Ethereum wallet: opens the Tacit key, and sends what the relay does not ──────────────────────────────────
+const S = { key: null, provider: null, account: null, chain: chainOf(readJson('tacit-pay-chain-v1')) || CHAINS[1], tab: 'shield', from: 'wallet', route: readJson('tacit-pay-route-v1') || {}, busy: false };
+const CH = Object.fromEntries(CHAINS.map((c) => [c.chainId, {}]));
+const WALLETS = [];
+window.addEventListener('eip6963:announceProvider', (e) => { const d = e.detail; if (d?.info && d.provider && !WALLETS.some((w) => w.info.uuid === d.info.uuid)) WALLETS.push(d); });
+window.dispatchEvent(new Event('eip6963:requestProvider'));
+function pickWallet() {
+  return new Promise((resolve) => {
+    const d = $('#sheet-pick');
+    mount($('#pick-body'), html`${WALLETS.map((w) => html`<button type="button" data-uuid="${w.info.uuid}">${/^data:image\//.test(w.info.icon || '') ? html`<img src="${w.info.icon}" alt="">` : ''}<span>${w.info.name}</span></button>`)}`);
+    const none = () => resolve(null);
+    d.addEventListener('close', none, { once: true });
+    $$('[data-uuid]', d).forEach((b) => b.onclick = () => { d.removeEventListener('close', none); d.close(); resolve(WALLETS.find((w) => w.info.uuid === b.dataset.uuid)?.provider); });
+    d.showModal();
+  });
+}
+async function connect() {
+  window.dispatchEvent(new Event('eip6963:requestProvider'));
+  await sleep(150);
+  let p = S.provider;
+  if (!p) p = WALLETS.length > 1 ? await pickWallet() : WALLETS[0]?.provider || window.ethereum;
+  if (!p?.request) throw new Error('No Ethereum wallet found in this browser.');
+  const [a] = await p.request({ method: 'eth_requestAccounts' });
+  if (!isAddr(a || '')) throw new Error('Your wallet returned no account.');
+  if (!p.__tacitPay) {
+    p.__tacitPay = true;
+    p.on?.('accountsChanged', (accs) => {
+      S.account = accs?.[0] ? lc(accs[0]) : null;
+      if (S.key?.account && S.key.account !== S.account) { lock(); toast('Your wallet switched accounts, so the key it opened was locked.'); }
+      render();
+    });
+  }
+  S.provider = p; S.account = lc(a);
+  render();
+  return S.account;
+}
+const CHAIN_ADD = {
+  1: { chainName: 'Ethereum', rpcUrls: ['https://ethereum-rpc.publicnode.com'], blockExplorerUrls: ['https://etherscan.io'] },
+  8453: { chainName: 'Base', rpcUrls: ['https://mainnet.base.org'], blockExplorerUrls: ['https://basescan.org'] },
+  4663: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'], blockExplorerUrls: ['https://robinhoodchain.blockscout.com'] },
+};
+async function onChain(id) {
+  const want = '0x' + id.toString(16);
+  if (parseInt(await S.provider.request({ method: 'eth_chainId' }), 16) === id) return;
+  try { await S.provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: want }] }); }
+  catch (e) {
+    if (e?.code !== 4902 && e?.data?.originalError?.code !== 4902 && !/unrecogni[sz]ed|not been added|unknown chain/i.test(e?.message || '')) throw e;
+    await S.provider.request({ method: 'wallet_addEthereumChain', params: [{ chainId: want, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, ...CHAIN_ADD[id] }] });
+  }
+  if (parseInt(await S.provider.request({ method: 'eth_chainId' }), 16) !== id) throw new Error(`Switch your wallet to ${CHAIN_ADD[id].chainName}.`);
+}
+const signerFor = (c) => ({
+  get address() { return S.account; },
+  ready: async () => { if (!S.account) await connect(); await onChain(c.chainId); },
+  send: ({ to, data, value }) => S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.account, to, data, value: '0x' + BigInt(value).toString(16) }] }),
+});
+
+// The Tacit key is a hash of the wallet's signature over one fixed message, the same in every Tacit app, so the same
+// account opens the same key wherever it signs. A first signature is taken only when a second one is the same.
+const IDENTITY = ['Tacit identity', '', 'Signing this creates your Tacit private key. Anyone who has this signature controls all of your Tacit funds.', '', 'Sign it only in a Tacit app you trust. Every Tacit app asks for exactly this message.', '', 'network: mainnet', 'version: 1'].join('\n');
+async function openWithWallet() {
+  const a = await connect(), p = S.provider, msg = utf8(IDENTITY);
+  const code = await p.request({ method: 'eth_getCode', params: [a, 'latest'] }).catch(() => '0x');
+  if (/^0x[0-9a-f]+$/i.test(code) && !/^0x0*$/i.test(code) && !/^0xef0100[0-9a-f]{40}$/i.test(code)) throw new Error('A smart-contract wallet signs differently each time, so it cannot hold a Tacit key. Use an ordinary account.');
+  const signed = async () => {
+    const b = unhex(await p.request({ method: 'personal_sign', params: ['0x' + hex(msg), a] }));
+    if (b.length !== 65) throw new Error('Your wallet returned a malformed signature.');
+    if (b[64] < 27) b[64] += 27;
+    return b;
+  };
+  const sig = await signed();
+  const P = secp.recover(keccak(cat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg)), big(sig.subarray(0, 32)), big(sig.subarray(32, 64)), sig[64] - 27);
+  const [x, y] = secp.affine(P);
+  if ('0x' + hex(keccak(cat(be(x), be(y))).subarray(12)) !== a) throw new Error('That signature is from another account. Switch accounts and try again.');
+  if (big(sig.subarray(32, 64)) > SN / 2n) throw new Error('Your wallet returned a non-canonical signature, so no key was derived from it.');
+  const anchor = `tacit-eth-identity-anchor:${a}`;
+  if (!store.get(anchor) && !same(await signed(), sig)) throw new Error('This wallet signed the message differently the second time, so it cannot hold a stable Tacit key. Nothing was opened.');
+  let key = sha256(sig);
+  while (!big(key) || big(key) >= SN) key = sha256(cat(key, utf8('tacit-prf-recovery')));
+  const pub = hex(pubOf(key));
+  if (store.get(anchor) && store.get(anchor) !== pub) throw new Error('This account opened a different Tacit key here before, so nothing was opened.');
+  store.set(anchor, pub);
+  setKey(key, a);
+}
+function openWithKey(text) {
+  const h = lc(text).trim().replace(/^0x/, '');
+  if (!/^[0-9a-f]{64}$/.test(h) || !BigInt('0x' + h) || BigInt('0x' + h) >= SN) throw new Error('A Tacit key is 64 hex characters.');
+  setKey(unhex(h), null);
+}
+function setKey(key, account) {
+  const pool = poolKeys(key);
+  S.key = { key, pool, address: tacitAddress(key, pool), account };
+  for (const c of CHAINS) CH[c.chainId] = { last: readJson(`tacit-pay-seen-v1:${pool.address}`)?.[c.chainId] ?? null };
+  writeJson('tacit-pay-last-v1', account ? { account } : null);
+  toast(`Opened ${short(S.key.address, 8)}`);
+  render(); syncAll(true);
+  if (PROVER.saved) warm();
+}
+function lock() { S.key = null; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
+
+// ── per chain ───────────────────────────────────────────────────────────────────────────────────────────────
+// A relay the reader set is held to the fee ceiling but not to the default relay's address.
+const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
+function walletOn(c) {
+  const st = CH[c.chainId];
+  return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c) }));
+}
+function syncChain(c, fresh = false) {
+  const st = CH[c.chainId], key = S.key;
+  if (!key || (st.syncing && !fresh)) return st.syncing || Promise.resolve();
+  const W = walletOn(c);
+  const p = st.syncing = (st.syncing || Promise.resolve()).catch(() => {}).then(async () => {
+    const [s, q] = await Promise.all([W.sync(), relayOf(c) ? W.quote().catch((e) => ({ error: e })) : null]);
+    const waiting = await W.waiting(0).catch(() => null);
+    if (S.key !== key) return;
+    Object.assign(st, { bal: s.balance, notes: W.notes().map((n) => BigInt(n.v)), leaves: s.leaves, quote: q?.error ? null : q, quoteErr: q?.error || null, waiting, err: null, at: Date.now() });
+    const seen = readJson(`tacit-pay-seen-v1:${key.pool.address}`) || {};
+    seen[c.chainId] = String(s.balance);
+    writeJson(`tacit-pay-seen-v1:${key.pool.address}`, seen);
+  }).catch((e) => { if (S.key === key) st.err = e; }).finally(() => { if (st.syncing === p) st.syncing = null; paint(); });
+  return p;
+}
+const syncAll = (fresh) => CHAINS.forEach((c) => syncChain(c, fresh));
+setInterval(() => { if (!document.hidden && S.key && !S.busy) for (const c of CHAINS) if (Date.now() - (CH[c.chainId].at || 0) > (c === S.chain ? 30_000 : 120_000)) syncChain(c); }, 5000);
+
+// The relay sends a spend for its fee, so no account of yours shows on chain; your wallet can send it instead.
+const relayUp = (c = S.chain) => !!relayOf(c) && !!CH[c.chainId].quote;
+const viaOf = (tab) => (S.route[tab] === 'wallet' || !relayOf(S.chain) ? 'self' : null);
+const feeOf = (tab) => (viaOf(tab) === 'self' ? 0n : CH[S.chain.chainId].quote ? BigInt(CH[S.chain.chainId].quote.fee) : null);
+// What a spend of `amount` takes from the balance: its fee, and one more per merge of the two largest notes.
+function plan(amount, fee, notes = CH[S.chain.chainId].notes || []) {
+  let u = notes.filter((v) => v > 0n).sort((a, b) => (a < b ? -1 : 1));
+  for (let merges = 0; merges < 8; merges++) {
+    const need = amount + fee;
+    if (u.some((v) => v >= need) || u.some((v, i) => u.slice(i + 1).some((w) => v + w >= need))) return { merges, total: need + fee * BigInt(merges) };
+    if (u.length < 2) return null;
+    const a = u.pop(), b = u.pop();
+    if (a + b <= fee) return null;
+    u.push(a + b - fee); u.sort((x, y) => (x < y ? -1 : 1));
+  }
+  return null;
+}
+function maxSpend(fee) {
+  const u = (CH[S.chain.chainId].notes || []).filter((v) => v > 0n).sort((a, b) => (a < b ? -1 : 1));
+  let best = 0n;
+  for (let i = 0; i < 8 && u.length; i++) {
+    const top = u.length > 1 ? u[u.length - 1] + u[u.length - 2] : u[0];
+    if (top - fee > best) best = top - fee;
+    if (u.length < 2) break;
+    const a = u.pop(), b = u.pop();
+    if (a + b <= fee) break;
+    u.push(a + b - fee); u.sort((x, y) => (x < y ? -1 : 1));
+  }
+  return best;
+}
+
+// ── rendering ───────────────────────────────────────────────────────────────────────────────────────────────
+const cur = () => CH[S.chain.chainId];
+const ethIcon = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`;
+const txLink = (c, h) => html`<a href="${c.explorer}/tx/${h}" target="_blank" rel="noopener">${short(h, 6)} ↗</a>`;
+const kvRow = (k, v) => html`<div class="kv"><span>${k}</span><b class="num">${v}</b></div>`;
+const STEPS = { proving: 'Proving here', 'sending through the relay': 'Sending through the relay', 'waiting for the block': 'Waiting for the block', 'confirm in your wallet': 'Confirm in your wallet', 'combining two notes first': 'Combining two notes first', 'another payment landed first, proving again': 'Another payment landed first; proving again' };
+let FORM = { check: null };
+const DRAFT = {};
+
+function render() { paintWallet(); paintReq(); paintChains(); paintBal(); paintTabs(); renderForm(); paintActivity(); paintDevice(); }
+// After a read: a form whose picture of the chain changed (the relay's quote, what waits at the deposit address) is
+// drawn again; its fields keep what was typed.
+function paint() {
+  paintChains(); paintBal(); paintReq(); paintActivity();
+  if (S.busy) return;
+  if (FORM.relay !== undefined && FORM.relay !== relayUp()) renderForm();
+  else if (FORM.waiting !== undefined && FORM.waiting !== cur().waiting) renderForm();
+  else FORM.check?.();
+}
+function paintWallet() {
+  $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.account ? ' live' : '');
+  $('#wallet-label').textContent = S.key ? short(S.key.address, 6) : S.account ? short(S.account) : 'Open wallet';
+  if ($('#sheet-wallet').open) renderWalletSheet();
+}
+function paintChains() {
+  mount($('#chains'), html`${CHAINS.map((c) => {
+    const st = CH[c.chainId], v = !S.key ? '' : st.bal != null ? `${ethStr(st.bal)} ETH` : st.last != null ? html`<span class="stale">${ethStr(st.last)} ETH</span>` : st.err ? '—' : html`<span class="sk"></span>`;
+    return html`<button type="button" role="tab" data-chain="${c.chainId}" aria-selected="${c === S.chain}" ${S.busy ? 'disabled' : ''}>${c.name}${S.key ? html`<small>${v}</small>` : ''}</button>`;
+  })}`);
+  $$('#chains [data-chain]').forEach((b) => b.onclick = () => { if (S.busy) return; S.chain = chainOf(b.dataset.chain); writeJson('tacit-pay-chain-v1', S.chain.chainId); mount($('#status'), ''); render(); syncChain(S.chain); });
+}
+function paintBal() {
+  const c = S.chain, st = cur();
+  if (!S.key) {
+    mount($('#bal'), html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg><div><div class="v t">Private ETH</div><div class="u">on ${c.full} · yours shows once a wallet is open</div></div>`);
+    return;
+  }
+  const v = st.bal != null ? ethStr(st.bal) : st.last != null ? html`<span class="stale">${ethStr(st.last)}</span>` : st.err ? html`<span class="err">—</span>` : html`<span class="sk" style="--w:8ch"></span>`;
+  mount($('#bal'), html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg><div><div class="v num">${v}</div><div class="u">ETH, private on ${c.full}</div></div>
+    <div class="side">${st.err ? html`<span class="err">${errText(st.err)}</span><br>` : ''}<button class="link" type="button" id="bal-re">${st.syncing ? 'reading…' : 'refresh'}</button></div>`);
+  $('#bal-re').onclick = () => syncChain(c, true);
+}
+const TABS = [['shield', 'Shield'], ['send', 'Send'], ['withdraw', 'Withdraw'], ['receive', 'Receive']];
+function paintTabs() {
+  mount($('#tabs'), html`${TABS.map(([k, l]) => html`<button type="button" role="tab" data-tab="${k}" aria-selected="${k === S.tab}" ${S.busy ? 'disabled' : ''}>${l}</button>`)}`);
+  $$('#tabs [data-tab]').forEach((b) => b.onclick = () => { if (S.busy) return; S.tab = b.dataset.tab; mount($('#status'), ''); paintTabs(); renderForm(); });
+}
+function signIn(id) {
+  const last = readJson('tacit-pay-last-v1');
+  return html`<div class="opts" id="${id}">
+    <button class="opt main" type="button" data-in="eth"><span class="opt-t">${ethIcon}${last?.account ? `Continue with ${short(last.account)}` : 'Ethereum wallet'}</span><span class="opt-m">One signature opens your Tacit key: the same key, with the same balances, as on tacit.finance.</span></button>
+    <p class="note"><button class="link" type="button" data-in="paste">Paste a key instead</button></p>
+    <div class="amt text" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" aria-label="Tacit key"><button class="link" type="button" data-in="key">open</button></div>
+  </div>`;
+}
+function wireSignIn(root, after) {
+  const box = $('.opts', root);
+  if (!box) return;
+  $$('[data-in]', box).forEach((b) => b.onclick = () => {
+    if (b.dataset.in === 'paste') { const p = $('.amt', box); p.hidden = false; $('input', p).focus(); return; }
+    busy(b, async () => {
+      try { if (b.dataset.in === 'eth') await openWithWallet(); else openWithKey($('input', box).value); after?.(); }
+      catch (e) { if (!/cancel/i.test(e?.message || '') && e?.code !== 4001) toast(errText(e), true); }
+    });
+  });
+  $('input', box).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('[data-in="key"]', box).click(); });
+}
+function renderForm() {
+  if (S.busy) return;
+  FORM = { check: null };
+  const f = $('#form');
+  if (!S.key && S.tab !== 'shield') {
+    mount(f, html`<p class="lede">Open your Tacit wallet. One key holds your private ETH on all three chains, and nothing else needs backing up.</p>${signIn('g-in')}`);
+    return wireSignIn(f);
+  }
+  ({ shield: formShield, send: formSend, withdraw: formWithdraw, receive: formReceive })[S.tab](f);
+  if (S.tab === 'send' || S.tab === 'withdraw') FORM.relay = relayUp();
+  for (const i of $$('input[id]', f)) {
+    if (DRAFT[i.id] && !i.value) i.value = DRAFT[i.id];
+    i.addEventListener('input', () => { DRAFT[i.id] = i.value; FORM.check?.(); });
+    i.addEventListener('focus', warm, { once: true });
+  }
+  FORM.check?.();
+}
+const amountField = (id, label, extra = '') => html`<div class="lbl"><span>${label}</span>${extra}</div>
+  <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u">${ethIcon}ETH</span></div>`;
+const routeLine = (tab) => {
+  const c = S.chain, fee = feeOf(tab);
+  if (!relayOf(c)) return html`<p class="route">Sent from your wallet${S.account ? ` ${short(S.account)}` : ''}: you pay the gas, and its address shows as the sender.</p>`;
+  if (viaOf(tab) === 'self') return html`<p class="route">Sent from your wallet${S.account ? ` ${short(S.account)}` : ''}: you pay the gas, and its address shows as the sender · <button class="link" type="button" data-route="relay">use the relay</button></p>`;
+  const refused = /nothing was signed/.test(CH[c.chainId].quoteErr?.message || '');
+  return relayUp(c)
+    ? html`<p class="route">Sent by the relay, no gas needed${fee != null ? html` · fee <b class="num">${fmt(fee)} ETH</b>` : ''} · <button class="link" type="button" data-route="wallet">send from my wallet instead</button></p>`
+    : html`<p class="route"><span class="warn">${refused ? CH[c.chainId].quoteErr.message : 'The relay is not answering.'}</span> <button class="link" type="button" data-route="wallet">Send from my wallet instead</button></p>`;
+};
+const wireRoute = (f, tab) => $$('[data-route]', f).forEach((b) => b.onclick = () => { S.route[tab] = b.dataset.route; writeJson('tacit-pay-route-v1', S.route); renderForm(); });
+
+// One action at a time, with the chain held: its progress in the status line, its result there and in a toast.
+async function act(btn, fn) {
+  if (S.busy) return;
+  const status = $('#status'), c = S.chain;
+  S.busy = true; paintChains(); paintTabs();
+  $$('#form button, #form input, #req button').forEach((x) => { x.disabled = true; });
+  btn.setAttribute('aria-busy', 'true');
+  let label = '', t0 = 0;
+  const show = () => mount(status, html`<span class="spin" aria-hidden="true"></span>${label}${t0 ? html` <span class="mute num">${((performance.now() - t0) / 1000).toFixed(1)} s</span>` : ''}${PROVER.state === 'loading' ? html` <span class="mute">· fetching the proving key once, ${Math.floor(PROVER.got / PROVER.total * 100)}%</span>` : ''}`);
+  const step = (m) => { label = STEPS[m] || m; t0 = m === 'proving' ? performance.now() : 0; show(); };
+  const tick = setInterval(show, 250);
+  let ok = false;
+  try { step('Getting ready'); await cur().syncing?.catch(() => {}); await fn(step, c); ok = true; }
+  catch (e) {
+    const offer = relayTrouble(e) && viaOf(S.tab) !== 'self' && (S.tab === 'send' || S.tab === 'withdraw');
+    mount(status, html`<span class="err">${errText(e)}</span>${offer ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}`);
+  } finally {
+    clearInterval(tick);
+    btn.removeAttribute('aria-busy');
+    S.busy = false;
+    const kept = status.innerHTML;
+    render();
+    status.innerHTML = kept;
+    $('#use-wallet')?.addEventListener('click', () => { S.route[S.tab] = 'wallet'; renderForm(); mount(status, 'Your wallet will send it. Press the button again.'); });
+  }
+  if (ok && S.key) syncChain(c, true);
+}
+const done = (c, h, text) => { mount($('#status'), html`<span class="ok">${text}</span> ${txLink(c, h)}`); toast(text); };
+
+// Shield: ETH from the connected wallet into a private balance, yours or anyone's: proved here, sent by your wallet.
+// Someone else's needs only their address; no Tacit key of yours is involved.
+function formShield(f) {
+  const c = S.chain, st = cur();
+  const seg = S.key ? html`<div class="seg sub" role="tablist" aria-label="Shield from">
+    <button type="button" role="tab" data-from="wallet" aria-selected="${S.from === 'wallet'}">From my wallet<small>no fee</small></button>
+    <button type="button" role="tab" data-from="exchange" aria-selected="${S.from === 'exchange'}">From an exchange<small>up to 0.25%</small></button></div>` : '';
+  if (S.key && S.from === 'exchange') {
+    const W = walletOn(c), box = W.receiveBox(0), waiting = st.waiting ?? null;
+    FORM.waiting = st.waiting;
+    // Shown once the router confirms it computes the same address for this key.
+    if (st.boxOk === undefined) { st.boxOk = null; W.ready().then((ok) => { st.boxOk = ok; }, () => { st.boxOk = 'unread'; }).finally(() => { if (!S.busy && S.tab === 'shield') renderForm(); }); }
+    if (st.boxOk !== true) {
+      const say = st.boxOk === false ? `The pool’s router on ${c.full} does not confirm this deposit address, so it is not shown.`
+        : st.boxOk === 'unread' ? html`Could not reach ${c.full} to check your deposit address with the pool’s router. <button class="link" type="button" id="f-recheck">Try again</button>` : 'Checking your deposit address with the pool’s router…';
+      mount(f, html`${seg}<p class="note${st.boxOk === null ? '' : ' err'}">${say}</p>`);
+      $('#f-recheck')?.addEventListener('click', () => { st.boxOk = undefined; renderForm(); });
+      $$('[data-from]', f).forEach((b) => b.onclick = () => { S.from = b.dataset.from; renderForm(); });
+      return;
+    }
+    const min = st.quote?.receiveMin ? BigInt(st.quote.receiveMin) : null, relayTakes = waiting > 0n && relayUp(c) && (min == null || waiting >= min);
+    mount(f, html`${seg}
+      <div class="blk"><div class="lbl"><span>Your deposit address</span><span>the same on every chain</span></div>
+        <div class="addr"><code>${box}</code><button class="link" type="button" data-copy="${box}">copy</button></div>
+        <p class="note">Send ETH here from an exchange or any wallet, on Ethereum, Base or Robinhood Chain. ${relayOf(c) ? html`The relay moves it into your private balance on that chain, usually within minutes, for at most 0.25%${min ? html`; on ${c.full}, send at least ${fmt(min)} ETH` : ''}.` : 'Take it in below once it arrives.'} Only send ETH. Everything sent here is visibly sent to this one address.</p></div>
+      ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${relayTakes ? 'The relay collects it shortly, or take it in yourself now: no fee, your wallet pays the gas.' : 'Take it in yourself: no fee, your wallet pays the gas.'}</span><button class="btn ghost sm" type="button" id="f-sweep">Take it in</button></div>` : ''}
+      <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button></p>`);
+    $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
+    $('#f-check').onclick = async () => { await W.watch(0).catch(() => {}); await syncChain(c, true); mount($('#status'), cur().waiting > 0n ? `${fmt(cur().waiting)} ETH is waiting at your deposit address.` : 'Nothing is waiting at your deposit address.'); renderForm(); };
+    $('#f-sweep')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => { const h = await W.sweep({ index: 0, onStep: step }); done(c, h, 'Taken in.'); }));
+    if (relayOf(c)) W.watch(0).catch(() => {});
+  } else {
+    mount(f, html`${seg}
+      ${amountField('f-samt', 'Amount', S.account ? html`<button type="button" id="f-max">Wallet <span id="f-wb" class="num">…</span> ETH</button>` : html`<button type="button" id="f-conn">Connect a wallet</button>`)}
+      <div class="lbl"><span>To</span><span>${S.key ? 'yourself, unless you name someone' : 'their bp1… or tacit1… address'}</span></div>
+      <div class="amt text"><input id="f-sto" placeholder="${S.key ? 'Yourself · or bp1… or tacit1…' : 'bp1… or tacit1…'}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Shield to"></div>
+      <div class="rcpt" id="f-rcpt" hidden></div>
+      <button class="btn" type="button" id="f-go" disabled>${S.account ? 'Shield' : 'Connect a wallet'}</button>
+      <p class="note">Proved here, then sent from your wallet on ${c.full}: you pay the gas and there is no fee. The deposit shows on chain, from your wallet; whose balance it lands in does not.${S.key ? '' : html` To shield into your own balance, <button class="link" type="button" id="f-open">open your Tacit wallet</button>.`}</p>`);
+    let wb = null;
+    const amt = $('#f-samt'), to = $('#f-sto'), go = $('#f-go'), rc = $('#f-rcpt');
+    $('#f-conn')?.addEventListener('click', () => connect().catch((e) => toast(errText(e), true)));
+    $('#f-open')?.addEventListener('click', () => openSheet());
+    if (S.account) rpcOn(c)('eth_getBalance', [S.account, 'latest']).then((b) => { wb = BigInt(b); const e = $('#f-wb'); if (e) e.textContent = fmt(wb, 4); FORM.check?.(); }).catch(() => {});
+    $('#f-max')?.addEventListener('click', () => { if (wb == null) return; const v = wb > c.gasReserve ? wb - c.gasReserve : 0n; amt.value = v ? plain(v) : ''; amt.dispatchEvent(new Event('input')); });
+    const target = () => { const raw = to.value.trim(); if (!raw) return S.key ? { self: true } : null; try { return { r: parseRecipient(raw) }; } catch (e) { return { error: e.message }; } };
+    FORM.check = () => {
+      const a = parseEth(amt.value), t = target();
+      rc.hidden = true; go.disabled = true;
+      const say = (v) => { mount(rc, v); rc.hidden = false; };
+      if (!S.account) { go.disabled = false; return; }
+      if (t?.error && to.value.trim().length > 8) return say(html`<p class="note err">${t.error}</p>`);
+      if (!a || !t || t.error) return;
+      if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
+      say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${t.self ? '' : kvRow('To', short(to.value.trim(), 10))}${kvRow('Fee', 'none · your wallet pays the gas')}`);
+      go.disabled = false;
+    };
+    go.onclick = () => {
+      if (!S.account) return connect().catch((e) => toast(errText(e), true));
+      act(go, async (step) => {
+        const a = parseEth(amt.value), t = target();
+        if (!a) throw new Error('Enter an amount.');
+        if (!t || t.error) throw new Error(t?.error || 'Enter who it is for.');
+        if (t.self) {
+          const h = await walletOn(c).deposit({ amount: a, onStep: step });
+          delete DRAFT['f-samt'];
+          return done(c, h, `Shielded ${fmt(a)} ETH.`);
+        }
+        const h = await shieldTo(c, t.r, a, step);
+        delete DRAFT['f-samt']; delete DRAFT['f-sto'];
+        done(c, h, `Shielded ${fmt(a)} ETH into their private balance.`);
+      });
+    };
+  }
+  $$('[data-from]', f).forEach((b) => b.onclick = () => { S.from = b.dataset.from; renderForm(); });
+}
+// Straight into someone else's private balance from the connected wallet: proved with the open key's wallet, or a
+// throwaway key's when none is open; the throwaway key never holds anything.
+function shieldTo(c, r, amount, onStep) {
+  const W = S.key ? walletOn(c) : makePoolWallet({ chain: chainCfg(c), keys: poolKeys(randomBytes(32)), prove, signer: signerFor(c) });
+  return W.deposit({ amount, to: r, onStep });
+}
+
+function formSend(f) {
+  const c = S.chain, tab = 'send';
+  mount(f, html`
+    <div class="lbl"><span>To</span><button type="button" id="f-paste">paste</button></div>
+    <div class="amt text"><input id="f-to" placeholder="bp1…, tacit1… or 0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient"></div>
+    ${amountField('f-amt', 'Amount', html`<button type="button" id="f-max">Max</button>`)}
+    ${routeLine(tab)}
+    <div class="rcpt" id="f-rcpt" hidden></div>
+    <button class="btn" type="button" id="f-go" disabled>Send privately</button>
+    <p class="note" id="f-note"></p>`);
+  wireRoute(f, tab);
+  const to = $('#f-to'), amt = $('#f-amt'), go = $('#f-go'), rc = $('#f-rcpt');
+  $('#f-paste').onclick = async () => { try { to.value = (await navigator.clipboard.readText()).trim(); to.dispatchEvent(new Event('input')); } catch { to.focus(); } };
+  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; const v = maxSpend(fee); amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input')); };
+  const target = () => {
+    const raw = to.value.trim();
+    if (!raw) return null;
+    if (/^0x/i.test(raw)) return isAddr(raw) ? (payable(raw) ? { addr: raw } : { error: 'That address cannot receive a payment.' }) : { error: 'Not an 0x address.' };
+    try { const r = parseRecipient(raw); return same(r.raw, S.key.pool.raw) ? { error: 'That is your own address.' } : { r }; } catch (e) { return { error: e.message }; }
+  };
+  FORM.check = () => {
+    const a = parseEth(amt.value), t = target(), fee = feeOf(tab), bal = cur().bal;
+    rc.hidden = true; go.disabled = true; go.textContent = t?.addr ? `Pay ${short(t.addr)}` : 'Send privately';
+    mount($('#f-note'), t?.addr
+      ? 'Arrives as a withdrawal from the pool: the address and the amount show on chain; nothing links them to you.'
+      : viaOf(tab) === 'self' ? 'Your wallet shows as the sender of a pool transaction; whom you paid and how much stay hidden.' : 'Nothing on chain links this payment to you or to them.');
+    const say = (v) => { mount(rc, v); rc.hidden = false; };
+    if (t?.error && to.value.trim().length > 8) return say(html`<p class="note err">${t.error}</p>`);
+    if (!a || !t || t.error) return;
+    if (fee == null) return say(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay is not answering: send it from your wallet instead, or try again shortly.'}</p>`);
+    const p = plan(a, fee);
+    if (bal != null && !p) return say(html`<p class="note err">More than your private balance covers with the fee.</p>`);
+    say(html`${kvRow(t.addr ? 'Arrives' : 'They receive', `${fmt(a)} ETH`)}${kvRow('Relay fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}
+      ${p?.merges ? kvRow(`Combining notes first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}`);
+    go.disabled = false;
+  };
+  go.onclick = () => act(go, async (step) => {
+    const a = parseEth(amt.value), t = target(), via = viaOf(tab), W = walletOn(c);
+    if (!a) throw new Error('Enter an amount.');
+    if (!t || t.error) throw new Error(t?.error || 'Enter who to pay.');
+    const h = t.addr ? await W.withdraw({ to: t.addr, amount: a, via, onStep: step }) : await W.send({ to: t.r, amount: a, via, onStep: step });
+    delete DRAFT['f-amt']; delete DRAFT['f-to'];
+    if (REQ.v && !t.addr && same(t.r.raw, REQ.v.r.raw)) REQ.v.paid = { h, c, a };
+    done(c, h, t.addr ? `Paid ${short(t.addr)} ${fmt(a)} ETH.` : `Sent ${fmt(a)} ETH privately.`);
+  });
+}
+
+function formWithdraw(f) {
+  const c = S.chain, tab = 'withdraw';
+  mount(f, html`
+    <div class="lbl"><span>To</span>${S.account ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
+    <div class="amt text"><input id="f-wto" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>
+    ${amountField('f-wamt', 'Amount', html`<button type="button" id="f-max">Max</button>`)}
+    ${routeLine(tab)}
+    <div class="rcpt" id="f-rcpt" hidden></div>
+    <button class="btn" type="button" id="f-go" disabled>Withdraw</button>
+    <p class="note">Take out any part; the rest stays private. The address and the amount show on chain${viaOf(tab) === 'self' ? ', and so does your wallet as the sender' : ', but nothing links them to you'}.</p>`);
+  wireRoute(f, tab);
+  const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt');
+  $('#f-me')?.addEventListener('click', () => { to.value = S.account; to.dispatchEvent(new Event('input')); });
+  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; const v = maxSpend(fee); amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input')); };
+  FORM.check = () => {
+    const a = parseEth(amt.value), raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
+    rc.hidden = true; go.disabled = true;
+    const say = (v) => { mount(rc, v); rc.hidden = false; };
+    if (raw && !isAddr(raw)) return /^0x[0-9a-f]{0,39}$/i.test(raw) ? undefined : say(html`<p class="note err">${/^(bp1|tacit1)/i.test(raw) ? 'That is a private address. Use Send to pay it.' : 'Not an 0x address.'}</p>`);
+    if (raw && !payable(raw)) return say(html`<p class="note err">That address cannot receive a withdrawal.</p>`);
+    if (!a || !raw) return;
+    if (fee == null) return say(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay is not answering: send it from your wallet instead, or try again shortly.'}</p>`);
+    const p = plan(a, fee);
+    if (bal != null && !p) return say(html`<p class="note err">More than your private balance covers with the fee.</p>`);
+    say(html`${kvRow('Arrives', `${fmt(a)} ETH`)}${kvRow('Relay fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}
+      ${p?.merges ? kvRow(`Combining notes first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}
+      ${S.account && lc(raw) === S.account ? html`<p class="note warn">This is your connected wallet: withdrawing to it links it to your private balance. A fresh address keeps them apart.</p>` : ''}`);
+    go.disabled = false;
+  };
+  go.onclick = () => act(go, async (step) => {
+    const a = parseEth(amt.value);
+    if (!a) throw new Error('Enter an amount.');
+    const h = await walletOn(c).withdraw({ to: to.value.trim(), amount: a, via: viaOf(tab), onStep: step });
+    delete DRAFT['f-wamt'];
+    done(c, h, `Withdrew ${fmt(a)} ETH.`);
+  });
+}
+
+// A payment link: #pay=<tacit1… or bp1…>&amount=&chain=&for=. Whoever opens it pays from their private balance, or
+// shields from any wallet straight into the payee's: proved in their browser.
+const payLink = ({ to, amount, chain, note }) => {
+  const q = new URLSearchParams({ pay: to });
+  if (amount) q.set('amount', plain(amount));
+  q.set('chain', chain.key);
+  if (note) q.set('for', note);
+  return `${location.origin}${location.pathname}#${q}`;
+};
+function formReceive(f) {
+  const c = S.chain, k = S.key;
+  mount(f, html`
+    <div class="blk"><div class="lbl"><span>Your Tacit address</span><span>works in every Tacit app</span></div>
+      <div class="addr"><code>${k.address}</code><button class="link" type="button" data-copy="${k.address}">copy</button></div>
+      <p class="note">Anyone using Tacit can pay you privately with it, on any chain. It never appears on chain. Your pool address works too: <button class="link" type="button" data-copy="${k.pool.address}">copy bp1…</button></p></div>
+    <div class="blk"><div class="lbl"><span>Get paid by link</span><span>anyone with a wallet can pay it</span></div>
+      ${amountField('f-ramt', 'Amount (optional)')}
+      <div class="lbl"><span>What it’s for (optional)</span></div>
+      <div class="amt text"><input id="f-rfor" maxlength="60" placeholder="Dinner, rent, invoice 42…" autocomplete="off" aria-label="What it is for"></div>
+      <div class="qrbox" id="f-qr"></div>
+      <div class="row2"><button class="btn" type="button" id="f-link">Copy payment link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>
+      <p class="note">Paid from a Tacit balance, it is private end to end. Paid from any other wallet, the payer’s browser proves a deposit straight into your private balance on ${c.full}: their address and the amount show on chain, you do not.</p></div>`);
+  $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
+  const link = () => payLink({ to: k.address, amount: parseEth($('#f-ramt').value), chain: c, note: $('#f-rfor').value.trim() });
+  let last = '';
+  FORM.check = () => { const l = link(); if (l !== last) { last = l; mount($('#f-qr'), qrSvg(l)); } };
+  $('#f-link').onclick = () => copy(link(), 'Payment link copied');
+  const sh = $('#f-share');
+  if (!navigator.share) { sh.hidden = true; $('#f-link').style.gridColumn = '1 / -1'; }
+  sh.onclick = () => navigator.share({ title: 'Pay me', url: link() }).catch(() => {});
+}
+
+// A payment request opened from a link.
+const REQ = { v: null };
+function paintReq() {
+  const el = $('#req'), r = REQ.v;
+  el.hidden = !r;
+  if (!r) return;
+  const c = S.chain, own = S.key && same(r.r.raw, S.key.pool.raw), st = cur();
+  const canPriv = S.key && st.bal != null && (!r.amount || plan(r.amount, feeOf('send') ?? 0n));
+  mount(el, html`
+    <div class="lbl"><span>Payment request</span><button class="link" type="button" id="req-x">dismiss</button></div>
+    <div class="req-a num">${r.amount ? html`${fmt(r.amount)} <small>ETH</small>` : 'Any amount'}</div>
+    <div class="req-m">to <b class="nw">${short(r.to, 10)}</b> on ${c.full}${r.note ? html` · “${r.note}”` : ''}</div>
+    ${own ? html`<p class="note">This is your own request. Share its link from Receive.</p>`
+    : r.paid ? html`<p class="status"><span class="ok">Paid ${fmt(r.paid.a)} ETH.</span> ${txLink(r.paid.c, r.paid.h)}</p>`
+    : html`${r.amount ? '' : html`<div class="amt" style="margin-top:12px"><input id="req-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>`}
+      <div class="row2"><button class="btn" type="button" id="req-wallet">Pay from a wallet</button><button class="btn ghost" type="button" id="req-priv" ${canPriv ? '' : 'disabled'}>Pay privately</button></div>
+      <p class="note">From a wallet: proved here, then sent from your wallet straight into their private balance; your address and the amount show on chain, whom you paid does not. Privately: from your own private ETH, and nothing on chain links you to them${S.key ? '' : ' (open your Tacit wallet first)'}.</p>`}`);
+  $('#req-x').onclick = () => { REQ.v = null; paintReq(); };
+  $('#req-priv')?.addEventListener('click', () => {
+    S.tab = 'send'; DRAFT['f-to'] = r.to; if (r.amount) DRAFT['f-amt'] = plain(r.amount);
+    render(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  $('#req-wallet')?.addEventListener('click', (e) => {
+    const a = r.amount ?? parseEth($('#req-amt')?.value);
+    if (!a) return toast('Enter an amount.', true);
+    act(e.currentTarget, async (step, ch) => {
+      const h = await shieldTo(ch, r.r, a, step);
+      r.paid = { h, c: ch, a };
+      done(ch, h, `Paid ${fmt(a)} ETH into their private balance.`);
+    });
+  });
+}
+
+// ── activity, rebuilt from the key and the chain ────────────────────────────────────────────────────────────
+const TIMES = {}, DETAIL = {};
+function rowsOf(c) {
+  const W = CH[c.chainId].W;
+  return W ? W.history().map((r) => ({ ...r, ...DETAIL[r.tx], c })) : [];
+}
+// Rows from the relay's index lack the public amount, fee and recipient: read them from the transaction. A
+// withdrawal on Ethereum whose calls go through an L2's canonical bridge is a move to that chain.
+const BRIDGES = { Base: '3154cf16ccdb4c6d922629664174b904d80f2c35', 'Robinhood Chain': '1a07cc4bd17e0118bdb54d70990d2158abad7a2d' };
+async function detail(c, r) {
+  if (DETAIL[r.tx]) return;
+  const d = DETAIL[r.tx] = {}, rpc = rpcOn(c);
+  if (r.ext === undefined) {
+    const rc = await rpc('eth_getTransactionReceipt', [r.tx]).catch(() => null);
+    const l = rc?.logs?.find((x) => lc(x.address) === lc(POOL) && x.topics[0] === T_TRANSACT);
+    if (l) { const t = decodeTransact(l); Object.assign(d, { ext: String(t.ext), fee: String(t.fee), to: t.recipient }); }
+  }
+  if (c.chainId === 1 && BigInt(d.ext ?? r.ext ?? 0) < 0n) {
+    const tx = await rpc('eth_getTransactionByHash', [r.tx]).catch(() => null);
+    d.dest = Object.entries(BRIDGES).find(([, a]) => lc(tx?.input).includes(a))?.[0] ?? null;
+  }
+  paintActivity();
+}
+function describe(r) {
+  const used = BigInt(r.used), kept = BigInt(r.kept), ext = r.ext == null ? null : BigInt(r.ext), fee = BigInt(r.fee ?? 0);
+  if (r.box != null) return { label: 'Came in at your deposit address', v: kept, in: true, fee: BigInt(r.boxFee ?? 0) };
+  if (!used) return ext == null ? { label: 'Came in', v: kept, in: true } : { label: ext > 0n ? 'Shielded in' : 'Received privately', v: kept, in: true };
+  if (ext == null) return { label: 'Spent', v: used - kept };
+  if (ext < 0n) return { label: r.dest ? `Moved to ${r.dest}` : html`Withdrew to <span class="nw">${short(r.to)}</span>`, v: -ext, fee };
+  const paid = used - kept - fee;
+  return paid > 0n ? { label: 'Sent privately', v: paid, fee } : { label: 'Combined two notes', v: 0n, fee };
+}
+function paintActivity() {
+  const el = $('#activity');
+  if (!S.key) { $('#activity-at').textContent = ''; return mount(el, html`<p class="lede">Your payments, rebuilt on any device from your key and the chain. Your key is the only backup.</p>`); }
+  const at = (r) => TIMES[`${r.c.chainId}:${r.block}`] || Infinity;
+  const rows = CHAINS.flatMap(rowsOf).sort((a, b) => at(b) - at(a)).slice(0, 40);
+  const reading = CHAINS.some((c) => CH[c.chainId].syncing);
+  $('#activity-at').textContent = reading ? 'reading…' : '';
+  for (const r of rows) {
+    if (r.ext === undefined || (r.c.chainId === 1 && BigInt(r.ext) < 0n && r.dest === undefined)) detail(r.c, r);
+    const k = `${r.c.chainId}:${r.block}`;
+    if (!(k in TIMES)) { TIMES[k] = 0; rpcOn(r.c)('eth_getBlockByNumber', ['0x' + r.block.toString(16), false]).then((b) => { TIMES[k] = Number(BigInt(b.timestamp)); paintActivity(); }).catch(() => {}); }
+  }
+  mount(el, html`
+    <p class="lede">Rebuilt from your key and the chain: what came in, and what you sent with its fee. This browser keeps only a view of it, never a spend key.</p>
+    ${rows.length ? html`<ul class="rows">${rows.map((r) => {
+      const d = describe(r), t = TIMES[`${r.c.chainId}:${r.block}`];
+      return html`<li><div class="h"><b>${d.label}</b><span class="${d.in ? 'in' : ''}">${d.in ? '+' : d.v ? '−' : ''}${fmt(d.v)} ETH</span></div>
+        <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${fmt(d.fee)}` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
+    })}</ul>` : CHAINS.every((c) => CH[c.chainId].at) ? html`<p class="note">Nothing yet. Shield some ETH to start.</p>` : ''}
+    <details class="adv"><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads every chain again from the pool’s first block, without the relay’s index.</p><button class="btn ghost sm" type="button" id="rebuild">Rebuild</button></details>`);
+  $('#rebuild').onclick = (e) => busy(e.currentTarget, async () => {
+    await Promise.all(CHAINS.map(async (c) => { const W = walletOn(c); await W.rescan(); await syncChain(c, true); }));
+    toast('Rebuilt from your key.');
+  });
+}
+
+// ── the device ──────────────────────────────────────────────────────────────────────────────────────────────
+function paintMeter() { const m = $('#device-meter'); if (m) m.style.setProperty('--p', `${Math.min(100, Math.floor(PROVER.got / PROVER.total * 100))}%`); }
+function paintDevice() {
+  const cores = navigator.hardwareConcurrency;
+  $('#device-at').textContent = cores ? `${cores} cores` : '';
+  mount($('#device'), html`
+    <p class="lede">Your key never leaves this tab. Every payment is proved here, then checked against the pool’s own verifier before it is sent; a relay can deliver it but cannot change it.</p>
+    ${PROVER.ms ? html`${kvRow('Your last proof', `${(PROVER.ms / 1000).toFixed(1)} s`)}` : ''}
+    ${kvRow('Proving key', PROVER.state === 'ready' ? html`<span class="ok">ready</span>` : PROVER.state === 'loading' ? `fetching, ${Math.floor(PROVER.got / PROVER.total * 100)}%` : PROVER.saved ? 'saved in this browser' : '33 MB, fetched once, then saved')}
+    ${PROVER.state === 'loading' ? html`<div class="meter"><i id="device-meter"></i></div>` : ''}
+    ${kvRow('Trusted setup', `${CEREMONY.contributions} contributions, closed by Bitcoin block ${CEREMONY.beacon.toLocaleString('en-US')}`)}
+    ${kvRow('Checked against', html`SHA-256 ${short(CEREMONY.zkey.sha256, 6)}`)}
+    ${PROVER.err ? html`<p class="note err">${errText(PROVER.err)}</p>` : ''}
+    <div class="foot-a"><button class="btn ghost sm" type="button" id="device-load" ${PROVER.state !== 'idle' ? 'disabled' : ''}>Get the proving key now</button><button class="link" type="button" id="device-file">or load the two files from disk</button></div>`);
+  paintMeter();
+  $('#device-load').onclick = () => prover().catch(() => {});
+  $('#device-file').onclick = loadFromDisk;
+}
+// transact.wasm and transact_final.zkey from the ceremony bundle, checked against the same hashes.
+function loadFromDisk() {
+  const i = document.createElement('input');
+  i.type = 'file'; i.multiple = true;
+  i.onchange = async () => {
+    const got = {};
+    for (const f of i.files) { const b = new Uint8Array(await f.arrayBuffer()), h = await sha256hex(b); for (const a of [CEREMONY.wasm, CEREMONY.zkey]) if (h === a.sha256) got[a.name] = b; }
+    if (!got[CEREMONY.wasm.name] || !got[CEREMONY.zkey.name]) return toast(`Choose ${CEREMONY.wasm.name} and ${CEREMONY.zkey.name} from the ceremony bundle.`, true);
+    try {
+      const cache = await caches.open(ARTIFACTS);
+      for (const a of [CEREMONY.wasm, CEREMONY.zkey]) await cache.put(`${location.origin}/${a.name}?sha256=${a.sha256}`, new Response(got[a.name].slice()));
+    } catch {}
+    proverP?.then((p) => p.stop()).catch(() => {});
+    proverP = null;
+    prover([got[CEREMONY.wasm.name], got[CEREMONY.zkey.name]]).then(() => toast('Proving key loaded.')).catch((e) => toast(errText(e), true));
+  };
+  i.click();
+}
+
+// ── the wallet sheet and endpoints ─────────────────────────────────────────────────────────────────────────
+function openSheet() { renderWalletSheet(); $('#sheet-wallet').showModal(); }
+function renderWalletSheet() {
+  const el = $('#wallet-body');
+  if (!S.key) { mount(el, html`<p class="lede">Open your Tacit wallet: the same key, with the same balances, as on tacit.finance.</p>${signIn('ws-in')}`); return wireSignIn(el, () => $('#sheet-wallet').close()); }
+  mount(el, html`
+    <div class="addr"><code>${S.key.address}</code></div>
+    <p class="note">Your Tacit address${S.key.account ? `, opened with ${short(S.key.account)}` : ''}.</p>
+    <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div>
+    <div class="kv" style="margin-top:14px"><span>Pays gas when you send it yourself</span>${S.account ? html`<b>${short(S.account, 6)}</b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
+    <p class="note">Your wallet, or your key, is the only way back to these funds. The key stays in this tab.</p>`);
+  $('#w-copy').onclick = () => copy(S.key.address, 'Address copied');
+  $('#w-lock').onclick = () => { lock(); renderWalletSheet(); };
+  $('#w-conn')?.addEventListener('click', () => connect().then(renderWalletSheet).catch((e) => toast(errText(e), true)));
+}
+function renderSettings() {
+  const el = $('#settings-body');
+  mount(el, html`<p class="lede">This page reads each chain through public nodes and sends spends through a relay. Use your own instead: one URL per line. Saved in this browser.</p>
+    ${CHAINS.map((c) => html`<div class="lbl"><span>${c.full} nodes</span></div><textarea id="e-rpc-${c.chainId}" spellcheck="false">${(ends.rpc?.[c.chainId] || []).join('\n')}</textarea>
+      <div class="lbl"><span>${c.full} relay</span></div><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
+    <div class="lbl"><span>Another mirror for the proving key</span></div><textarea id="e-mirror" spellcheck="false" style="min-height:38px" placeholder="https://…/ serving transact.wasm and transact_final.zkey">${ends.mirror || ''}</textarea>
+    <div class="row2"><button class="btn" type="button" id="e-save">Save</button><button class="btn ghost" type="button" id="e-reset">Use the defaults</button></div>`);
+  $$('textarea', el).forEach((t) => { if (t.placeholder === '' && !t.value) t.placeholder = CHAINS.find((c) => t.id === `e-rpc-${c.chainId}`)?.rpc.join('\n') || ''; });
+  const urls = (t) => t.split(/\s+/).filter((u) => /^https?:\/\//.test(u));
+  $('#e-save').onclick = () => {
+    const next = { rpc: {}, relay: {}, mirror: urls($('#e-mirror').value)[0] || '' };
+    for (const c of CHAINS) {
+      const r = urls($(`#e-rpc-${c.chainId}`).value), rel = $(`#e-relay-${c.chainId}`).value.trim();
+      if (r.length) next.rpc[c.chainId] = r;
+      if (rel) next.relay[c.chainId] = /^none$/i.test(rel) ? '' : urls(rel)[0] || '';
+    }
+    applyEndpoints(next);
+  };
+  $('#e-reset').onclick = () => applyEndpoints({});
+}
+function applyEndpoints(next) {
+  ends = next; writeJson(ENDPOINTS, next);
+  for (const k of Object.keys(RPC)) delete RPC[k];
+  for (const c of CHAINS) { CH[c.chainId].W = null; CH[c.chainId].quote = null; }
+  $('#sheet-settings').close();
+  toast('Saved.');
+  render(); syncAll(true);
+}
+$('#wallet').onclick = openSheet;
+$('#settings-open').onclick = () => { renderSettings(); $('#sheet-settings').showModal(); };
+$$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close());
+$$('dialog.sheet').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+mount($('#contracts'), html`${CHAINS.map((c) => html`<a href="${c.explorer}/address/${POOL}" rel="noopener">${c.name}</a>`)}`);
+// The contract serving this page: an <address>.<gateway> host names it, and a <name>.wei.limo host is resolved
+// through WNS on Ethereum. When its lineage has a newer version, the footer says where; nothing is redirected.
+const WNS = '0x0000000000696760e15f265e828db644a0c242eb';
+async function servedBy() {
+  const eth = rpcOn(CHAINS[0]), addrOf = (w) => lc('0x' + String(w).slice(-40));
+  let here = lc(/^(0x[0-9a-f]{40})\./i.exec(location.hostname)?.[1] || '');
+  const name = /^([a-z0-9-]+)\.wei\.limo$/i.exec(location.hostname)?.[1];
+  if (!here && name) {
+    const id = await eth('eth_call', [{ to: WNS, data: calldata('computeId(string)', ['bytes'], [utf8(lc(name))]) }, 'latest']);
+    here = addrOf(await eth('eth_call', [{ to: WNS, data: calldata('resolve(uint256)', ['uint256'], [BigInt(id)]) }, 'latest']));
+  }
+  if (!isAddr(here) || !BigInt(here)) return;
+  mount($('#served'), html`tacit pay · served by <a href="https://etherscan.io/address/${here}#code" rel="noopener">${short(here)}</a> on Ethereum`);
+  const tip = addrOf(await eth('eth_call', [{ to: here, data: '0x' + hex(selector('latest()')) }, 'latest']));
+  if (!BigInt(tip) || tip === here) return;
+  const href = lc(location.href).includes(here.slice(2)) ? location.href.replace(new RegExp(here.slice(2), 'i'), tip.slice(2)) : `https://${tip}.w4eth.io/`;
+  mount($('#newer'), html`A newer version of this page is at <a href="${href}">${short(tip)}</a>.`);
+  $('#newer').hidden = false;
+}
+servedBy().catch(() => {});
+
+// ── links: #pay=…&amount=&chain=&for=, and #shield, #send, #withdraw, #receive, #base … ──────────────────────
+function applyHash() {
+  const h = location.hash.replace(/^#/, '');
+  if (!h) return;
+  const q = new URLSearchParams(h.includes('=') ? h : ''), words = h.includes('=') ? [] : h.split(/[&,]/);
+  const c = chainOf(q.get('chain') || words.find((w) => chainOf(w)) || '');
+  if (c) S.chain = c;
+  const to = (q.get('pay') || '').trim();
+  if (to) {
+    try { REQ.v = { to, r: parseRecipient(to), amount: parseEth(q.get('amount') || '') || null, note: (q.get('for') || '').trim().slice(0, 60) }; }
+    catch (e) { toast(`That payment link is not valid: ${e.message}`, true); }
+  }
+  const tab = TABS.find(([k]) => words.includes(k) || q.get('tab') === k)?.[0];
+  if (tab) S.tab = tab;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch {}
+}
+window.addEventListener('hashchange', () => { applyHash(); render(); });
+
+// ── QR code: byte mode, error correction M ──────────────────────────────────────────────────────────────────
+function qrModules(text) {
+  const ECC = [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28];
+  const BLOCKS = [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49];
+  const raw = (v) => { let r = (16 * v + 128) * v + 64; if (v >= 2) { const n = Math.floor(v / 7) + 2; r -= (25 * n - 10) * n - 55; if (v >= 7) r -= 36; } return r; };
+  const dataCw = (v) => Math.floor(raw(v) / 8) - ECC[v] * BLOCKS[v];
+  const bytes = [...utf8(text)];
+  let ver = 1;
+  while (4 + (ver <= 9 ? 8 : 16) + 8 * bytes.length > dataCw(ver) * 8) if (++ver > 40) throw new Error('too long for a QR code');
+  const bits = [], put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >>> i) & 1); };
+  put(4, 4); put(bytes.length, ver <= 9 ? 8 : 16); for (const b of bytes) put(b, 8);
+  const cap = dataCw(ver) * 8;
+  put(0, Math.min(4, cap - bits.length)); put(0, (8 - (bits.length % 8)) % 8);
+  for (let p = 0xec; bits.length < cap; p ^= 0xec ^ 0x11) put(p, 8);
+  const data = [];
+  for (let i = 0; i < bits.length; i += 8) data.push(bits.slice(i, i + 8).reduce((a, b) => (a << 1) | b, 0));
+  const mul = (x, y) => { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11d); z ^= ((y >>> i) & 1) * x; } return z; };
+  const div = Array(ECC[ver]).fill(0); div[div.length - 1] = 1;
+  for (let i = 0, root = 1; i < div.length; i++, root = mul(root, 2)) for (let j = 0; j < div.length; j++) { div[j] = mul(div[j], root); if (j + 1 < div.length) div[j] ^= div[j + 1]; }
+  const rem = (d) => { const r = div.map(() => 0); for (const b of d) { const f = b ^ r.shift(); r.push(0); div.forEach((c, i) => { r[i] ^= mul(c, f); }); } return r; };
+  const nb = BLOCKS[ver], rawCw = Math.floor(raw(ver) / 8), nShort = nb - (rawCw % nb), shortLen = Math.floor(rawCw / nb), blocks = [];
+  for (let i = 0, k = 0; i < nb; i++) { const d = data.slice(k, k + shortLen - ECC[ver] + (i < nShort ? 0 : 1)); k += d.length; const e = rem(d); if (i < nShort) d.push(0); blocks.push(d.concat(e)); }
+  const cw = [];
+  for (let i = 0; i < blocks[0].length; i++) blocks.forEach((b, j) => { if (i !== shortLen - ECC[ver] || j >= nShort) cw.push(b[i]); });
+  const size = ver * 4 + 17, m = Array.from({ length: size }, () => Array(size).fill(false)), fn = Array.from({ length: size }, () => Array(size).fill(false));
+  const set = (x, y, d) => { m[y][x] = d; fn[y][x] = true; };
+  for (let i = 0; i < size; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+  for (const [cx, cy] of [[3, 3], [size - 4, 3], [3, size - 4]]) for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+    const x = cx + dx, y = cy + dy, d = Math.max(Math.abs(dx), Math.abs(dy));
+    if (x >= 0 && x < size && y >= 0 && y < size) set(x, y, d !== 2 && d !== 4);
+  }
+  if (ver > 1) {
+    const n = Math.floor(ver / 7) + 2, step = ver === 32 ? 26 : Math.ceil((ver * 4 + 4) / (n * 2 - 2)) * 2, pos = [6];
+    for (let p = size - 7; pos.length < n; p -= step) pos.splice(1, 0, p);
+    pos.forEach((x, i) => pos.forEach((y, j) => {
+      if ((i === 0 && j === 0) || (i === 0 && j === n - 1) || (i === n - 1 && j === 0)) return;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) set(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }));
+  }
+  const format = (mask) => {
+    let r = mask; for (let i = 0; i < 10; i++) r = (r << 1) ^ ((r >>> 9) * 0x537);
+    const b = ((mask << 10) | r) ^ 0x5412, bit = (i) => ((b >>> i) & 1) === 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+    set(8, 7, bit(6)); set(8, 8, bit(7)); set(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+    set(8, size - 8, true);
+  };
+  format(0);
+  if (ver >= 7) {
+    let r = ver; for (let i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1f25);
+    const b = (ver << 12) | r;
+    for (let i = 0; i < 18; i++) { const d = ((b >>> i) & 1) === 1, a = size - 11 + (i % 3), c = Math.floor(i / 3); set(a, c, d); set(c, a, d); }
+  }
+  for (let right = size - 1, i = 0; right >= 1; right -= 2) {
+    if (right === 6) right = 5;
+    for (let vert = 0; vert < size; vert++) for (let j = 0; j < 2; j++) {
+      const x = right - j, y = ((right + 1) & 2) === 0 ? size - 1 - vert : vert;
+      if (!fn[y][x] && i < cw.length * 8) { m[y][x] = ((cw[i >>> 3] >>> (7 - (i & 7))) & 1) === 1; i++; }
+    }
+  }
+  const MASK = [(x, y) => (x + y) % 2 === 0, (x, y) => y % 2 === 0, (x) => x % 3 === 0, (x, y) => (x + y) % 3 === 0, (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0,
+    (x, y) => ((x * y) % 2) + ((x * y) % 3) === 0, (x, y) => (((x * y) % 2) + ((x * y) % 3)) % 2 === 0, (x, y) => (((x + y) % 2) + ((x * y) % 3)) % 2 === 0];
+  const flip = (k) => { for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (!fn[y][x] && MASK[k](x, y)) m[y][x] = !m[y][x]; };
+  const penalty = () => {
+    let p = 0, dark = 0;
+    const lines = [];
+    for (let y = 0; y < size; y++) { lines.push(m[y].map((d) => (d ? 1 : 0)).join('')); lines.push(m.map((r) => (r[y] ? 1 : 0)).join('')); }
+    for (const l of lines) { for (const run of l.match(/0{5,}|1{5,}/g) || []) p += run.length - 2; p += 40 * ((l.match(/(?=00001011101)/g) || []).length + (l.match(/(?=10111010000)/g) || []).length); }
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) { if (m[y][x]) dark++; if (x < size - 1 && y < size - 1 && m[y][x] === m[y][x + 1] && m[y][x] === m[y + 1][x] && m[y][x] === m[y + 1][x + 1]) p += 3; }
+    return p + 10 * Math.floor(Math.abs(dark * 20 - size * size * 10) / (size * size));
+  };
+  let best = 0, low = Infinity;
+  for (let k = 0; k < 8; k++) { flip(k); format(k); const s = penalty(); if (s < low) { low = s; best = k; } flip(k); }
+  flip(best); format(best);
+  return m;
+}
+function qrSvg(text) {
+  const m = qrModules(text), n = m.length, Q = 4, W = n + 2 * Q;
+  let d = '';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m[y][x]) d += `M${x + Q} ${y + Q}h1v1h-1z`;
+  return new Raw(`<svg class="qr" viewBox="0 0 ${W} ${W}" role="img" aria-label="QR code of the payment link" shape-rendering="crispEdges"><rect width="${W}" height="${W}" fill="#fff"/><path d="${d}" fill="#111"/></svg>`);
+}
+
+// ── start ───────────────────────────────────────────────────────────────────────────────────────────────────
+applyHash();
+render();
+caches.open(ARTIFACTS).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});
+</script>
+</body>
+</html>

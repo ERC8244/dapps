@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+z0GZbjr+xGWQ760Qx1QQRs7zGpSKw3+KsUqbpD+HME=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-plTd5KtN0gjiWX45GxgcjfU6kMmvRBZFR8QZ1s3Muh4=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Shield ETH, pay anyone privately, withdraw any part. Proved in your browser, recovered from your key. An onchain page: this document is served by a contract.">
@@ -756,6 +756,8 @@ const be = (x, n = 32) => { x = BigInt(x); const o = new Uint8Array(n); for (let
 const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 const lc = (s) => String(s || '').toLowerCase();
 const isAddr = (s) => /^0x[0-9a-fA-F]{40}$/.test(s);
+// A mixed-case address must carry its checksum, so a typo in one cannot pass; all one case is taken as typed.
+const addrOk = (s) => isAddr(s) && (!/[a-f]/.test(s.slice(2)) || !/[A-F]/.test(s.slice(2)) || checksum(unhex(s.slice(2))) === s);
 const mod = (x, p) => { x %= p; return x < 0n ? x + p : x; };
 function pow(b, e, p) { let r = 1n; b = mod(b, p); for (; e > 0n; e >>= 1n) { if (e & 1n) r = r * b % p; b = b * b % p; } return r; }
 function inv(a, p) { let [r0, r1, s0, s1] = [mod(a, p), p, 1n, 0n]; while (r1) { const q = r0 / r1; [r0, r1, s0, s1] = [r1, r0 - q * r1, s1, s0 - q * s1]; } return mod(s0, p); }
@@ -1241,6 +1243,15 @@ const TX_TYPES = [PAIR, { tuple: [PAIR, PAIR] }, PAIR, { tuple: Array(11).fill('
 const TX_SIG = '(uint256[2],uint256[2][2],uint256[2],uint256[11],address,int256,address,uint256,bytes,bytes)';
 const txValues = (t) => [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, BigInt.asUintN(256, BigInt(t.extAmount)), t.relayer, t.fee, t.memo0, t.memo1];
 
+// The reply of Multicall3's aggregate3: (bool success, bytes data)[].
+function aggregate(h) {
+  const b = unhex(h), at = (o) => { const x = big(b.subarray(o, o + 32)); if (x > BigInt(b.length)) throw new Error('bad reply'); return Number(x); };
+  const arr = at(0), n = at(arr), base = arr + 32, out = [];
+  if (n > 2000) throw new Error('bad reply');
+  for (let i = 0; i < n; i++) { const el = base + at(base + 32 * i), len = at(el + at(el + 32)), from = el + at(el + 32) + 32; out.push({ ok: at(el) === 1, data: b.subarray(from, from + len) }); }
+  return out;
+}
+
 // ── receive boxes ───────────────────────────────────────────────────────────────────────────────────────────
 // Box i is a standing ETH address for one note key of the wallet; anyone pays it, anyone sweeps it into the pool, and
 // the router computes the note. The key derives from the wallet's nullifier secret, so the seed alone finds every box.
@@ -1266,7 +1277,23 @@ const receiveRho = (box, n) => big(keccak(cat(RECEIVE_TAG, addrWord(box), be(n))
 // A JSON-RPC reader over several endpoints: each call tries them in order, and a revert is final at the first.
 function jsonRpc(urls) {
   let id = 0, pref = 0;
-  return async (method, params = []) => {
+  // Several reads in one request: [[method, params], …] → [{ result } | { error }, …]. A node that will not take a batch
+  // is asked one read at a time.
+  const batch = async (calls) => {
+    for (let k = 0; k < urls.length; k++) {
+      const i = (pref + k) % urls.length, base = id;
+      try {
+        const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(calls.map(([method, params], n) => ({ jsonrpc: '2.0', id: base + n + 1, method, params }))), signal: AbortSignal.timeout(20_000) });
+        const j = await r.json(), by = new Map((Array.isArray(j) ? j : []).map((x) => [x.id, x]));
+        id += calls.length;
+        if (calls.some((_, n) => !by.has(base + n + 1))) throw new Error('batch refused');
+        pref = i;
+        return calls.map((_, n) => { const x = by.get(base + n + 1); return x.error ? { error: Object.assign(new Error(x.error.message || 'rpc error'), { rpc: x.error }) } : { result: x.result }; });
+      } catch {}
+    }
+    return Promise.all(calls.map(([m, p]) => one(m, p).then((result) => ({ result }), (error) => ({ error }))));
+  };
+  const one = async (method, params = []) => {
     const errs = [];
     for (let k = 0; k < urls.length; k++) {
       const i = (pref + k) % urls.length;
@@ -1283,6 +1310,7 @@ function jsonRpc(urls) {
     }
     throw Object.assign(errs[errs.length - 1] || new Error('no endpoint'), { all: errs });
   };
+  return Object.assign(one, { batch });
 }
 const errorText = (e) => (e.all || [e]).map((x) => `${x.message} ${JSON.stringify(x.rpc?.data ?? '')}`).join(' ');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1296,7 +1324,7 @@ async function getLogs(rpc, address, topics, from, to, chunk = 50_000) {
       out.push(...await rpc('eth_getLogs', [{ address, topics, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }]));
       a = b + 1; busy = 0;
     } catch (e) {
-      const m = errorText(e);
+      const m = errorText(e).slice(0, 2000);
       if (/rate.?limit|too many requests|\b429\b/i.test(m) && !/range|blocks?\b/i.test(m) && ++busy <= 8) { await sleep(Math.min(12_000, 1500 * 2 ** (busy - 1))); continue; }
       if (step > 1 && /range|limit|too many|too large|exceed|\d{4,} blocks?/i.test(m)) {
         const named = [...m.matchAll(/(\d[\d,]*)\s*(?:blocks?|range)\b/gi)].map((x) => Number(x[1].replace(/,/g, ''))).filter((n) => n > 0 && n < step);
@@ -1369,7 +1397,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     const k = n.kind === 'receive' ? receiveKeys(keys, n.box) : ownedKeys(keys, unhex(n.s));
     return { ...n, sk: k.sk, nk: k.nk, nf: nullifier(k.nk, BigInt(n.leaf), n.index) };
   };
-  saved.notes = saved.notes.map(withKeys);
+  try { saved.notes = saved.notes.map(withKeys); } catch { saved = blank(); }
   const persist = () => {
     try { store?.set(skey, sealState(keys.v, JSON.stringify({ ...saved, tree: saved.tree.toJSON(), notes: saved.notes.map(({ sk, nk, nf, ...n }) => n) }))); } catch {}
   };
@@ -1437,16 +1465,18 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (!keeper) throw new Error('no relay for this chain');
     for (let i = 0; ; i++) {
       const r = await fetch(keeper + path, { ...init, signal: AbortSignal.timeout(path === '/relay' ? 180_000 : init.method === 'POST' ? 30_000 : 10_000) });
-      if (r.status !== 429 || i >= 4) return r;
-      await sleep((Number(r.headers.get('retry-after')) || 3) * 1000 * (0.5 + Math.random()));
+      const post = init.method === 'POST';
+      if (r.status !== 429 || i >= (post ? 4 : 1)) return r;
+      await sleep(Math.min(post ? 30 : 5, Number(r.headers.get('retry-after')) || 3) * 1000 * (0.5 + Math.random()));
     }
   };
   const wantRelayer = chain.relayer === undefined ? RELAYERS[chain.chainId] : chain.relayer, maxFee = MAX_RELAY_FEE[chain.chainId];
   function vet(q) {
-    if (Number(q.chainId) !== chain.chainId || lc(q.pool) !== lc(chain.pool)) throw new Error('The relay quoted another chain or pool, so nothing was signed.');
-    if (!isAddr(q.relayer || '') || (wantRelayer && lc(q.relayer) !== lc(wantRelayer))) throw new Error('The relay quoted an address this page does not expect, so nothing was signed.');
-    if (!/^\d+$/.test(String(q.fee)) || BigInt(q.fee) > maxFee) throw new Error('The relay quoted a fee above this page’s limit, so nothing was signed.');
-    return q;
+    const bad = (m) => Object.assign(new Error(m), { vet: true });
+    if (Number(q.chainId) !== chain.chainId || lc(q.pool) !== lc(chain.pool)) throw bad('The relay quoted another chain or pool, so nothing was signed.');
+    if (!isAddr(q.relayer || '') || (wantRelayer && lc(q.relayer) !== lc(wantRelayer))) throw bad('The relay quoted an address this page does not expect, so nothing was signed.');
+    if (!/^\d+$/.test(String(q.fee)) || BigInt(q.fee) > maxFee) throw bad('The relay quoted a fee above this page’s limit, so nothing was signed.');
+    return { ...q, receiveMin: /^\d+$/.test(String(q.receiveMin ?? '')) ? q.receiveMin : undefined };
   }
   const keeperGet = async (path) => { const r = await keeperFetch(path), j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `relay returned ${r.status}`); return path.startsWith('/quote') ? vet(j) : j; };
   const keeperPost = async (path, body) => { const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
@@ -1459,14 +1489,15 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   async function fromIndex(safe) {
     boxTopics();
     let cand = saved;
-    for (let page = 0; page < 10_000; page++) {
+    for (let page = 0; page < 2_000; page++) {
       const from = cand.block + 1;
       if (from > safe) break;
       const r = await keeperGet(`/events?from=${from}`);
       if (Number(r.chainId) !== chain.chainId || lc(r.pool) !== lc(chain.pool)) throw new Error('index is for another pool');
       const through = Math.min(Number(r.through), safe);
+      if (!Number.isFinite(through) || !Array.isArray(r.events)) throw new Error('the index is not usable');
       if (through < from) break;
-      const evs = r.events.filter((e) => e.block >= from && e.block <= through);
+      const evs = r.events.filter((e) => e.block >= from && e.block <= through && /^0x[0-9a-f]{64}$/i.test(String(e.tx)));
       const ts = evs.filter((e) => e.kind === 'transact').map((e) => ({
         nf: [BigInt(e.nf0), BigInt(e.nf1)], outLeaf: [BigInt(e.outLeaf0), BigInt(e.outLeaf1)], firstIndex: Number(e.firstIndex),
         memo: [unhex(e.memo0 || '0x'), unhex(e.memo1 || '0x')], block: e.block, tx: e.tx,
@@ -1475,14 +1506,17 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         box: topicOf(e.box), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx,
       }));
       const next = { ...absorb(cand, ts, rs), block: through };
+      if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; boxTopics(); continue; }
       if (next.tree.size !== cand.tree.size) await held(next.tree);
       cand = next;
     }
     if (cand !== saved) { saved = cand; persist(); }
   }
-  // A tree counts only if the pool has held its root at its size.
+  // A tree counts only if the pool has held its root at its size, as the nodes agree: one node cannot show a balance that
+  // is not there.
   async function held(tree) {
-    if (BigInt(await poolCall('rootSize(bytes32)', ['uint256'], [tree.root])) !== BigInt(tree.size)) throw new Error('these events do not match the pool');
+    const data = calldata('rootSize(bytes32)', ['uint256'], [tree.root]), r = chain.vote ? await chain.vote(chain.pool, data) : await chain.rpc('eth_call', [{ to: chain.pool, data }, 'latest']);
+    if (BigInt(r.length > 2 ? r : '0x0') !== BigInt(tree.size)) throw new Error('these events do not match the pool');
   }
   const WEEK = 7 * 24 * 3600 * 1000;
   let checking = false;
@@ -1494,7 +1528,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (full.tree.size !== saved.tree.size) return;
     await held(full.tree);
     const have = new Set(saved.notes.map((n) => n.index));
-    if (full.notes.some((n) => !have.has(n.index))) { saved = { ...full, attempts: saved.attempts, nextRefund: Math.max(saved.nextRefund, full.nextRefund) }; view = null; }
+    if (full.notes.some((n) => !have.has(n.index))) { saved = { ...full, attempts: saved.attempts, nextRefund: Math.max(saved.nextRefund, full.nextRefund) }; view = lastKey = null; }
     saved.checkedAt = Date.now();
     persist();
   }
@@ -1502,21 +1536,51 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // New events since the last read: those `confirmations` deep are kept, the rest are read again next time. One read
   // at a time, each building on the last.
   let reading = Promise.resolve();
-  const sync = () => (reading = reading.catch(() => {}).then(readNew));
+  let boxIdx = [0], boxW = {}, lastKey = null, strikes = 0, lastRebuild = 0;
+  const sync = (idx) => { if (idx) boxIdx = idx; return (reading = reading.catch(() => {}).then(readNew)); };
+  // The chain's head: the pool's leaf count and what waits at some deposit addresses in one Multicall3 call (or, where a
+  // node cannot answer it, one by one), then the block number the node reports. The block is read last, so the logs read
+  // up to it can only be longer than the leaf count. It is the node's own number: a contract's block.number is the other
+  // layer's on some chains.
+  const MULTICALL = '0xcA11bde05977b3631167028862bE2a173976CA11';
+  async function headRead(indexes) {
+    const calls = [[chain.pool, '0x' + hex(selector('nextIndex()'))], ...indexes.map((i) => [MULTICALL, calldata('getEthBalance(address)', ['address'], [boxOf(i)])])];
+    let leaves = null, waiting = null;
+    try {
+      const rs = aggregate(await chain.rpc('eth_call', [{ to: MULTICALL, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [calls.map(([t, d]) => [t, 1n, d])]) }, 'latest']));
+      if (rs.length === calls.length && rs[0].ok) { leaves = big(rs[0].data); waiting = Object.fromEntries(indexes.map((i, k) => [i, rs[k + 1].ok ? big(rs[k + 1].data) : null])); }
+    } catch {}
+    if (leaves == null) {
+      leaves = await poolCall('nextIndex()', [], []).then(BigInt, () => null);
+      const got = await chain.rpc.batch(indexes.map((i) => ['eth_getBalance', [boxOf(i), 'latest']]));
+      waiting = Object.fromEntries(indexes.map((i, k) => [i, got[k].error ? null : BigInt(got[k].result)]));
+    }
+    return { tip: Number(BigInt(await chain.rpc('eth_blockNumber'))), leaves, waiting };
+  }
   async function readNew() {
-    const leaves = await poolCall('nextIndex()', [], []).then(BigInt, () => null);
-    const tip = Number(BigInt(await chain.rpc('eth_blockNumber'))), safe = tip - chain.confirmations;
+    const { tip, leaves, waiting } = await headRead(boxIdx), safe = tip - chain.confirmations, key = `${tip}:${leaves}:${boxIdx.join()}`;
+    boxW = waiting;
+    if (key === lastKey) return summary();
     if (keeper && feed && saved.block < safe) {
       const fed = await fromIndex(safe).then(() => true, () => false);
       // The full read of the logs runs behind the first paint, not before it.
-      if (fed && saved.block >= safe && Date.now() - (saved.checkedAt ?? 0) > WEEK && !checking) { checking = true; chainCheck(safe).catch(() => {}).finally(() => { checking = false; }); }
+      if (fed && saved.block >= safe && Date.now() - (saved.checkedAt ?? 0) > WEEK && !checking) { checking = true; setTimeout(() => chainCheck(safe).catch(() => { saved.checkedAt = Date.now() - WEEK + 3_600_000; }).finally(() => { checking = false; }), 30_000); }
     }
     // The index and the logs must add up to the pool: events left out show as a leaf out of order, a root the pool never
     // held, or a tree short of its leaf count, and the state is then read again from the chain alone.
     const rebuild = async () => {
-      saved = { ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund }; view = null; persist();
+      saved = { ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund }; view = null; lastKey = null; persist();
       const f = feed; feed = false;
       try { return await readNew(); } finally { feed = f; }
+    };
+    // Events left out, or a node a block behind: a second look first, then the state is read again from the chain, at most
+    // once in ten minutes.
+    const inconsistent = async () => {
+      if (++strikes < 2) { await sleep(2000); return readNew(); }
+      strikes = 0;
+      if (Date.now() - lastRebuild < 600_000) throw new Error('The logs a node returned are behind the pool. Trying again shortly.');
+      lastRebuild = Date.now();
+      return rebuild();
     };
     try {
       // The confirmed part is read and kept a window at a time, so a long read that fails partway keeps what it has.
@@ -1524,8 +1588,10 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         const a = saved.block + 1, z = Math.min(safe, a + READ_WINDOW - 1);
         const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z), getLogs(chain.rpc, chain.router, [T_RECEIVED, boxTopics()], a, z)]);
         const next = { ...absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived)), block: z };
+        // A deposit address used in this window widens the set watched: read the same window again with the longer list.
+        if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; continue; }
         if (next.tree.size !== saved.tree.size) await held(next.tree);
-        saved = next;
+        saved = next; view = null;
         persist();
       }
       if (saved.block < tip) {
@@ -1533,19 +1599,18 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         view = absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived));
       }
     } catch (e) {
-      if (keeper && feed && /out of order|do not match the pool/.test(e?.message || '')) return rebuild();
+      if (/out of order|do not match the pool/.test(e?.message || '')) return inconsistent();
       throw e;
     }
-    if (leaves != null && BigInt(state().tree.size) < leaves) {
-      if (keeper && feed) return rebuild();
-      throw new Error('The logs a node returned are behind the pool. Trying again shortly.');
-    }
+    if (leaves != null && BigInt(state().tree.size) < leaves) return inconsistent();
+    strikes = 0;
+    lastKey = key;
     return summary();
   }
   // Forgets the synced state and rebuilds it from chain logs alone.
   async function rescan() {
     await reading.catch(() => {});
-    saved = { ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund }; view = null; persist();
+    saved = { ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund }; view = null; lastKey = null; persist();
     const f = feed; feed = false;
     try { return await sync(); } finally { feed = f; }
   }
@@ -1579,16 +1644,20 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // 'yes' once the transaction is in a block and, for a spend, spent these nullifiers (a hash the relay names that
   // spent others does not count); 'no' if it reverted; 'wrong' if it is some other transaction; 'pending' if the
   // chain has not shown it within three minutes.
-  async function landed(hash, nfs = []) {
-    for (let i = 0; i < 90; i++) {
+  async function landed(hash, nfs = [], expect = null) {
+    for (let i = 0, end = Date.now() + 180_000; Date.now() < end; i++) {
       const r = await chain.rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
       if (r) {
         if (r.status !== '0x1') return 'no';
+        if (expect) {
+          const same2 = (a, b) => a.every((v, i) => BigInt(v) === BigInt(b[i]));
+          return r.logs.some((l) => lc(l.address) === lc(chain.pool) && l.topics[0] === T_TRANSACT && (() => { const t = decodeTransact(l); return same2(t.nf, expect.nf) && same2(t.outLeaf, expect.outLeaf); })()) ? 'yes' : 'wrong';
+        }
         if (!nfs.length) return 'yes';
         const mine = nfs.map((n) => BigInt(n));
         return r.logs.some((l) => lc(l.address) === lc(chain.pool) && l.topics[0] === T_TRANSACT && [l.topics[1], l.topics[2]].some((t) => mine.includes(BigInt(t)))) ? 'yes' : 'wrong';
       }
-      await sleep(2000);
+      await sleep(Math.min(5000, 1000 + 400 * i));
     }
     return 'pending';
   }
@@ -1606,16 +1675,18 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (res.status !== 200) return null;
       r = res.body;
     } catch { return null; }
-    for (let i = 0; i < 3; i++) {
-      if (BigInt(r.root) !== state().tree.root) await sync();
-      if (BigInt(r.root) === state().tree.root) {
-        const c = state().tree.clone();
-        c.append(r.pending.flatMap((x) => [BigInt(x.outLeaf0), BigInt(x.outLeaf1)]));
-        if (c.root === BigInt(r.oldRoot) && c.size === Number(r.start)) return { id: r.id, tree: c };
-        break;
+    try {
+      for (let i = 0; i < 3; i++) {
+        if (BigInt(r.root) !== state().tree.root) await sync();
+        if (BigInt(r.root) === state().tree.root) {
+          const c = state().tree.clone();
+          c.append(r.pending.flatMap((x) => [BigInt(x.outLeaf0), BigInt(x.outLeaf1)]));
+          if (c.root === BigInt(r.oldRoot) && c.size === Number(r.start)) return { id: r.id, tree: c };
+          break;
+        }
+        await sleep(1000);
       }
-      await sleep(1000);
-    }
+    } catch {}
     await keeperPost('/cancel', { reservation: r.id }).catch(() => {});
     return null;
   }
@@ -1623,19 +1694,20 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // One transaction: spends `ins`, creates `outs` ([{ to, value } | null] × 2), moves `ext` across the pool's edge
   // (> 0 in from the signer, < 0 out to `recipient`). With a relay quote `q` the relay sends it for q.fee; without,
   // the signer does. Proves again when another transaction lands first. → tx hash.
-  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep }) {
+  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep, guard = null }) {
     const attempt = ins.length ? nextAttempt(ins[0].nf) : 0, eOf = (k) => (ins.length ? paymentKey(keys, chain.chainId, ins[0].nf, k, attempt) : undefined);
     const sealed = outs.map((o, k) => (o ? sealNote({ to: o.to, value: o.value, asset, e: eOf(k) }) : null));
     const memo0 = sealed[0]?.memo ?? new Uint8Array(), memo1 = sealed[1]?.memo ?? new Uint8Array();
     const fee = q ? BigInt(q.fee) : 0n, relayer = q ? q.relayer : ZERO_ADDRESS;
     const inputs = [...ins.map((n) => ({ v: BigInt(n.v), rho: BigInt(n.rho), nk: n.nk, sk: n.sk, index: n.index })), ...Array(2 - ins.length).fill({ dummy: true })];
     const eh = extDataHash({ chainId: chain.chainId, pool: chain.pool, recipient, extAmount: ext, relayer, fee, memo0, memo1 });
+    let queued = false;
     for (let round = 0; round < 8; round++) {
       if (round) { onStep('another payment landed first, proving again'); await sleep(Math.min(8000, 500 * 2 ** round) * (0.5 + Math.random())); await sync(); }
       let tree = state().tree, slot = null, h;
       if (q && sealed.some(Boolean)) {
         const r = await reserve(sealed, ins);
-        if (r === 'stale') continue;
+        if (r === 'stale') { queued = true; continue; }
         if (r) { slot = r.id; tree = r.tree; }
       }
       const w = buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => o && { v: o.v, npk: o.npk, rho: o.rho }), extAmount: ext, fee, extDataHash: eh });
@@ -1643,18 +1715,24 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       let proved;
       try { proved = await prove(w.input, chain); } catch (e) { if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {}); throw e; }
       const tx = toTx(proved, { recipient, extAmount: String(ext), relayer, fee: String(fee), memo0: '0x' + hex(memo0), memo1: '0x' + hex(memo1) });
+      if (guard) { try { await guard(); } catch (e) { if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {}); throw e; } }
       if (q) {
         onStep('sending through the relay');
         let r;
         try { r = await keeperPost('/relay', { tx, ...(slot ? { reservation: slot } : {}) }); }
         catch { await sync().catch(() => {}); throw new Error('The relay did not answer, and may still have sent it. Check Activity before sending again.'); }
-        if (r.status === 409 && r.body.stale) continue;
-        if (r.status === 429) { await sleep(5000); continue; }
+        if ((r.status === 409 && r.body.stale) || r.status === 429) {
+          queued = true;
+          if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {});
+          if (r.status === 429) await sleep(5000);
+          continue;
+        }
         if (r.status !== 200 || !r.body.txHash) {
           if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {});
           if (/AlreadyNullified|already spent/i.test(r.body.error || '')) await rescan().catch(() => {});
-          throw new Error(r.body.error || `relay returned ${r.status}`);
+          throw new Error(String(r.body.error || `relay returned ${r.status}`).slice(0, 200));
         }
+        if (!/^0x[0-9a-f]{64}$/i.test(String(r.body.txHash))) throw new Error('The relay returned something that is not a transaction hash.');
         h = r.body.txHash;
       } else {
         try { h = await sendSelf(chain.pool, calldata(`transact${TX_SIG}`, TX_TYPES, txValues(tx)), ext > 0n ? ext : 0n, onStep); }
@@ -1663,18 +1741,19 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       }
       for (const n of ins) pending.add(String(n.nf));
       onStep('waiting for the block');
-      const res = await landed(h, ins.map((n) => n.nf));
+      const res = await landed(h, ins.map((n) => n.nf), { nf: w.nf, outLeaf: w.outLeaf });
       if (res === 'yes') {
         const used = new Set(ins.map((n) => String(n.nf)));
-        await waitFor(() => !state().notes.some((n) => used.has(String(n.nf))), 60_000).catch(() => {});
+        await waitFor(() => !state().notes.some((n) => used.has(String(n.nf))), 60_000).then(() => { for (const n of ins) pending.delete(String(n.nf)); }, () => {});
         return h;
       }
       for (const n of ins) pending.delete(String(n.nf));
       if (res === 'wrong') throw new Error('The transaction the relay named did not spend your notes, so nothing was sent. Your balance is unchanged.');
       if (res === 'pending') throw unconfirmed(h);
     }
-    // Nothing landed: rebuild from the chain, so a note an index wrongly showed as unspent is dropped.
-    await rescan().catch(() => {});
+    // Nothing landed: rebuild from the chain, so a note an index wrongly showed as unspent is dropped (not when the relay
+    // only had these notes queued).
+    if (!queued) await rescan().catch(() => {});
     throw new Error('The pool kept moving. Try again.');
   }
   const quoteFor = async (via) => (via === 'self' || !keeper ? null : keeperGet('/quote'));
@@ -1686,7 +1765,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (pick) return pick;
       const u = unspent().sort((a, b) => (BigInt(b.v) < BigInt(a.v) ? -1 : 1));
       if (u.length < 2 || BigInt(u[0].v) + BigInt(u[1].v) <= fee) break;
-      const total = BigInt(u[0].v) + BigInt(u[1].v);
+      const total = BigInt(u[0].v) + BigInt(u[1].v), after = [total - fee, ...u.slice(2).map((n) => BigInt(n.v))];
+      if (!(after.some((v) => v >= need) || after.some((v, i) => after.slice(i + 1).some((w) => v + w >= need)))) break;
       onStep('combining two notes first');
       await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - fee }, null], q, onStep });
       await waitFor(() => unspent().some((n) => BigInt(n.v) === total - fee));
@@ -1694,16 +1774,17 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     throw new Error('Your private balance does not cover this amount and its fee.');
   }
   const maxOf = (fee) => { const u = unspent().map((n) => BigInt(n.v)).sort((a, b) => (b < a ? -1 : 1)), t = (u[0] ?? 0n) + (u[1] ?? 0n); if (t <= fee) throw new Error('Your private balance does not cover its fee.'); return t - fee; };
-  async function spend({ to, amount, via, out, onStep, expectFee = null }) {
+  async function spend({ to, amount, via, out, onStep, expectFee = null, guard = null }) {
     await sync();
     const q = await quoteFor(via), fee = q ? BigInt(q.fee) : 0n;
     if (q && expectFee != null && fee > BigInt(expectFee) * 6n / 5n + 10n ** 12n) throw Object.assign(new Error(`The relay’s fee moved to ${fmt(fee, 8)} ETH. Press again to go ahead at that fee.`), { feeMoved: true });
     const a = amount === 'max' ? maxOf(fee) : BigInt(amount);
     if (a <= 0n) throw new Error('Enter an amount.');
+    if (a >= 1n << 120n) throw new Error('That amount is out of range.');
     const ins = await prepare(a + fee, q, onStep), change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
     return out
-      ? transact({ ins, outs: [change > 0n ? { to: keys, value: change } : null, null], ext: -a, recipient: to, q, onStep })
-      : transact({ ins, outs: [{ to, value: a }, { to: keys, value: change }], q, onStep });
+      ? transact({ ins, outs: [change > 0n ? { to: keys, value: change } : null, null], ext: -a, recipient: to, q, onStep, guard })
+      : transact({ ins, outs: [{ to, value: a }, { to: keys, value: change }], q, onStep, guard });
   }
 
   return {
@@ -1715,12 +1796,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     waiting: async (i = 0) => BigInt(await chain.rpc('eth_getBalance', [boxOf(i), 'latest'])),
     // What waits at deposit addresses `indexes` ({ index → wei, or null where a node did not answer), and how many
     // addresses from the first are found again from the key alone: those up to the last one used, and a gap past it.
-    waitingAt: async (indexes) => {
-      const out = {};
-      for (let k = 0; k < indexes.length; k += 7) await Promise.all(indexes.slice(k, k + 7).map(async (i) => { out[i] = await chain.rpc('eth_getBalance', [boxOf(i), 'latest']).then(BigInt, () => null); }));
-      return out;
-    },
+    boxBalances: () => boxW,
     boxSpan: () => saved.nextRefund + REFUND_GAP,
+    nextBox: () => saved.nextRefund,
     connect(s) { signer = s; },
     rescan,
     // Whether the deposit address can be shown: the pool and router have code, and the router's own box for this key
@@ -1731,18 +1809,19 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       return lc('0x' + String(r).slice(-40)) === lc(boxOf(0));
     },
     // Pays `amount` wei (or 'max') privately to a pool recipient ({ V, A, N }). → tx hash.
-    send: ({ to, amount, via = null, onStep = () => {}, expectFee = null }) => spend({ to, amount, via, out: false, onStep, expectFee }),
+    send: ({ to, amount, via = null, onStep = () => {}, expectFee = null, guard = null }) => spend({ to, amount, via, out: false, onStep, expectFee, guard }),
     // Pays `amount` wei (or 'max') out of the pool to an 0x address. → tx hash.
-    withdraw({ to, amount, via = null, onStep = () => {}, expectFee = null }) {
+    withdraw({ to, amount, via = null, onStep = () => {}, expectFee = null, guard = null }) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(to) || !BigInt(to)) throw new Error('Enter an 0x address.');
-      return spend({ to, amount, via, out: true, onStep, expectFee });
+      return spend({ to, amount, via, out: true, onStep, expectFee, guard });
     },
     // Shields `amount` wei from the signer into a note for `to` ({ V, A, N }), this wallet by default. → tx hash.
-    async deposit({ amount, to = keys, onStep = () => {} }) {
+    async deposit({ amount, to = keys, onStep = () => {}, guard = null }) {
       const a = BigInt(amount);
       if (a <= 0n) throw new Error('Enter an amount.');
+      if (a >= 1n << 120n) throw new Error('That amount is out of range.');
       const before = (await sync()).balance;
-      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep });
+      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep, guard });
       if (to === keys) await waitFor(() => summary().balance >= before + a, 60_000).catch(() => {});
       return h;
     },
@@ -1899,16 +1978,21 @@ async function artifact(a, onBytes) {
   }
   for (const base of mirrors()) {
     let got = 0;
+    const ac = new AbortController();
+    let stall;
+    const arm = () => { clearTimeout(stall); stall = setTimeout(() => ac.abort(), 25_000); };
     try {
-      const r = await fetch(base + a.name);
+      arm();
+      const r = await fetch(base + a.name, { signal: ac.signal });
       if (!r.ok) continue;
       const reader = r.body.getReader(), parts = [];
-      for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; onBytes(value.length); }
+      for (;;) { const { done, value } = await reader.read(); if (done) break; arm(); parts.push(value); got += value.length; if (got > a.bytes) throw new Error('longer than the pinned file'); onBytes(value.length); }
+      clearTimeout(stall);
       const b = cat(...parts);
       if (await sha256hex(b) !== a.sha256) { onBytes(-got); continue; }
       await cache?.put(key, new Response(b)).catch(() => {});
       return b;
-    } catch { onBytes(-got); }
+    } catch { clearTimeout(stall); onBytes(-got); }
   }
   throw new Error(`The proving key could not be fetched from any mirror. Add one under Endpoints, or load the files from disk.`);
 }
@@ -2123,18 +2207,18 @@ function openWithKey(text) {
 }
 function setKey(key, account) {
   const pool = poolKeys(key);
-  S.key = { key, pool, address: tacitAddress(key, pool), account };
-  for (const c of CHAINS) CH[c.chainId] = { last: readJson(`tacit-pay-seen-v1:${pool.address}`)?.[c.chainId] ?? null };
-  writeJson('tacit-pay-last-v1', account ? { account } : null);
+  S.key = { pool, address: tacitAddress(key, pool), account };
+  Object.assign(TIMES, vget('times') || {});
+  for (const c of CHAINS) CH[c.chainId] = { last: vget('seen')?.[c.chainId] ?? null };
   toast(`Opened ${short(S.key.address, 8)}`);
   render(); syncAll(true);
   if (PROVER.saved) warm();
 }
-function lock() { S.key = null; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
+function lock() { S.key = null; for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
 
 // ── per chain ───────────────────────────────────────────────────────────────────────────────────────────────
 // A relay the reader set is held to the fee ceiling but not to the default relay's address.
-const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
+const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), vote: (to, data) => quorum(to, data, nodesOf(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
 function walletOn(c) {
   const st = CH[c.chainId];
   return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c) }));
@@ -2144,22 +2228,30 @@ function syncChain(c, fresh = false) {
   if (!key || (st.syncing && !fresh)) return st.syncing || Promise.resolve();
   const W = walletOn(c);
   const p = st.syncing = (st.syncing || Promise.resolve()).catch(() => {}).then(async () => {
-    const [s, q] = await Promise.all([W.sync(), relayOf(c) ? W.quote().catch((e) => ({ error: e })) : null]);
-    const everyone = !st.scanAt || Date.now() - st.scanAt > 300_000, bw = await W.waitingAt(everyone ? Array.from({ length: W.boxSpan() }, (_, i) => i) : boxIndexes(st));
-    if (everyone && Object.values(bw).every((v) => v != null)) st.scanAt = Date.now();
+    const everyone = !st.scanAt || Date.now() - st.scanAt > 300_000, idx = everyone ? Array.from({ length: W.boxSpan() }, (_, i) => i) : boxIndexes(st);
+    const [s, q] = await Promise.all([W.sync(idx), relayOf(c) ? W.quote().catch((e) => ({ error: e })) : null]);
+    const bw = W.boxBalances();
+    if (everyone && idx.every((i) => bw[i] != null)) st.scanAt = Date.now();
     st.boxW = { ...st.boxW, ...Object.fromEntries(Object.entries(bw).filter(([, v]) => v != null)) };
     const waiting = st.boxW[0] ?? null;
     if (S.key !== key) return;
     if (!fresh && st.bal != null && s.balance > st.bal && !S.busy) toast(`${fmt(s.balance - st.bal)} ETH arrived on ${c.full}.`);
     Object.assign(st, { bal: s.balance, notes: W.notes().map((n) => BigInt(n.v)), leaves: s.leaves, quote: q?.error ? null : q, quoteErr: q?.error || null, waiting, err: null, at: Date.now() });
-    const seen = readJson(`tacit-pay-seen-v1:${key.pool.address}`) || {};
+    const seen = vget('seen') || {};
     seen[c.chainId] = String(s.balance);
-    writeJson(`tacit-pay-seen-v1:${key.pool.address}`, seen);
-  }).catch((e) => { if (S.key === key) st.err = e; }).finally(() => { if (st.syncing === p) st.syncing = null; paint(); });
+    vset('seen', seen);
+    st.fails = 0;
+  }).catch((e) => { if (S.key === key) { st.err = e; st.fails = (st.fails || 0) + 1; st.failAt = Date.now(); } }).finally(() => { if (st.syncing === p) st.syncing = null; paint(); });
   return p;
 }
 const syncAll = (fresh) => CHAINS.forEach((c) => syncChain(c, fresh));
-setInterval(() => { if (!document.hidden && S.key && !S.busy) for (const c of CHAINS) if (Date.now() - (CH[c.chainId].at || 0) > (c === S.chain ? 30_000 : 120_000)) syncChain(c); }, 5000);
+setInterval(() => {
+  if (document.hidden || !S.key || S.busy) return;
+  for (const c of CHAINS) {
+    const st = CH[c.chainId];
+    if (Date.now() - (st.at || 0) > (c === S.chain ? 30_000 : 120_000) && Date.now() - (st.failAt || 0) > Math.min(60_000, 5_000 * 2 ** (st.fails || 0))) syncChain(c);
+  }
+}, 5000);
 
 // The relay sends a spend for its fee, so no account of yours shows on chain; your wallet can send it instead.
 const relayUp = (c = S.chain) => !!relayOf(c) && !!CH[c.chainId].quote;
@@ -2198,8 +2290,12 @@ function maxSpend(fee) {
 // Deposit address 0 is the standing one. Each one after it is for one payer: the same address on every chain, with nothing
 // on chain tying two of them together. Plain ETH sent to any of them waits there until it is taken in, by the relay or
 // by this wallet, so what waits is read at every address the key could have issued, not only the ones issued here.
-const boxStore = () => `tacit-pay-boxes-v1:${S.key.pool.address}`;
-const boxes = () => readJson(boxStore()) || { issued: [] };
+// The things this page keeps about a key besides the wallet's own sealed state (last balances, block times, the
+// addresses issued and the name used) are sealed under the same view key: storage shows ciphertext only.
+const vkey = (name) => `tacit-pay-vault-v1:${name}:${S.key.pool.address}`;
+const vget = (name) => { try { return JSON.parse(openState(S.key.pool.v, store.get(vkey(name))) || 'null'); } catch { return null; } };
+const vset = (name, v) => store.set(vkey(name), sealState(S.key.pool.v, JSON.stringify(v)));
+const boxes = () => vget('boxes') || { issued: [] };
 const boxIndexes = (st) => [...new Set([0, ...boxes().issued.map((x) => x.i), ...Object.keys(st.boxW || {}).map(Number).filter((i) => st.boxW[i] > 0n)])];
 const waitKey = (st = cur()) => JSON.stringify(Object.entries(st.boxW || {}).filter(([, v]) => v > 0n).map(([i, v]) => [i, String(v)]));
 const waitingTotal = (st = cur()) => Object.values(st.boxW || {}).reduce((a, v) => a + (v > 0n ? v : 0n), 0n);
@@ -2208,15 +2304,22 @@ const boxList = (st) => {
   const have = boxes().issued, known = new Set(have.map((x) => x.i));
   return [...have, ...Object.keys(st.boxW || {}).map(Number).filter((i) => i > 0 && !known.has(i) && st.boxW[i] > 0n).map((i) => ({ i, label: '' }))].sort((a, b) => b.i - a.i);
 };
+let issuing = false;
 function issueBox(label) {
-  const b = boxes(), limit = Math.min(...CHAINS.map((c) => walletOn(c).boxSpan())) - 1, next = Math.max(0, ...b.issued.map((x) => x.i)) + 1;
-  if (next > limit) return toast(`${b.issued.length} addresses are out and unused. Once one is used, more open up: that keeps each one findable from your key alone.`, true);
-  b.issued.push({ i: next, label: label.slice(0, 40), at: Date.now() });
-  writeJson(boxStore(), b);
-  delete DRAFT['f-boxlabel'];
-  for (const c of CHAINS) if (relayOf(c)) walletOn(c).watch(next).catch(() => {});
-  CHAINS.forEach((c) => syncChain(c, true));
-  renderForm();
+  if (issuing) return;
+  issuing = true;
+  try {
+    const b = boxes(), ws = CHAINS.map((c) => walletOn(c)), limit = Math.min(...ws.map((w) => w.boxSpan())) - 1;
+    const next = Math.max(Math.max(0, ...b.issued.map((x) => x.i)) + 1, ...ws.map((w) => w.nextBox()));
+    if (next > limit) return toast(`${b.issued.length} addresses are out and unused. Once one is used, more open up: that keeps each one findable from your key alone.`, true);
+    b.issued.push({ i: next, label: label.slice(0, 40), at: Date.now() });
+    vset('boxes', b);
+    if (boxes().issued.length !== b.issued.length) return toast('This browser would not keep the address, so none was issued.', true);
+    delete DRAFT['f-boxlabel'];
+    for (const c of CHAINS) if (relayOf(c)) walletOn(c).watch(next).catch(() => {});
+    CHAINS.forEach((c) => syncChain(c, true));
+    renderForm();
+  } finally { issuing = false; }
 }
 
 // ── rendering ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -2269,7 +2372,7 @@ function paintTabs() {
   $$('#tabs [data-tab]').forEach((b) => b.onclick = () => { if (S.busy) return; S.tab = b.dataset.tab; mount($('#status'), ''); paintTabs(); renderForm(); });
 }
 function signIn(id) {
-  const last = readJson('tacit-pay-last-v1'), who = S.account || last?.account;
+  const who = S.account;
   return html`<div class="opts" id="${id}">
     <button class="opt main" type="button" data-in="eth"><span class="opt-t">${ethIcon}${who ? `Continue with ${short(who)}` : 'Ethereum wallet'}</span><span class="opt-m">One signature opens your Tacit key: the same key, with the same balances, as on tacit.finance.</span></button>
     <p class="note" data-say role="status" hidden></p>
@@ -2296,6 +2399,7 @@ function wireSignIn(root, after) {
 }
 function renderForm() {
   if (S.busy) return;
+  const fa = document.activeElement, fid = fa?.id && $('#form').contains(fa) ? fa.id : null, caret = fid && fa.selectionStart != null ? [fa.selectionStart, fa.selectionEnd] : null;
   FORM = { check: null };
   const f = $('#form');
   if (!S.key && S.tab !== 'shield') {
@@ -2310,6 +2414,8 @@ function renderForm() {
     i.addEventListener('focus', warm, { once: true });
   }
   FORM.check?.();
+  const back = fid && $('#' + fid, f);
+  if (back) { back.focus(); if (caret) try { back.setSelectionRange(...caret); } catch {} }
 }
 const amountField = (id, label, extra = '') => html`<div class="lbl"><span>${label}</span>${extra}</div>
   <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u">${ethIcon}ETH</span></div>`;
@@ -2317,7 +2423,7 @@ const routeLine = (tab) => {
   const c = S.chain, fee = feeOf(tab);
   if (!relayOf(c)) return html`<p class="route">Sent from your wallet${S.account ? ` ${short(S.account)}` : ''}: you pay the gas, and its address shows as the sender.</p>`;
   if (viaOf(tab) === 'self') return html`<p class="route">Sent from your wallet${S.account ? ` ${short(S.account)}` : ''}: you pay the gas, and its address shows as the sender · <button class="link" type="button" data-route="relay">use the relay</button></p>`;
-  const refused = /nothing was signed/.test(CH[c.chainId].quoteErr?.message || '');
+  const refused = !!CH[c.chainId].quoteErr?.vet;
   return relayUp(c)
     ? html`<p class="route">Sent by the relay, no gas needed${fee != null ? html` · fee <b class="num">${fmt(fee)} ETH</b>` : ''} · <button class="link" type="button" data-route="wallet">send from my wallet instead</button></p>`
     : html`<p class="route"><span class="warn">${refused ? CH[c.chainId].quoteErr.message : 'The relay is not answering.'}</span> <button class="link" type="button" data-route="wallet">Send from my wallet instead</button></p>`;
@@ -2416,7 +2522,7 @@ function formShield(f) {
       const who = t?.name && t.r ? kvRow('To', `${t.name} · ${short(t.to, 6)}`) : '', say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
       if (!S.account) { go.disabled = false; return; }
       if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
-      if (t?.error && to.value.trim().length > 8) return say(html`<p class="note err">${t.error}</p>`);
+      if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
       if (!a || !t || t.error) return who ? say('') : undefined;
       if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
       say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${t.self || t.name ? '' : kvRow('To', short(to.value.trim(), 10))}${kvRow('Fee', 'none · your wallet pays the gas')}`);
@@ -2425,7 +2531,7 @@ function formShield(f) {
     go.onclick = () => {
       if (!S.account) return connect().catch(warn);
       act(go, async (step) => {
-        const a = parseEth(amt.value), t = target();
+        const a = parseEth(amt.value), t = await recipientNow(target());
         if (!a) throw new Error('Enter an amount.');
         if (!t || t.error || t.pending) throw new Error(t?.error || 'Enter who it is for.');
         if (t.name) await pinName(t);
@@ -2435,7 +2541,7 @@ function formShield(f) {
           delete DRAFT['f-samt'];
           return done(c, h, `Shielded ${fmt(a)} ETH.`);
         }
-        const h = await shieldTo(c, t.r, a, step);
+        const h = await shieldTo(c, t.r, a, step, t.name ? () => pinName(t) : null);
         delete DRAFT['f-samt']; delete DRAFT['f-sto'];
         done(c, h, `Shielded ${fmt(a)} ETH into their private balance.`);
       });
@@ -2445,9 +2551,9 @@ function formShield(f) {
 }
 // Straight into someone else's private balance from the connected wallet: proved with the open key's wallet, or a
 // throwaway key's when none is open; the throwaway key never holds anything.
-function shieldTo(c, r, amount, onStep) {
+function shieldTo(c, r, amount, onStep, guard = null) {
   const W = S.key ? walletOn(c) : makePoolWallet({ chain: chainCfg(c), keys: poolKeys(randomBytes(32)), prove, signer: signerFor(c) });
-  return W.deposit({ amount, to: r, onStep });
+  return W.deposit({ amount, to: r, onStep, guard });
 }
 
 function formSend(f) {
@@ -2463,23 +2569,25 @@ function formSend(f) {
   wireRoute(f, tab);
   const to = $('#f-to'), amt = $('#f-amt'), go = $('#f-go'), rc = $('#f-rcpt');
   $('#f-paste').onclick = async () => { try { to.value = (await navigator.clipboard.readText()).trim(); to.dispatchEvent(new Event('input')); } catch { to.focus(); } };
-  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; const v = maxSpend(fee); amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input')); };
+  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; const v = maxSpend(fee ? fee * 6n / 5n + 10n ** 12n : fee); amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input')); };
   const target = () => {
     const raw = to.value.trim();
     if (!raw) return null;
-    if (/^0x/i.test(raw)) return isAddr(raw) ? (payable(raw) ? { addr: raw } : { error: 'That address cannot receive a payment.' }) : { error: 'Not an 0x address.' };
+    if (/^0x/i.test(raw)) return !isAddr(raw) ? { error: 'Not an 0x address.' } : !addrOk(raw) ? { error: 'That address has a typo: its capital letters do not match.' } : payable(raw) ? { addr: raw } : { error: 'That address cannot receive a payment.' };
     const t = recipientOf(raw);
     return t.r && same(t.r.raw, S.key.pool.raw) ? { error: 'That is your own address.' } : t;
   };
+  let shown = null;
   FORM.check = () => {
     const a = parseEth(amt.value), t = target(), fee = feeOf(tab), bal = cur().bal;
+    shown = fee;
     rc.hidden = true; go.disabled = true; go.textContent = t?.addr ? `Pay ${short(t.addr)}` : 'Send privately';
     mount($('#f-note'), t?.addr
       ? 'Arrives as a withdrawal from the pool: the address and the amount show on chain; nothing links them to you.'
       : viaOf(tab) === 'self' ? 'Your wallet shows as the sender of a pool transaction; whom you paid and how much stay hidden.' : 'Nothing on chain links this payment to you or to them.');
     const who = t?.name && t.r ? kvRow('To', `${t.name} · ${short(t.to, 6)}`) : '', say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
     if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
-    if (t?.error && to.value.trim().length > 8) return say(html`<p class="note err">${t.error}</p>`);
+    if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
     if (!a || !t || t.error) return who ? say('') : undefined;
     if (fee == null) return say(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay is not answering: send it from your wallet instead, or try again shortly.'}</p>`);
     const p = plan(a, fee);
@@ -2489,12 +2597,12 @@ function formSend(f) {
     go.disabled = false;
   };
   go.onclick = () => act(go, async (step) => {
-    const a = parseEth(amt.value), t = target(), via = viaOf(tab), W = walletOn(c);
+    const a = parseEth(amt.value), t = await recipientNow(target()), via = viaOf(tab), W = walletOn(c);
     if (!a) throw new Error('Enter an amount.');
     if (!t || t.error || t.pending) throw new Error(t?.error || 'Enter who to pay.');
     if (t.name) await pinName(t);
     if (via === 'self') await walletReady(c, step);
-    const h = t.addr ? await W.withdraw({ to: t.addr, amount: a, via, onStep: step, expectFee: feeOf(tab) }) : await W.send({ to: t.r, amount: a, via, onStep: step, expectFee: feeOf(tab) });
+    const h = t.addr ? await W.withdraw({ to: t.addr, amount: a, via, onStep: step, expectFee: shown }) : await W.send({ to: t.r, amount: a, via, onStep: step, expectFee: shown, guard: t.name ? () => pinName(t) : null });
     delete DRAFT['f-amt']; delete DRAFT['f-to'];
     if (REQ.v?.r && !t.addr && same(t.r.raw, REQ.v.r.raw)) REQ.v.paid = { h, c, a };
     done(c, h, t.addr ? `Paid ${short(t.addr)} ${fmt(a)} ETH.` : `Sent ${fmt(a)} ETH privately.`);
@@ -2514,12 +2622,15 @@ function formWithdraw(f) {
   wireRoute(f, tab);
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt');
   $('#f-me')?.addEventListener('click', () => { to.value = S.account; to.dispatchEvent(new Event('input')); });
-  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; const v = maxSpend(fee); amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input')); };
+  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; const v = maxSpend(fee ? fee * 6n / 5n + 10n ** 12n : fee); amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input')); };
+  let shown = null;
   FORM.check = () => {
     const a = parseEth(amt.value), raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
+    shown = fee;
     rc.hidden = true; go.disabled = true;
     const say = (v) => { mount(rc, v); rc.hidden = false; };
     if (raw && !isAddr(raw)) return /^0x[0-9a-f]{0,39}$/i.test(raw) ? undefined : say(html`<p class="note err">${/^(bp1|tacit1)/i.test(raw) ? 'That is a private address. Use Send to pay it.' : 'Not an 0x address.'}</p>`);
+    if (raw && !addrOk(raw)) return say(html`<p class="note err">That address has a typo: its capital letters do not match.</p>`);
     if (raw && !payable(raw)) return say(html`<p class="note err">That address cannot receive a withdrawal.</p>`);
     if (!a || !raw) return;
     if (fee == null) return say(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay is not answering: send it from your wallet instead, or try again shortly.'}</p>`);
@@ -2534,7 +2645,7 @@ function formWithdraw(f) {
     const a = parseEth(amt.value);
     if (!a) throw new Error('Enter an amount.');
     if (viaOf(tab) === 'self') await walletReady(c, step);
-    const h = await walletOn(c).withdraw({ to: to.value.trim(), amount: a, via: viaOf(tab), onStep: step, expectFee: feeOf(tab) });
+    const h = await walletOn(c).withdraw({ to: to.value.trim(), amount: a, via: viaOf(tab), onStep: step, expectFee: shown });
     delete DRAFT['f-wamt'];
     done(c, h, `Withdrew ${fmt(a)} ETH.`);
   });
@@ -2552,7 +2663,7 @@ const payLink = ({ to, amount, chains, note }) => {
 };
 const RECV = { s: null, scope: 'any' };
 function formReceive(f) {
-  const k = S.key, kept = readJson(`tacit-pay-name-v1:${k.pool.address}`)?.name;
+  const k = S.key, kept = vget('name')?.name;
   if (kept && !DRAFT['f-rname']) { DRAFT['f-rname'] = kept; RECV.s = null; }
   mount(f, html`
     <div class="blk"><div class="lbl"><span>Your Tacit address</span><span>works in every Tacit app</span></div>
@@ -2595,7 +2706,7 @@ function formReceive(f) {
     else if (t.none) mount(note, html`<p class="note">${v} has not published a Tacit address yet. ${/\.wei$/.test(v) ? html`<button class="link" type="button" id="f-rpub">Publish yours to it</button> (one transaction on Ethereum, from the wallet that owns the name).` : html`Add a text record <b>${NAME_KEY}</b> with your address above in your name’s settings.`}</p>`);
     else mount(note, html`<p class="note err">${t.err}</p>`);
     $('#f-rpub')?.addEventListener('click', (e) => publishName(e.currentTarget, v));
-    FORM.check();
+    FORM.check?.();
   };
   const checkName = () => {
     const v = input.value.trim().toLowerCase();
@@ -2604,7 +2715,7 @@ function formReceive(f) {
     if (!nameOk(v)) { RECV.s = { err: 'A name ends in .wei or .eth.' }; return paintName(); }
     RECV.s = { reading: true }; paintName();
     timer = setTimeout(async () => {
-      try { const x = await resolveName(v); if (input.value.trim().toLowerCase() === v) { RECV.s = same(x.r.raw, k.pool.raw) ? { ok: true } : { other: x.to }; if (RECV.s.ok) writeJson(`tacit-pay-name-v1:${k.pool.address}`, { name: v }); } }
+      try { const x = await resolveName(v); if (input.value.trim().toLowerCase() === v) { RECV.s = same(x.r.raw, k.pool.raw) ? { ok: true } : { other: x.to }; if (RECV.s.ok) vset('name', { name: v }); } }
       catch (e) { if (input.value.trim().toLowerCase() === v) RECV.s = /not published/.test(e.message) ? { none: true } : { err: e.message }; }
       paintName();
     }, 450);
@@ -2620,7 +2731,7 @@ function publishName(btn, name) {
     await walletReady(eth, step);
     const data = '0x3fb24782' + hex(abi(['uint256', 'bytes', 'bytes'], [big(namehash(name)), utf8(NAME_KEY), utf8(k.address)]));
     try { await rpcOn(eth)('eth_call', [{ from: S.account, to: WNS, data }, 'latest']); }
-    catch (e) { throw new Error(`Only the wallet that owns ${name} can publish to it. Connect that wallet and try again.`); }
+    catch (e) { throw /revert|execution|unauthori/i.test(String(e?.message)) ? new Error(`Only the wallet that owns ${name} can publish to it. Connect that wallet and try again.`) : e; }
     step('confirm in your wallet');
     const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.account, to: WNS, data }] });
     step('waiting for the block');
@@ -2628,7 +2739,7 @@ function publishName(btn, name) {
     for (let i = 0; i < 12; i++) {
       NAMES.delete(name);
       const x = await resolveName(name).catch(() => null);
-      if (x && same(x.r.raw, k.pool.raw)) { RECV.s = { ok: true }; writeJson(`tacit-pay-name-v1:${k.pool.address}`, { name }); toast(`${name} now points to your address.`); return; }
+      if (x && same(x.r.raw, k.pool.raw)) { RECV.s = { ok: true }; vset('name', { name }); toast(`${name} now points to your address.`); mount($('#status'), ''); return; }
       await sleep(2000);
     }
     throw new Error(`Published, but the nodes do not show ${name} pointing to you yet. Check again in a moment.`);
@@ -2655,8 +2766,8 @@ function closeRequest() {
 }
 // What the payer's wallet holds on each chain offered, so the chain can be picked with the money in view.
 function reqBalances(r) {
-  if (!S.account || r.wbFor === S.account) return;
-  r.wbFor = S.account; r.wb = {};
+  if (!S.account || (r.wbFor === S.account && Date.now() - (r.wbAt || 0) < 15_000)) return;
+  r.wbFor = S.account; r.wbAt = Date.now(); r.wb ||= {};
   for (const ch of r.chains || CHAINS) rpcOn(ch)('eth_getBalance', [S.account, 'latest']).then((b) => { if (REQ.v === r && r.wbFor === S.account) { r.wb[ch.chainId] = BigInt(b); paintReq(); } }, () => {});
 }
 function paintReq() {
@@ -2695,7 +2806,7 @@ function paintReq() {
   wire();
   $$('[data-rc]', body).forEach((b) => b.onclick = () => {
     if (S.busy) return;
-    S.chain = chainOf(b.dataset.rc); writeJson('tacit-pay-chain-v1', S.chain.chainId); mount($('#req-status'), ''); render(); if (S.key) syncChain(S.chain);
+    S.chain = chainOf(b.dataset.rc); writeJson('tacit-pay-chain-v1', S.chain.chainId); r.wbAt = 0; mount($('#req-status'), ''); render(); if (S.key) syncChain(S.chain);
   });
   const amtIn = $('#req-amt'), pay = $('#req-pay');
   const amount = () => r.amount ?? parseEth(r.entered);
@@ -2713,10 +2824,13 @@ function paintReq() {
   pay.onclick = (e) => {
     if (!S.account) return connect().catch(warn);
     const a = amount();
+    if (S.chain !== c) { S.chain = c; writeJson('tacit-pay-chain-v1', c.chainId); }
     act(e.currentTarget, async (step, ch) => {
-      if (r.name) await pinName({ name: r.name, r: r.r });
+      const pin = async () => { try { await pinName({ name: r.name, r: r.r }); } catch (x) { openRequest(r); throw x; } };
+      if (r.name) await pin();
       await walletReady(ch, step);
-      const h = await shieldTo(ch, r.r, a, step);
+      r.wbAt = 0;
+      const h = await shieldTo(ch, r.r, a, step, r.name ? pin : null);
       r.paid = { h, c: ch, a };
       toast(`Paid ${fmt(a)} ETH.`);
       mount($('#req-status'), '');
@@ -2734,12 +2848,11 @@ function paintReq() {
 const NAME_KEY = 'finance.tacit', ENS = '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e';
 const nameOk = (n) => /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+(wei|eth)$/.test(n);
 const namehash = (n) => n.split('.').reverse().reduce((node, l) => keccak(cat(node, keccak(utf8(l)))), new Uint8Array(32));
-function quorum(to, data) {
-  const urls = nodesOf(CHAINS[0]);
+function quorum(to, data, urls = nodesOf(CHAINS[0])) {
   return new Promise((resolve, reject) => {
     const tally = {}, need = Math.min(2, urls.length);
     let left = urls.length;
-    const answered = (x) => { if (x != null && (tally[x] = (tally[x] || 0) + 1) >= need) resolve(x); if (--left === 0) reject(new Error('Could not read that name: the Ethereum nodes did not agree. Try again.')); };
+    const answered = (x) => { if (x != null && (tally[x] = (tally[x] || 0) + 1) >= need) resolve(x); if (--left === 0) reject(new Error('Could not read that: the nodes did not agree. Try again.')); };
     for (const u of urls) {
       fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }), signal: AbortSignal.timeout(10_000) })
         .then((r) => r.json()).then((j) => answered(j.error ? (/revert/i.test(j.error.message || '') ? '0x' : null) : j.result), () => answered(null));
@@ -2780,13 +2893,33 @@ function recipientOf(raw, again = () => FORM.check?.()) {
   return { pending: true, name: n };
 }
 // Read again just before paying: a name that has moved since it was shown is not paid.
+async function recipientNow(t) {
+  if (!t?.pending) return t;
+  NAMES.delete(t.name);
+  const x = await resolveName(t.name);
+  NAMES.set(t.name, { ...x, at: Date.now() });
+  return { r: x.r, name: t.name, to: x.to };
+}
 async function pinName(t) {
   const x = await resolveName(t.name);
   if (!same(x.r.raw, t.r.raw)) { NAMES.delete(t.name); throw new Error(`${t.name} now points somewhere else, so nothing was sent. Check it and try again.`); }
 }
 
 // ── activity, rebuilt from the key and the chain ────────────────────────────────────────────────────────────
-const TIMES = {}, DETAIL = {};
+const TIMES = {}, DETAIL = {}, BQ = {};
+const timesSave = () => { if (S.key) vset('times', Object.fromEntries(Object.entries(TIMES).filter(([, v]) => v).slice(-600))); };
+// Reads asked for within a moment of each other go out as one batch per chain.
+function batched(c, method, params) {
+  return new Promise((resolve, reject) => {
+    const q = (BQ[c.chainId] ||= { items: [], timer: null });
+    q.items.push({ method, params, resolve, reject });
+    clearTimeout(q.timer);
+    q.timer = setTimeout(async () => {
+      const items = q.items.splice(0), out = await rpcOn(c).batch(items.map((x) => [x.method, x.params]));
+      items.forEach((x, i) => (out[i].error ? x.reject(out[i].error) : x.resolve(out[i].result)));
+    }, 40);
+  });
+}
 function rowsOf(c) {
   const W = CH[c.chainId].W;
   return W ? W.history().map((r) => ({ ...r, ...DETAIL[r.tx], c })) : [];
@@ -2796,7 +2929,7 @@ function rowsOf(c) {
 const BRIDGES = { Base: '3154cf16ccdb4c6d922629664174b904d80f2c35', 'Robinhood Chain': '1a07cc4bd17e0118bdb54d70990d2158abad7a2d' };
 async function detail(c, r) {
   if (DETAIL[r.tx]) return;
-  const d = DETAIL[r.tx] = {}, rpc = rpcOn(c);
+  const d = DETAIL[r.tx] = {}, rpc = (m, p) => batched(c, m, p);
   if (r.ext === undefined) {
     const rc = await rpc('eth_getTransactionReceipt', [r.tx]).catch(() => null);
     const l = rc?.logs?.find((x) => lc(x.address) === lc(POOL) && x.topics[0] === T_TRANSACT);
@@ -2827,7 +2960,7 @@ function paintActivity() {
   for (const r of rows) {
     if (r.ext === undefined || (r.c.chainId === 1 && BigInt(r.ext) < 0n && r.dest === undefined)) detail(r.c, r);
     const k = `${r.c.chainId}:${r.block}`;
-    if (!(k in TIMES)) { TIMES[k] = 0; rpcOn(r.c)('eth_getBlockByNumber', ['0x' + r.block.toString(16), false]).then((b) => { TIMES[k] = Number(BigInt(b.timestamp)); paintActivity(); }).catch(() => {}); }
+    if (!(k in TIMES)) { TIMES[k] = 0; batched(r.c, 'eth_getBlockByNumber', ['0x' + r.block.toString(16), false]).then((b) => { TIMES[k] = Number(BigInt(b.timestamp)); timesSave(); paintActivity(); }).catch(() => {}); }
   }
   mount(el, html`
     <p class="lede">Rebuilt from your key and the chain: what came in, and what you sent with its fee. This browser keeps only a view of it, never a spend key.</p>
@@ -2935,7 +3068,7 @@ mount($('#contracts'), html`${CHAINS.map((c) => html`<a href="${c.explorer}/addr
 // through WNS on Ethereum. When its lineage has a newer version, the footer says where; nothing is redirected.
 const WNS = '0x0000000000696760e15f265e828db644a0c242eb';
 async function servedBy() {
-  const eth = rpcOn(CHAINS[0]), addrOf = (w) => lc('0x' + String(w).slice(-40));
+  const eth = (m, [{ to, data }]) => quorum(to, data), addrOf = (w) => lc('0x' + String(w).slice(-40));
   let here = lc(/^(0x[0-9a-f]{40})\./i.exec(location.hostname)?.[1] || '');
   const name = /^([a-z0-9-]+)\.wei\.limo$/i.exec(location.hostname)?.[1];
   if (!here && name) {
@@ -2970,7 +3103,7 @@ function applyHash() {
   if (tab) S.tab = tab;
   try { history.replaceState(null, '', location.pathname + location.search); } catch {}
 }
-window.addEventListener('hashchange', () => { applyHash(); render(); });
+window.addEventListener('hashchange', () => { if (S.busy) return; applyHash(); render(); });
 
 // ── QR code: byte mode, error correction M ──────────────────────────────────────────────────────────────────
 function qrModules(text) {

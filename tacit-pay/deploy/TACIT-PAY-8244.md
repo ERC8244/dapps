@@ -80,7 +80,8 @@ links, paying a link from a wallet with no Tacit key, the relay-or-wallet choice
 key alone, and the wallet hardening the source carries: the relay's quote is checked (chain, pool, relay address and
 a per-chain fee ceiling) before anything is signed, a spend rebuilt from the same note takes a fresh one-time key,
 saved state is sealed under the view key, the relay's event index is checked against the pool and replaced by a
-chain-log rebuild weekly, and no nullifier is ever sent to a node.
+chain-log rebuild weekly, and no nullifier is ever sent to ask whether it is spent. (A proof's public values do go to a node once,
+in the check against the pool's verifier just before the spend is sent.)
 
 **Left out:** passkey and Bitcoin-wallet sign-in (a passkey is bound to the origin that made it, and the Bitcoin path
 needs the main app), `.wei` and `.eth` names, payment links that carry the money (`#gift=`), one-time deposit
@@ -125,6 +126,19 @@ Every spend has two routes, and the page shows which is in use:
 Reading is the same: the relay's event index is a speed-up the page checks against the pool (the tree it builds must
 be a root the pool has held, and must reach the pool's own leaf count, or the page reads the chain instead), and a
 full read of the logs runs behind the first paint. With no relay, every balance is rebuilt from chain logs alone.
+
+**Reads are batched.** A chain's head is one Multicall3 call that returns the pool's leaf count and what waits at every
+deposit address being watched, followed by the node's own block number (a contract's `block.number` is the other
+layer's on some chains, so it is not used for the tip). Nothing further is read while the chain has not moved. Reads for
+the activity (receipts, block times) go out as one JSON-RPC batch per chain, and block times are kept; a node that will
+not take a batch is asked one read at a time, and a node that cannot run Multicall3 gets the same reads one by one. Signing in
+costs about 30 requests across the three chains, and an idle chain two per read. A tree is accepted only when the nodes
+agree that the pool has held its root at that size, a chain that fails to read is asked again at a slowing pace, and the
+full check of the logs runs in the background.
+
+**What the page keeps.** Besides the wallet's sealed state, a key's last balances, the block times of its activity, the
+one-time addresses it issued and the name it uses are sealed under the same view key: storage shows ciphertext only. The
+page asks the Ethereum nodes to agree before it shows which contract serves it and whether a newer version exists.
 
 | it depends on | for | when it is down |
 | --- | --- | --- |

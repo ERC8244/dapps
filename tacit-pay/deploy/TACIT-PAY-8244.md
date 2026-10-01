@@ -14,7 +14,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | page source | `dapp/page.html` |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`, `test/dapp/tacit-pay.page.mjs`, `test/dapp/tacit-pay.fork.mjs`, `test/dapp/tacit-pay.live.mjs` |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -25,12 +25,44 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   that the relay moves into the private balance for at most 0.25%, or that you take in yourself at no fee.
 - **Send** privately to a `tacit1…` or `bp1…` address, or pay an `0x` address out of the pool.
 - **Withdraw** any part to any address.
-- **Receive.** The unified `tacit1…` address, and payment links (`#pay=<address>&amount=&chain=&for=`, with a QR
-  code) that anyone with a wallet can pay.
+- **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`/`.eth` name, on any chain
+  (next section), with a QR code, that anyone with a wallet can pay.
 - **Activity**, rebuilt from the key and the chain: what came in, what went out, with fees.
 
 Every spend goes through a relay (no gas, and no account of yours on chain) or from your own wallet, chosen per
 action; when a relay does not answer, the page offers the wallet.
+
+## Payment links and names
+
+A link is the page's address plus a fragment:
+
+```
+#pay=<tacit1…, bp1… or name.wei>&amount=<eth>&chain=<ethereum|base|robinhood>&chains=<a,b>&for=<note>
+```
+
+`amount`, `chain`, `chains` and `for` are optional; `#name.wei` or `#tacit1…` alone also opens a request. The payer sees
+a request card: who is being paid (a name beside the address it resolved to), the amount and note, a chain picker
+that shows what the payer's wallet holds on each chain, and one button. A payer needs only a wallet: the page
+proves a deposit in their browser and the wallet sends it straight into the payee's private balance on the chain
+chosen, moving the wallet to that chain first (adding it when the wallet has never seen it). Their address and the
+amount show on chain; whom they paid does not. The link stays in the address bar until it is dismissed or paid, so a
+reload, or a wallet app handing the page back, keeps the request. A payer who holds a Tacit key can pay from their
+private balance instead, and `chains=` offers the payer only some chains.
+
+**Names.** A name is a payee when it has published a Tacit address as its `finance.tacit` text record (the key every
+Tacit app reads): `.wei` through the name service's `text(bytes32,string)`, `.eth` through the owner's resolver. What
+a name says decides where money goes, so the page asks every Ethereum node it knows at once and takes an answer when two agree (one,
+when the reader has set a single node), shows the address it got beside the name, and reads the name again just before
+anything is paid: a name that moved in between is not paid. Names are ASCII (`a–z`, `0–9`, hyphens). `Send` and `Shield`
+take names in their recipient fields too.
+
+**Receiving.** *Receive* builds the link: an optional name, amount, note, and the chains offered (any, or one). The
+name is checked against the open key: the link uses it only when the name's record is this key's address, and
+otherwise says what is wrong. For a `.wei` name the page publishes the record itself, one transaction on Ethereum from
+the wallet that owns the name (the page simulates it first); for `.eth` it says which record to set. Money paid
+through the link waits in the payee's private balance on that chain. It is found by opening the page with the Tacit
+key, or the Ethereum wallet it was derived from, on any device: balances are rebuilt from the key and the chains,
+without the relay's index, and a page that is open says when something arrives.
 
 ## Where the page came from
 
@@ -71,6 +103,37 @@ The page fetches them once, from tacit.finance or the ceremony bundle on IPFS
 their SHA-256 equals the pins the page carries (also readable from the contract as `PROVING_KEY_SHA256` and
 `WITNESS_PROGRAM_SHA256`), and keeps them in the browser. A reader can add a mirror, or load the two files from disk.
 
+## Relay or wallet, and what the page depends on
+
+Every spend has two routes, and the page shows which is in use:
+
+- **The relay** sends it: no gas needed, and the payer's account is not on chain. The relay quotes a fee, which is
+  signed into the proof together with the relayer's address, the recipient and the memos, so a relay can deliver a
+  spend but cannot change it. Before anything is proved the quote is checked (this chain, this pool, the relayer
+  address the page expects, and a per-chain fee ceiling); a fee that moved up between the form and the spend is shown
+  before it is paid; and a transaction the relay names counts only when it is in a block and spent these notes, so a
+  relay that names some other transaction, or sends nothing, is not taken for a payment. When a relay errors or does
+  not answer, the page offers the wallet.
+- **The wallet** sends it: no fee, the wallet pays gas, and its address shows as the sender. Nothing else is needed.
+
+Reading is the same: the relay's event index is a speed-up the page checks against the pool (the tree it builds must
+be a root the pool has held, and must reach the pool's own leaf count, or the page reads the chain instead), and a
+full read of the logs runs behind the first paint. With no relay, every balance is rebuilt from chain logs alone.
+
+| it depends on | for | when it is down |
+| --- | --- | --- |
+| public JSON-RPC nodes, 2 to 4 per chain (replaceable under *Endpoints*) | every read and send, and names | the next node is tried; the page remembers the one that answered |
+| a wallet (EIP-1193, EIP-6963) | gas for wallet-sent spends and shielding | relayed spends and reading need none |
+| the proving key and witness program, 33 MB, from tacit.finance, Filebase, dweb.link or ipfs.io, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
+| a relay (optional) | spends with no gas, deposit-address sweeps, a fast first read | the wallet route and chain logs |
+| a gateway to serve the page | getting the page | any ERC-8244 gateway, or `html()` from any node |
+
+There are no other scripts, fonts, images or stylesheets: the document pins its one module by hash. The proving key is
+the one dependency that is not a chain read. Rebuilding a wallet from chain logs alone leans on nodes that serve old
+logs: on Ethereum and Base, one public node each does (Tenderly's), plus Base's own with 2,000-block ranges, and
+Robinhood Chain's own node. `test/dapp/tacit-pay.chains.mjs` measures this against the live nodes. A reader with an
+archive node of their own can set it under *Endpoints*.
+
 ## What it talks to
 
 - **Chain state:** public nodes per chain, which the reader can replace under *Endpoints*; transactions through the
@@ -95,9 +158,14 @@ root and a Chromium for playwright-core (`npx playwright-core install chromium`)
 ```
 node ../scripts/chunk.mjs tacit-pay            # out/TacitPay8244.chunk1..N.creation.txt
 forge test --match-path test/TacitPay8244.t.sol
-node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, endpoints, no network
+node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, names, endpoints, no network
 node test/dapp/tacit-pay.wallets.mjs           # external wallets: picker, refusals, account and chain changes, no network
-node test/dapp/tacit-pay.fork.mjs              # every flow on an anvil fork of Base, proofs made in the page
+node test/dapp/tacit-pay.fork.mjs              # every flow on anvil forks of all three chains, proofs made in the page
+node test/dapp/tacit-pay.links.mjs             # a real .wei name, a link, a payer paying it on every chain, recovery by key
+node test/dapp/tacit-pay.relay.mjs             # a faithful relay, then relays that lie, stall, overcharge or leave events out
+node test/dapp/tacit-pay.index.mjs             # an event index that says "no events" is caught against the pool
+KEEPER=… node test/dapp/tacit-pay.keeper.mjs   # the real relay server, from the repo's worker-relay, on a fork
+node test/dapp/tacit-pay.chains.mjs            # read-only: every node and relay the page ships, asked what the page asks
 node test/dapp/tacit-pay.live.mjs              # read-only against mainnet: nodes, relays, routers, the proving key
 node ../scripts/serve.mjs tacit-pay            # localhost, real wallet, real chains
 node ../scripts/verify.mjs tacit-pay           # once deployed: chunks, html() and every route
@@ -118,8 +186,8 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), then point a `.wei` name at the contract.
 
 **Cost**, measured by deploying the chunks and the wrapper on a local anvil (Prague rules): a full chunk is 5,368,866
-gas and the last 3,999,288, so eight chunks are 41,581,350 gas, and the wrapper 1,453,536: 43,034,886 gas in all,
-about 0.043 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
+gas and the last 3,040,808, so nine chunks are 45,991,736 gas, and the wrapper 1,504,819: 47,496,555 gas in all,
+about 0.047 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
 
 ## Stewardship and the name
 

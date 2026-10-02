@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-hnAxk4aYyXIFerOwhsjTR3T2kZGDBHHy6Uyykasf8MM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7PiWgM7QmLc/E+FqtVbELN0knnkc0QL+LLJ31dcCW/w=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
-<title>tacit pay</title>
+<title>anon.wei</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Shield ETH, pay anyone privately, withdraw any part. Proved in your browser, recovered from your key. An onchain page: this document is served by a contract.">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -52,7 +52,6 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .brand { display: inline-flex; align-items: center; gap: 10px; }
 .brand .tk { width: 30px; height: 30px; }
 .brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
-.brand i { font: 500 10px/1 var(--mono); font-style: normal; letter-spacing: .16em; text-transform: uppercase; color: var(--mute); border: 1px solid var(--hair-2); padding: 4px 6px 3px; }
 .chip { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; padding: 0 14px; background: var(--card); border: 1px solid var(--hair-2); cursor: pointer; white-space: nowrap; }
 .chip:hover { border-color: var(--ink); }
 .chip span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -169,6 +168,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .stale { color: var(--mute); }
 footer { display: grid; gap: 10px; margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--hair-2); color: var(--mute); font-size: 12px; }
 footer nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+footer #contracts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 footer a { color: var(--mute); }
 footer a:hover { color: var(--ink); }
 dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 40px 90px -40px rgba(0,0,0,.6); }
@@ -207,7 +207,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
 
 <div class="shell">
   <header class="top">
-    <span class="brand"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>pay</i></span>
+    <span class="brand"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>anon.wei</b></span>
     <button class="chip" id="wallet" type="button" aria-haspopup="dialog"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Open wallet</span></button>
   </header>
 
@@ -242,7 +242,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
   <footer>
     <nav aria-label="Pool contracts"><span>Pool</span><span id="contracts"></span></nav>
     <nav aria-label="More"><a href="https://tacit.finance" rel="noopener">tacit.finance</a><a href="https://github.com/src-company/tacit/blob/main/docs/EVM-POOL.md" rel="noopener">How the pool works</a><a href="https://eip.tools/eip/8244" rel="noopener">ERC-8244</a><button class="link" type="button" id="settings-open">Endpoints</button></nav>
-    <span id="served">tacit pay · an onchain page</span>
+    <span id="served">anon.wei · an onchain page</span>
     <span id="newer" class="warn" hidden></span>
   </footer>
 </div>
@@ -1354,7 +1354,6 @@ function jsonRpc(urls) {
   };
   return Object.assign(one, { batch });
 }
-const errorText = (e) => (e.all || [e]).map((x) => `${x.message} ${JSON.stringify(x.rpc?.data ?? '')}`).join(' ');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // What to do after an eth_getLogs over `step` blocks failed on every node, read node by node, since one node can refuse for
@@ -1979,7 +1978,7 @@ function fmt(v, max = 6) {
 const ethStr = (v) => (BigInt(v) > 0n && BigInt(v) < 5n * 10n ** 11n ? '<0.000001' : fmt(v));
 const plain = (v) => fmt(v, 18).replace(/,/g, '');
 // A decimal comma reads as a point, a thousands comma as nothing, and a lone comma before three digits (1,500) is refused
-// rather than guessed: the same rules as tacit.finance's pay pages.
+// rather than guessed.
 function parseEth(s) {
   let t = String(s || '').trim();
   if (t.includes(',')) {
@@ -3310,7 +3309,7 @@ async function servedBy() {
     here = addrOf(await eth('eth_call', [{ to: WNS, data: calldata('resolve(uint256)', ['uint256'], [BigInt(id)]) }, 'latest']));
   }
   if (!isAddr(here) || !BigInt(here)) return;
-  mount($('#served'), html`tacit pay · served by <a href="https://etherscan.io/address/${here}#code" rel="noopener">${short(here)}</a> on Ethereum`);
+  mount($('#served'), html`anon.wei · served by <a href="https://etherscan.io/address/${here}#code" rel="noopener">${short(here)}</a> on Ethereum`);
   const tip = addrOf(await eth('eth_call', [{ to: here, data: '0x' + hex(selector('latest()')) }, 'latest']));
   if (!BigInt(tip) || tip === here) return;
   const href = lc(location.href).includes(here.slice(2)) ? location.href.replace(new RegExp(here.slice(2), 'i'), tip.slice(2)) : `https://${tip}.w4eth.io/`;

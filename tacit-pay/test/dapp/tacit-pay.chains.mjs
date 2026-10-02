@@ -13,7 +13,7 @@ const { keccak256, toUtf8Bytes } = await import(new URL('../../../node_modules/e
 const { POOL, ROUTER, VERIFIER, CHAINS, RELAYERS, MAX_RELAY_FEE } = config;
 
 // The page's own log reader and its error text, so what is timed here is what a wallet rebuilt from its key does.
-const reader = vm.runInNewContext(`${cut('const errorText =', '\n')}\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n${cut('function logFailure(', '\nconst T_TRANSACT')}\ngetLogs`, { setTimeout, Array });
+const reader = vm.runInNewContext(`const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n${cut('function logFailure(', '\nconst T_TRANSACT')}\ngetLogs`, { setTimeout, Array });
 const T_TRANSACT = keccak256(toUtf8Bytes('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)'));
 const ORIGIN = 'https://anon.wei.limo';
 

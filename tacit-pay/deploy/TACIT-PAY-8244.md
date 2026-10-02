@@ -243,8 +243,12 @@ creation code and forge's artifact live.
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
    225 gas per page byte plus 1.6M in all (the 263,886-byte page: about 61M gas, 0.061 ETH at 1 gwei, 0.006 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
-2. **Deploy.** `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
-   *Deploy what is left*. It confirms the page it serves is the one `manifest.json` pins, checks each chunk's runtime as it
+2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
+   `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
+   *Deploy what is left*. The wrapper goes through CreateX's CREATE3 (`0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`) with a
+   salt mined for the connected account, so its address starts with three zero bytes (about six seconds of mining on a
+   laptop). The salt begins with that account's address and has `00` as its 21st byte, so CreateX lets no one else claim it
+   and mixes in no chain id; the address is shown before anything is sent and CreateX itself is asked to confirm it. It confirms the page it serves is the one `manifest.json` pins, checks each chunk's runtime as it
    lands, estimates the wrapper before sending it (which succeeds only if the chunks reassemble to the page), and prints the
    `deployment` block for the manifest. A closed tab resumes: what the browser remembers is checked against the chain on every
    connect. A transaction the wallet replaces or speeds up is found where it lands, not sent twice. It stops, sending nothing

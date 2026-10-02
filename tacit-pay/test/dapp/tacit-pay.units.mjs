@@ -34,6 +34,14 @@ ok(addressId(A) === ref(A) && /^[0-9a-f]{4}(·[0-9a-f]{4}){3}$/.test(addressId(A
 ok(addressId(A.toUpperCase()) === addressId(A) && addressId(` ${A.slice(0, 20)} ${A.slice(20)} `) === addressId(A), 'case and spaces do not change it');
 ok(addressId(A) !== addressId(A.slice(0, -1) + 'x'), 'one character does');
 
+console.log('\nnames and notes');
+const nm = vm.runInNewContext(`${cut('const nameOk =', '\n')}\n${cut('const looksName =', '\n')}\n${cut('const nameHint =', '\n')}\n${cut('const noteOf =', '\n')}\n({ nameOk, looksName, nameHint, noteOf })`, {String, RegExp});
+for (const n of ['alice.wei', 'a-b.gwei', 'alice.eth', 'pay.alice.eth', 'a.b.c.wei', '0.wei', 'x'.repeat(63) + '.wei']) ok(nm.nameOk(n), `${n.length > 40 ? 'a 63-letter label' : n} is a name`);
+for (const n of ['alice', 'alice.com', '.wei', 'alice..wei', 'alice.wei.', 'Alice.wei', 'al ice.wei', 'münchen.eth', 'x'.repeat(64) + '.wei', 'pay.base.eth', 'base.eth', 'alice.weiX']) ok(!nm.nameOk(n), `${n.length > 40 ? 'a 64-letter label' : JSON.stringify(n)} is not one`);
+ok(nm.looksName('alice.com') && !nm.looksName('tacit1qq') && !nm.looksName('a b.wei'), 'anything with a dot and no spaces is read as a name, so its refusal can say why');
+ok(/\.base\.eth are not supported/.test(nm.nameHint('x.base.eth')) && /ends in \.wei, \.gwei or \.eth/.test(nm.nameHint('x.com')), 'and the refusal names the .base.eth case apart');
+ok(nm.noteOf('a\u202Eb\nc\td') === 'ab c d' && nm.noteOf('\u200Bx\u200F') === 'x' && nm.noteOf('  rent  ') === 'rent' && nm.noteOf('y'.repeat(80)).length === 60 && nm.noteOf(null) === '', 'a note loses control and invisible formatting characters, collapses spaces, and keeps 60 characters');
+
 console.log('\na log read that failed');
 const logFailure = vm.runInNewContext(`${cut('function logFailure(', '\nasync function getLogs(')}\nlogFailure`, {JSON, Math, Number, String});
 const err = (...msgs) => Object.assign(new Error(msgs[0]), {all: msgs.map((m) => Object.assign(new Error(m), {rpc: {data: ''}}))});

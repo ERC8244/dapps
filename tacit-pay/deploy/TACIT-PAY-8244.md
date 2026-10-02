@@ -31,7 +31,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   browser that issued nothing finds it from the key alone. A key issues only as many addresses as it can find again.
 - **Send** privately to a `tacit1…`, `bp1…` or name, or pay an `0x` address out of the pool.
 - **Withdraw** any part to any address.
-- **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`/`.eth` name, on any chain
+- **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`, `.gwei` or `.eth` name, on any chain
   (next section), with a QR code, that anyone with a wallet can pay.
 - **Activity**, rebuilt from the key and the chain: what came in, what went out, with fees.
 
@@ -43,10 +43,16 @@ action; when a relay does not answer, the page offers the wallet.
 A link is the page's address plus a fragment:
 
 ```
-#pay=<tacit1…, bp1… or name.wei>&n=<deposit key>&ns=<signature>&amount=<eth>&chain=<ethereum|base|robinhood>&chains=<a,b>&for=<note>
+#pay=<tacit1…, bp1… or a name>&n=<deposit key>&ns=<signature>&amount=<eth>&chain=<ethereum|base|robinhood>&chains=<a,b>&for=<note>
 ```
 
-`n`, `ns`, `amount`, `chain`, `chains` and `for` are optional; `#name.wei` or `#tacit1…` alone also opens a request. The payer sees
+`n`, `ns`, `amount`, `chain`, `chains` and `for` are optional; `#name.wei` or `#tacit1…` alone also opens a request. The
+chain can be a name, `chain=base`, or a number, `chain=8453`, or the bare word, `#base`. A tab opens by its name beside the
+rest, `#send&chain=base`, `#withdraw`, `#receive`, `#deposit` (the Shield tab) or `tab=send`. These are the links the main
+site's pay page makes and reads, so a link from one works on the other. A gift link (`#gift=`) or a payment-proof link
+(`#proof=`) belongs to the main site: the page says so and offers to open it there. Everything is in the part after `#`, which
+a browser never sends to a server, so the gateway does not learn whom a payer is about to pay; the page reads no path or query.
+A note is one line of at most 60 characters with control and invisible formatting characters removed. The payer sees
 a request card: who is being paid (a name beside the address it resolved to), the amount and note, a chain picker
 that shows what the payer's wallet holds on each chain, and one button. A payer needs only a wallet, and has two ways to pay.
 When the link carries a deposit address (`n` and `ns`) the default is a plain transfer from the wallet to it: nothing
@@ -72,16 +78,19 @@ ID, the same text on every page for the same address, so a payer can compare wha
 sees under their own address.
 
 **Names.** A name is a payee when it has published a Tacit address as its `finance.tacit` text record (the key every
-Tacit app reads): `.wei` through the name service's `text(bytes32,string)`, `.eth` through the owner's resolver. What
-a name says decides where money goes, so the page asks every Ethereum node it knows at once and takes an answer when two agree (one,
+Tacit app reads, in the same format the main site's pay page and wallet read): `.wei` and `.gwei` through their registry's
+`text(bytes32,string)`, `.eth` through the name's resolver in the ENS registry, or its nearest parent's resolver for a subname,
+asked through its wildcard entry point; a name whose records are off-chain is refused with a reason, as is `.base.eth`. The
+record is a `tacit1…` address that carries the pool lane (a record with only that lane works); a record from before pool
+payments has none and is refused with a reason. What a name says decides where money goes, so the page asks every Ethereum node it knows at once and takes an answer when two agree (one,
 when the reader has set a single node), shows the address it got beside the name, and reads the name again just before
-anything is paid: a name that moved in between is not paid. Names are ASCII (`a–z`, `0–9`, hyphens). `Send` and `Shield`
+anything is paid: a name that moved in between is not paid. Names are ASCII (`a–z`, `0–9`, hyphens, dots). `Send` and `Shield`
 take names in their recipient fields too.
 
 **Receiving.** *Receive* builds the link: an optional name, amount, note, and the chains offered (any, or one). The
 name is checked against the open key: the link uses it only when the name's record is this key's address, and
-otherwise says what is wrong. For a `.wei` name the page publishes the record itself, one transaction on Ethereum from
-the wallet that owns the name (the page simulates it first); for `.eth` it says which record to set. Money paid
+otherwise says what is wrong. The page publishes the record itself, one transaction on Ethereum from the wallet that owns
+the name (the page simulates it first): to the registry for `.wei` and `.gwei`, to the name's own resolver for `.eth`. Money paid
 through the link waits in the payee's private balance on that chain. It is found by opening the page with the Tacit
 key, or the Ethereum wallet it was derived from, on any device: balances are rebuilt from the key and the chains,
 without the relay's index, and a page that is open says when something arrives.
@@ -100,9 +109,9 @@ chain-log rebuild weekly, and no nullifier is ever sent to ask whether it is spe
 in the check against the pool's verifier just before the spend is sent.)
 
 **Left out:** passkey and Bitcoin-wallet sign-in (a passkey is bound to the origin that made it, and the Bitcoin path
-needs the main app), `.wei` and `.eth` names, payment links that carry the money (`#gift=`), one-time deposit
-addresses per link, payments held until they blend in, the privacy check, saved recipients, moving Ethereum balances
-to an L2 through its bridge, TAC points, payment proofs and CSV export. Each has a home on tacit.finance; none is
+needs the main app), payment links that carry the money (`#gift=`, handed to the main site), payments held until
+they blend in, the privacy check, saved recipients, moving Ethereum balances
+to an L2 through its bridge, TAC points, payment proofs (`#proof=`, handed to the main site) and CSV export. Each has a home on tacit.finance; none is
 needed to pay or be paid.
 
 **Rebuilt so nothing is fetched to run:**
@@ -216,20 +225,44 @@ node ../scripts/verify.mjs tacit-pay           # once deployed: chunks, html() a
 The fork test runs its proofs in the page against the deployed pool's verifier, so a passing run means the page's
 prover, witness builder and transaction encoding are the ones the pool accepts.
 
-## Deploy order
+## Deploying
 
-1. Deploy each chunk initcode from `out/`. Each returns `STOP || slice` as runtime bytecode; nothing else is in them.
-2. Deploy `TacitPay8244(steward, address(0), chunks, keccak256(page))`, constructor args appended to the creation
-   code. The constructor reassembles the page from the chunks and reverts unless it hashes to the commitment.
-3. Read it back: `cast call <addr> "html()(string)" > tacit-pay.html`, and compare with `dapp/page.html`.
-4. Add `deployment` to `manifest.json` (contract, chunk addresses, `pageSha256`, routes), then run `verify.mjs`.
+From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the module's hash in the page's CSP, the page
+in `manifest.json` and in the forge test, and re-chunks), then `forge build`, then `forge test --match-path test/TacitPay8244.t.sol`.
+Never run `forge build --force` or `forge clean` between `repin.sh` and the deploy: they delete `out/`, where the chunk
+creation code and forge's artifact live.
+
+1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
+   225 gas per page byte plus 1.6M in all (the 249,902-byte page: about 57.8M gas, 0.058 ETH at 1 gwei, 0.006 ETH at 0.1 gwei).
+   Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
+2. **Deploy.** `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
+   *Deploy what is left*. It confirms the page it serves is the one `manifest.json` pins, checks each chunk's runtime as it
+   lands, estimates the wrapper before sending it (which succeeds only if the chunks reassemble to the page), and prints the
+   `deployment` block for the manifest. A closed tab resumes: what the browser remembers is checked against the chain on every
+   connect. A transaction the wallet replaces or speeds up is found where it lands, not sent twice. It stops, sending nothing
+   more, if the wallet leaves mainnet. Do not use a profile that ran an earlier rehearsal without pressing *Forget progress*.
+3. **Check it, from anywhere.** `node deploy/check-deployment.mjs <rpc> <wrapper> dapp/page.html` reads every chunk's code and
+   `html()` and `PAGE_HASH()` back from the chain and compares them with the page, byte for byte. Then
+   `ETH_RPC_URL=<rpc> node ../scripts/verify.mjs tacit-pay` after adding the `deployment` block to `manifest.json`.
+   To read the page back by hand (`cast` prints the string JSON-quoted, so unquote it):
+   `cast call <addr> "html()(string)" --rpc-url <rpc> | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")))' > tacit-pay.html`.
+4. **Verify the source.** `forge verify-contract <wrapper> src/TacitPay8244.sol:TacitPay8244 --chain mainnet --compiler-version v0.8.30+commit.73712a01 --num-of-optimizations 200 --evm-version prague --constructor-args $(cast abi-encode "constructor(address,address,address[],bytes32)" <steward> 0x0000000000000000000000000000000000000000 "[<chunks>]" <keccak256(page)>) --watch`
+   (add `--verifier sourcify` for Sourcify). The chunks are raw runtime bytes and cannot be verified as source; step 3 is how a
+   third party checks them.
+5. **Point the name.** From the key that owns `anon.wei` call WNS `0x0000000000696760e15f265e828db644a0c242eb`
+   `setAddr(uint256,address)` with token id `0x496f2068cee72c1437cff59955a4fe732a44d78027e784fb39dc42aa33428b34` (the name's
+   namehash) and the wrapper's address. Check `resolve(uint256)` returns the wrapper, `curl -sI https://anon.wei.limo/`, and
+   that the body's sha256 equals the page's. The name runs to 2027-09-30; `renew` is 0.01 ETH a year.
 
 Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/` (ERC-4804, which the page's
-policy keeps from running its injected script), then point a `.wei` name at the contract.
+policy keeps from running its injected script), and at `https://anon.wei.limo/`. The wrapper answers every `request()` with
+`Cache-Control: public, max-age=300`: a name can be pointed at a successor, so the page is cached for minutes, not a year.
 
-**Cost**, measured by deploying the chunks and the wrapper on a local anvil (Prague rules): a full chunk is 5,368,866
-gas and the last 4,805,101, so ten chunks are 53,124,895 gas, and the wrapper 1,574,045: 54,698,940 gas in all,
-about 0.055 ETH at 1 gwei. The wrapper deployed there served `dapp/page.html` byte for byte from `html()`.
+**Releasing a new version.** Edit the page, `sh deploy/repin.sh`, `forge build`. Deploy only the new chunks (the helper deploys a
+first version; for a successor deploy each chunk from `out/` with `cast send --create`). Build the wrapper's creation code
+with `previous` set to the current tip, the same steward and the new page hash, and call `<tip>.deployNext(initcode, salt)`
+from the steward with a gas limit of 2,000,000 (it uses about 1.6M). Run step 3 against the new wrapper, then `setAddr` to it.
+To go back, `setAddr` to the old one: every version serves its own bytes forever. Only the newest version can append.
 
 ## Stewardship and the name
 

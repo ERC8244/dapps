@@ -7,7 +7,9 @@ import {startFork, ok, finish, hexKey} from './fork-lib.mjs';
 
 const {namehash, AbiCoder, id} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 const NAME = 'ens.eth', REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
-const lab = await startFork(['ethereum']);
+// The wallet on the page is the name's owner (impersonated on the fork), so the page can publish to it.
+const OWNER = '0xb6E040C9ECAaE172a89bD561c5F73e1C48d28cd9';
+const lab = await startFork(['ethereum'], {account: OWNER.toLowerCase()});
 const eth = lab.fork('ethereum');
 const coder = AbiCoder.defaultAbiCoder();
 const node = namehash(NAME);
@@ -69,5 +71,12 @@ await setRecord(K2addr);
 await A.fill('#f-rname', ''); await A.fill('#f-rname', NAME);
 await A.waitForFunction(() => /different Tacit address/.test(document.querySelector('#f-rname-note')?.textContent || ''), null, {timeout: 60e3});
 ok(!/#pay=ens\.eth/.test(await A.textContent('#f-rlink')), 'a name that now points to another key is not used in the link');
+
+console.log('\nthe payee points it back from the page');
+ok(!!(await A.$('#f-rpub')), 'the page offers to point the name at this key');
+await A.click('#f-rpub');
+await A.waitForFunction(() => /points to this address/.test(document.querySelector('#f-rname-note')?.textContent || '') || document.querySelector('#status .err'), null, {timeout: 120e3});
+ok(await record() === K1addr, 'one transaction from the owner’s wallet writes the record to the name’s own resolver', (await A.textContent('#status').catch(() => '')).trim());
+ok(/points to this address/.test(await A.textContent('#f-rname-note')), 'and the page confirms it');
 ok(!errors.length && !A.errors.length, 'no page errors', [...errors, ...A.errors].join(' | '));
 finish(() => lab.close());

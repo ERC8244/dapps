@@ -7,9 +7,27 @@ import {TacitPay8244} from "../src/TacitPay8244.sol";
 /// @notice The page the contract serves must be the page in the repo, byte for
 ///         byte, the constructor must refuse every chunk list that is not that
 ///         page, and the steward role must move only the way it says it does.
+/// @dev A version contract that is only as much as `deployNext` asks of one.
+contract MinimalSuccessor {
+    address public immutable PREVIOUS;
+    address public successor;
+    constructor(address prev) { PREVIOUS = prev; }
+}
+
+/// @dev A successor whose constructor, once made steward, appends another successor to the same predecessor.
+contract ReentrantSuccessor {
+    address public immutable PREVIOUS;
+    address public successor;
+    constructor(address prev, bytes memory innerInit, bytes32 innerSalt) {
+        PREVIOUS = prev;
+        TacitPay8244(prev).acceptStewardship();
+        TacitPay8244(prev).deployNext(innerInit, innerSalt);
+    }
+}
+
 contract TacitPay8244Test is Test {
     /// @dev The page's length, as manifest.json pins it.
-    uint256 constant PAGE_BYTES = 242855;
+    uint256 constant PAGE_BYTES = 249902;
 
     TacitPay8244 page;
     bytes html;
@@ -195,6 +213,28 @@ contract TacitPay8244Test is Test {
         vm.expectRevert(TacitPay8244.NotASuccessor.selector);
         // Deploys a contract with no PREVIOUS(): STOP as the whole runtime.
         page.deployNext(hex"600180600a5f395ff300", bytes32(uint256(3)));
+    }
+
+    /// @dev A successor that is pre-offered the steward role could append a second successor from its own constructor;
+    ///      only one successor is ever recorded.
+    function testASuccessorCannotAppendAnotherFromItsConstructor() public {
+        bytes memory inner = abi.encodePacked(type(MinimalSuccessor).creationCode, abi.encode(address(page)));
+        bytes memory outer = abi.encodePacked(type(ReentrantSuccessor).creationCode, abi.encode(address(page), inner, bytes32(uint256(2))));
+        address outerAddr = vm.computeCreate2Address(bytes32(uint256(1)), keccak256(outer), address(page));
+        vm.prank(steward);
+        page.transferStewardship(outerAddr);
+        vm.prank(steward);
+        vm.expectRevert(TacitPay8244.AlreadySucceeded.selector);
+        page.deployNext(outer, bytes32(uint256(1)));
+        assertEq(page.successor(), address(0));
+    }
+
+    /// @dev A name can be pointed at a successor, so the page is not cached for a year.
+    function testTheCacheHintIsShort() public view {
+        (uint16 status, , TacitPay8244.KeyValue[] memory headers) = page.request(new string[](0), new TacitPay8244.KeyValue[](0));
+        assertEq(status, 200);
+        assertEq(headers[1].key, "Cache-Control");
+        assertEq(headers[1].value, "public, max-age=300");
     }
 
     function _deploy(bytes memory initcode) private returns (address a) {

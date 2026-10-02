@@ -12,8 +12,9 @@ pragma solidity ^0.8.30;
 ///      ABI encoding, so any RPC client decodes it directly. `request()` implements ERC-5219 for web3:// gateways
 ///      (ERC-4804), and `html()` alone is enough for an ERC-8244 gateway.
 ///
-///      EACH CHUNK'S FIRST BYTE IS STOP, so a chunk address can never be mistaken for a callable contract; it is
-///      not part of the page and reassembly skips it.
+///      EACH CHUNK'S FIRST BYTE IS STOP, so calling a chunk does nothing; it is not part of the page and reassembly
+///      skips it. What a chunk holds is pinned by the page hash below, and a third party can check each chunk's
+///      codehash against `00 || the page's slice`.
 ///
 ///      THE PAGE IS COMMITTED TO AT CONSTRUCTION. `pageHash` is checked against the document the chunks actually
 ///      reassemble to, in the same transaction that stores them. A chunk in the wrong order, a chunk missing from
@@ -42,8 +43,9 @@ pragma solidity ^0.8.30;
 ///   the hashes are all in the document. A proof is checked against the pool's verifier before anything is sent.
 ///
 /// HOW TO READ THE DAPP
-///   cast call <addr> "html()(string)" --rpc-url <rpc> > tacit-pay.html
-///   # then open tacit-pay.html in any browser
+///   cast call <addr> "html()(string)" --rpc-url <rpc> \
+///     | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")))' > tacit-pay.html
+///   # then open tacit-pay.html in any browser (cast prints the string JSON-quoted; the one-liner unquotes it)
 ///
 /// HOW TO BROWSE THE DAPP
 ///   - ERC-8244: https://<addr>.w4eth.io/     (resolves any contract with html())
@@ -211,6 +213,8 @@ contract TacitPay8244 {
         // `latest()` walks by calling `successor()` on each link, so a successor must answer it, with zero.
         (ok, ret) = next.staticcall(abi.encodeWithSelector(bytes4(keccak256("successor()"))));
         if (!ok || ret.length != 32 || abi.decode(ret, (address)) != address(0)) revert NotASuccessor();
+        // The successor's constructor ran code of its own, which could have appended another: only one is ever recorded.
+        if (successor != address(0)) revert AlreadySucceeded();
         successor = next;
         succeededAt = uint96(block.timestamp);
         emit Succeeded(next, generation() + 1);
@@ -251,8 +255,9 @@ contract TacitPay8244 {
         return _assemble(_chunks, PAGE_LENGTH);
     }
 
-    /// @notice ERC-5219 request handler. Any path returns the page with `Content-Type: text/html` and a permanent
-    ///         cache hint: the response is byte-identical forever. Path and query are ignored; the page reads what
+    /// @notice ERC-5219 request handler. Any path returns the page with `Content-Type: text/html` and a short cache
+    ///         hint: this contract's page never changes, but a name that points at it can be pointed at a successor,
+    ///         and a year-long hint would keep showing the old page. Path and query are ignored; the page reads what
     ///         to show (a payment link, a tab, a chain) from the URL fragment, which a gateway never sees.
     function request(string[] memory, /*resource*/ KeyValue[] memory /*params*/ )
         external
@@ -263,7 +268,7 @@ contract TacitPay8244 {
         body = _assemble(_chunks, PAGE_LENGTH);
         headers = new KeyValue[](2);
         headers[0] = KeyValue("Content-Type", "text/html");
-        headers[1] = KeyValue("Cache-Control", "public, max-age=31536000, immutable");
+        headers[1] = KeyValue("Cache-Control", "public, max-age=300");
     }
 
     /// @notice ERC-4804/5219 resolution mode: gateways call request() rather than auto-mode dispatch.

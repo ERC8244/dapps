@@ -27,6 +27,13 @@ const KEY = '11'.repeat(32);
 const BP1 = 'bp1q235w92ulr4p6t0jmfuqzj9l2cvr2m4qr69cw5aljvq6sgxfqq40wdx7tpeacup3lpgnegy9t4t3hfg0dzu6etxjk65qmts92d5n00c98g6cleva40sq8gz0kt500z5fjjv4tsap58ql4f4nhvhv7zmg7u4sp3v920';
 const TACIT1 = 'tacit1qzzsxne4t0wt0nq27u5w70xwh9s4myrgfw6m9jjlskdtpu9hqsr4sud2qtvmuq4q9swlf55uxmmrlfw9ezfjdzattp93p8hmlg9re4lgr994yq4rgu24e782r5kl9kncq9yt74scx4h2q85tsafmlycp4qsvjqp27u6dukrnm3crr7z38jsg2h2hrwjs769e4jkd9d4gpkhq25mfx7ls2w343ljem2lqqwsylvhg779gn9ye2hp6rgwpl2nt8weweu9k3aetkuyv7k';
 const BOX0 = '0x52fc37ee7741468a15CE879320a7a41CEBaeb232';
+// bech32m, to build addresses the vectors do not include.
+const B32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const polymod = (v) => { let c = 1; for (const x of v) { const b = c >>> 25; c = ((c & 0x1ffffff) << 5) ^ x; for (let i = 0; i < 5; i++) if ((b >>> i) & 1) c ^= [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3][i]; } return c >>> 0; };
+const hrpX = (h) => [...[...h].map((c) => c.charCodeAt(0) >> 5), 0, ...[...h].map((c) => c.charCodeAt(0) & 31)];
+const bits = (data, from, to, pad) => { let acc = 0, n = 0; const out = []; for (const v of data) { acc = (acc << from) | v; n += from; while (n >= to) { n -= to; out.push((acc >> n) & ((1 << to) - 1)); } acc &= (1 << n) - 1; } if (pad && n) out.push((acc << (to - n)) & ((1 << to) - 1)); return out; };
+const b32m = (hrp, bytes) => { const d = bits(bytes, 8, 5, true), m = polymod([...hrpX(hrp), ...d, 0, 0, 0, 0, 0, 0]) ^ 0x2bc830a3; return hrp + '1' + [...d, ...[0, 1, 2, 3, 4, 5].map((i) => (m >>> (5 * (5 - i))) & 31)].map((x) => B32[x]).join(''); };
+const unb32 = (s) => bits([...s.slice(s.lastIndexOf('1') + 1, -6)].map((c) => B32.indexOf(c)), 5, 8, false);
 // The well-known first development account; its signature over the Tacit identity message opens this address.
 const DEV = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
 const DEV_TACIT1 = 'tacit1qzzsx4pc3x9c8ym6q6mz53hkqa26lj4wsapknp474xxglk9r9dj0mu80q2g04y8gt2wgh3xdl6nmemkftsxeya0jcs2p8rjaed4htlfgqcmq5q5axtryqaknkkn47w5ruzd4t56hlrearwjjzhp92mpz7kfu9c2cpf3gxukgxnlm4rgewq5mmqfegdgdfxs0wurtavg8gjwlnzexpvptpkks9k72a9u74tkuns8y6x0gg490z3xd30xvpk6nvp8lpxar36qknkfaah';
@@ -44,18 +51,36 @@ ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c
 // a router that names BOX0 as the deposit address.
 const seen = new Set();
 const TIP = {base: 51864114, robinhood: 73991761, ethereum: 26069345};
-const WNS = '0x0000000000696760e15f265e828db644a0c242eb', RECORDS = {
+// A tacit1 record with only the pool lane (flags 0x04), as a name may publish.
+const POOLONLY = b32m('tacit', [0, 0x04, ...Array(66).fill(0), ...unb32(DEV_TACIT1).slice(-97)]);
+const WNS = '0x0000000000696760e15f265e828db644a0c242eb', GNS = '0x9d51d507bc7264d4fe8ad1cf7fe191933a0a81d6', ENSREG = '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e';
+const R_DIRECT = '0x' + '11'.repeat(20), R_WILD = '0x' + '22'.repeat(20), R_OFF = '0x' + '33'.repeat(20);
+// ENS: the resolver set on a name's own node, a parent's resolver that answers for its subnames, and one that answers off-chain.
+const RESOLVERS = {[namehash('direct.eth')]: R_DIRECT, [namehash('parent.eth')]: R_WILD, [namehash('off.eth')]: R_OFF};
+const RECORDS = {
+  [namehash('bob.gwei')]: () => DEV_TACIT1,
+  [namehash('direct.eth')]: () => DEV_TACIT1,
+  [namehash('sub.parent.eth')]: () => DEV_TACIT1,
+  [namehash('pooly.wei')]: () => POOLONLY,
   [namehash('ross.wei')]: () => TACIT1,                 // the vector key's own name
   [namehash('friend.wei')]: () => DEV_TACIT1,           // someone else's
   [namehash('blank.wei')]: () => '',                    // registered, nothing published
   [namehash('old.wei')]: () => 'tacit1qqpsxr8grjvk4asyvl',
   [namehash('split.wei')]: (host) => ({'ethereum-rpc.publicnode.com': TACIT1, 'mainnet.gateway.tenderly.co': DEV_TACIT1, 'eth.drpc.org': BP1}[host] ?? 'tacit1qq'),
 };
+const coder = AbiCoder.defaultAbiCoder();
 const answer = (host, {method, params}) => {
-  if (method === 'eth_call' && params[0].to.toLowerCase() === WNS && params[0].data.startsWith('0x59d1d43c')) {
-    const rec = RECORDS['0x' + params[0].data.slice(10, 74)];
-    return rec ? AbiCoder.defaultAbiCoder().encode(['string'], [rec(host)]) : AbiCoder.defaultAbiCoder().encode(['string'], ['']);
+  const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
+  if ([WNS, GNS, R_DIRECT].includes(to) && data.startsWith('0x59d1d43c')) {
+    const rec = RECORDS['0x' + data.slice(10, 74)];
+    return coder.encode(['string'], [rec ? rec(host) : '']);
   }
+  if (to === ENSREG && data.startsWith('0x0178b8bf')) return coder.encode(['address'], [RESOLVERS['0x' + data.slice(10, 74)] || '0x' + '00'.repeat(20)]);
+  if (to === R_WILD && data.startsWith('0x9061b923')) {                   // resolve(bytes name, bytes data): the text request is inside
+    const [, inner] = coder.decode(['bytes', 'bytes'], '0x' + data.slice(10)), rec = RECORDS['0x' + inner.slice(10, 74)];
+    return coder.encode(['bytes'], [coder.encode(['string'], [rec ? rec(host) : ''])]);
+  }
+  if (to === R_OFF) throw {rpcError: {code: 3, message: 'execution reverted', data: '0x556f1830' + '00'.repeat(32)}};
   if (method === 'eth_blockNumber') return '0x' + TIP[/base/.test(host) ? 'base' : /robinhood/.test(host) ? 'robinhood' : 'ethereum'].toString(16);
   if (method === 'eth_getLogs') return [];
   if (method === 'eth_call' && params[0].data.startsWith(id('nextIndex()').slice(0, 10))) return '0x' + '00'.repeat(32);
@@ -72,7 +97,7 @@ await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   seen.add(url.host);
   if (req.method() === 'POST' && !/onrender\.com$/.test(url.host)) {
     const body = JSON.parse(req.postData() || '{}');
-    const reply = (b) => ({jsonrpc: '2.0', id: b.id, result: answer(url.host, b)});
+    const reply = (b) => { try { return {jsonrpc: '2.0', id: b.id, result: answer(url.host, b)}; } catch (e) { if (e.rpcError) return {jsonrpc: '2.0', id: b.id, error: e.rpcError}; throw e; } };
     return route.fulfill({status: 200, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: JSON.stringify(Array.isArray(body) ? body.map(reply) : reply(body))});
   }
   return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"offline"}'});
@@ -129,6 +154,7 @@ await p.waitForTimeout(200);
 ok(/your own address/.test(await p.textContent('#f-rcpt')), 'and so is paying yourself');
 
 console.log('names in links');
+// (the sections below read names and links of every kind this page takes)
 const shot = async (name) => {
   if (!process.env.SHOTS) return;
   for (const [tag, w, h] of [['phone', 390, 900], ['laptop', 1100, 900]]) { await p.setViewportSize({width: w, height: h}); await p.waitForTimeout(150); await p.screenshot({path: `${process.env.SHOTS}/${name}-${tag}.png`}); }
@@ -164,6 +190,54 @@ ok(/This is your own request/.test(await p.textContent('#req')), 'and so does a 
 await p.click('#req-x');
 await open('pay=not-an-address');
 ok(/not valid/.test(await p.textContent('#req-body')), 'a link that is not an address or a name says so');
+await p.click('#req-x');
+
+console.log('name services, and the forms a link can take');
+const card = async (hash) => { await open(hash); return (await p.textContent('#req-body')).replace(/\s+/g, ' '); };
+const SHORT = DEV_TACIT1.slice(0, 10) + '…' + DEV_TACIT1.slice(-8);
+let t = await card('pay=bob.gwei&amount=0.01');
+ok(t.includes('bob.gwei') && t.includes(SHORT) && !!(await p.$('#req-pay')), 'a .gwei name is read from its own registry');
+t = await card('pay=direct.eth&amount=0.01');
+ok(t.includes('direct.eth') && t.includes(SHORT) && !!(await p.$('#req-pay')), 'a .eth name is read through its own resolver');
+t = await card('pay=sub.parent.eth&amount=0.01');
+ok(t.includes('sub.parent.eth') && t.includes(SHORT) && !!(await p.$('#req-pay')), 'a .eth subname is read through its parent’s wildcard resolver');
+t = await card('pay=off.eth');
+ok(/keeps its records off-chain/.test(t) && !(await p.$('#req-pay')), 'a name whose records are off-chain says so and cannot be paid');
+t = await card('pay=nobody.eth');
+ok(/has no resolver set/.test(t) && !(await p.$('#req-pay')), 'a .eth name with no resolver says so');
+t = await card('pay=pay.base.eth');
+ok(/\.base\.eth are not supported/.test(t) && !(await p.$('#req-pay')), 'a .base.eth name is refused, and the refusal says what to do');
+t = await card('pay=alice.com');
+ok(/ends in \.wei, \.gwei or \.eth/.test(t) && !(await p.$('#req-pay')), 'a name of another kind says which names work');
+t = await card('pay=pooly.wei&amount=0.01');
+ok(t.includes('pooly.wei') && !!(await p.$('#req-pay')), 'a record that carries only the pool lane (no Bitcoin lane) can be paid');
+await p.click('#req-x');
+await p.click('#tabs [data-tab="send"]');
+await p.fill('#f-to', 'pay.base.eth'); await p.fill('#f-amt', '0.1');
+await p.waitForFunction(() => /not supported/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 10e3}).catch(() => {});
+ok(/\.base\.eth are not supported/.test(await p.textContent('#f-rcpt')), 'and the Send form says the same');
+await p.fill('#f-to', 'bob.gwei');
+await p.waitForFunction((x) => (document.querySelector('#f-rcpt')?.textContent || '').includes(x), SHORT.slice(0, 10), {timeout: 10e3}).catch(() => {});
+ok(/bob\.gwei/.test(await p.textContent('#f-rcpt')), 'Send takes a .gwei name');
+await p.click('#tabs [data-tab="shield"]');
+t = await card('pay=friend.wei&for=' + encodeURIComponent('a\u202Eb\nc'));
+ok(/“ab c”/.test(t), 'a note loses control and invisible formatting characters and keeps to one line');
+await p.click('#req-x');
+const where = async (hash) => { await p.evaluate((h) => { location.hash = h; }, hash); await p.waitForTimeout(150); return [await p.$eval('#tabs [aria-selected="true"]', (b) => b.textContent), await p.$eval('#chains [aria-selected="true"]', (b) => b.textContent.replace(/[\d.,]+ ETH|—/g, '').trim())].join(' · '); };
+ok(await where('send&chain=base') === 'Send · Base', 'a tab and a chain can sit together: #send&chain=base');
+ok(await where('deposit&chain=1') === 'Shield · Ethereum', '#deposit is the Shield tab, and a chain can be its number');
+ok(await where('withdraw') === 'Withdraw · Ethereum', 'a tab alone: #withdraw');
+ok(await where('robinhood') === 'Withdraw · Robinhood', 'a chain alone: #robinhood');
+ok(await where('tab=send&chain=8453') === 'Send · Base', 'tab= and a chain number');
+const gift = '0x'.length && 'ab'.repeat(32);
+await p.evaluate((h) => { location.hash = h; }, `gift=${gift}&chain=base`);
+await p.waitForSelector('#req:not([hidden])');
+ok(/gift link made on tacit\.finance/.test(await p.textContent('#req-body')) && (await p.getAttribute('#req-body a.btn', 'href')) === `https://tacit.finance/pay/eth/#gift=${gift}&chain=base`, 'a gift link is handed to the site that made it, not guessed at');
+ok(!(await p.$('#req-pay')), 'and nothing here can pay or claim it');
+await p.click('#req-x');
+await p.evaluate(() => { location.hash = 'proof=base:0x' + 'cd'.repeat(32) + ':0:ab'; });
+await p.waitForSelector('#req:not([hidden])');
+ok(/payment proof made on tacit\.finance/.test(await p.textContent('#req-body')), 'so is a payment-proof link');
 await p.click('#req-x');
 await p.click('#tabs [data-tab="send"]');
 await p.click('[data-route="wallet"]');

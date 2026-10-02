@@ -37,7 +37,7 @@ export const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)
 
 /** Forks `names` (chain keys), serves the page, and returns the harness. `relay` is the mock relay's state, or null for
  *  relays that are down: { mode, fee, relayer, quote, events, calls }. */
-export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0} = {}) {
+export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = []} = {}) {
   const forks = {};
   for (const name of names) {
     const c = CHAINS.find((x) => x.key === name);
@@ -74,6 +74,7 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   const cors = {'access-control-allow-origin': '*'};
   const json = (route, status, body) => route.fulfill({status, contentType: 'application/json', headers: cors, body: JSON.stringify(body)}).catch(() => {});
 
+  const passHosts = new Set(passthrough.flatMap((k) => CHAINS.find((c) => c.key === k).rpc.map((u) => new URL(u).host)));
   async function relayRoute(route) {
     const req = route.request(), u = new URL(req.url());
     const f = Object.values(forks).find((x) => x.c.relay && u.href.startsWith(x.c.relay));
@@ -140,7 +141,9 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         if (!process.env.ARTIFACTS) return route.continue();
         return route.fulfill({status: 200, contentType: 'application/octet-stream', headers: cors, body: fs.readFileSync(`${process.env.ARTIFACTS}/${u.pathname.split('/').pop()}`)});
       }
-      // Any other host the page may ask for (a name's chain, a mirror's pin, an explorer) is not part of the fork.
+      // A chain named in `passthrough` is read for real (a name's chain, when the test forks another); any other host the page
+      // may ask for (a mirror's pin, an explorer) is not part of the fork.
+      if (passHosts.has(u.host)) return route.continue();
       return json(route, 503, {error: 'not in this test'});
     });
     await ctx.addInitScript(`(() => {
@@ -172,8 +175,9 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
     const p = await ctx.newPage();
     p.errors = [];
     p.on('pageerror', (e) => { p.errors.push(String(e)); console.log('        page error: ' + String(e.stack || e).split('\n').slice(0, 4).join(' | ').slice(0, 400)); });
-    // Chains a test does not fork are never asked; a public node that answers with a doubled CORS header is ridden out.
-    p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|multiple values '\*,\*'|not in this test/.test(m.text())) p.errors.push(m.text()); });
+    // Chains a test does not fork are never asked, except those it passes through; a public node that answers with a doubled
+    // CORS header or none (the page rides it out by asking the next node) is not a page error.
+    p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|multiple values '\*,\*'|not in this test|blocked by CORS policy/.test(m.text())) p.errors.push(m.text()); });
     await p.goto(origin);
     return Object.assign(p, helpers(p));
   }

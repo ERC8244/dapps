@@ -6,6 +6,9 @@ python3 - <<'PY'
 import re, hashlib, base64
 P = 'dapp/page.html'
 t = open(P, encoding='utf8').read()
+# The workers' code is the prover block; the module checks it against a hash kept inside the module, which the CSP pins.
+prover = re.search(r'<script type="text/x-prover" id="prover">([\s\S]*?)</script>', t).group(1)
+t = re.sub(r"const PROVER_SHA256 = '[0-9a-f]{64}';", "const PROVER_SHA256 = '" + hashlib.sha256(prover.encode()).hexdigest() + "';", t, count=1)
 mod = re.search(r'<script type="module">([\s\S]*?)</script>', t).group(1)
 h = 'sha256-' + base64.b64encode(hashlib.sha256(mod.encode()).digest()).decode()
 t = re.sub(r"script-src 'sha256-[^']+'", "script-src '" + h + "'", t, count=1)

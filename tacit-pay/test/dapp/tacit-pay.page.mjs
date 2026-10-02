@@ -69,22 +69,29 @@ const RECORDS = {
   [namehash('split.wei')]: (host) => ({'ethereum-rpc.publicnode.com': TACIT1, 'mainnet.gateway.tenderly.co': DEV_TACIT1, 'eth.drpc.org': BP1}[host] ?? 'tacit1qq'),
 };
 const coder = AbiCoder.defaultAbiCoder();
+const PAYEE = '0xC1D6F3AC3dFd66bb264f732CB5581DE3E232CC21', PAYEE2 = '0x3e407f4158440F1e5a9E6BA98b0198AEA6d837E3';
+const POINTS = {[namehash('bob.wei')]: PAYEE, [namehash('bob.gwei')]: PAYEE2, [namehash('direct.eth')]: PAYEE, [namehash('sub.parent.eth')]: PAYEE2, [namehash('zero.wei')]: '0x' + '00'.repeat(20), [namehash('pool.wei')]: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9'};
 const answer = (host, {method, params}) => {
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
   if ([WNS, GNS, R_DIRECT].includes(to) && data.startsWith('0x59d1d43c')) {
     const rec = RECORDS['0x' + data.slice(10, 74)];
     return coder.encode(['string'], [rec ? rec(host) : '']);
   }
+  // The address a name points to: WNS and GNS by resolve(uint256), a .eth name's resolver by addr(bytes32), a parent's through resolve(bytes,bytes).
+  if ([WNS, GNS].includes(to) && data.startsWith('0x4f896d4f')) return coder.encode(['address'], [POINTS['0x' + data.slice(10, 74)] || '0x' + '00'.repeat(20)]);
+  if (to === R_DIRECT && data.startsWith('0x3b3b57de')) return coder.encode(['address'], [POINTS['0x' + data.slice(10, 74)] || '0x' + '00'.repeat(20)]);
   if (to === ENSREG && data.startsWith('0x0178b8bf')) return coder.encode(['address'], [RESOLVERS['0x' + data.slice(10, 74)] || '0x' + '00'.repeat(20)]);
   if (to === R_WILD && data.startsWith('0x9061b923')) {                   // resolve(bytes name, bytes data): the text request is inside
-    const [, inner] = coder.decode(['bytes', 'bytes'], '0x' + data.slice(10)), rec = RECORDS['0x' + inner.slice(10, 74)];
+    const [, inner] = coder.decode(['bytes', 'bytes'], '0x' + data.slice(10)), node = '0x' + inner.slice(10, 74);
+    if (inner.startsWith('0x3b3b57de')) return coder.encode(['bytes'], [coder.encode(['address'], [POINTS[node] || '0x' + '00'.repeat(20)])]);
+    const rec = RECORDS[node];
     return coder.encode(['bytes'], [coder.encode(['string'], [rec ? rec(host) : ''])]);
   }
   if (to === R_OFF) throw {rpcError: {code: 3, message: 'execution reverted', data: '0x556f1830' + '00'.repeat(32)}};
   if (method === 'eth_blockNumber') return '0x' + TIP[/base/.test(host) ? 'base' : /robinhood/.test(host) ? 'robinhood' : 'ethereum'].toString(16);
   if (method === 'eth_getLogs') return [];
   if (method === 'eth_call' && params[0].data.startsWith(id('nextIndex()').slice(0, 10))) return '0x' + '00'.repeat(32);
-  if (method === 'eth_getBalance') return '0x0';
+  if (method === 'eth_getBalance') return params[0].toLowerCase() === '0x000000c2a20657ce25f2ba99737933d031afbee9' ? '0x' + (1234n * 10n ** 18n).toString(16) : '0x0';
   if (method === 'eth_getCode') return '0x6080';
   if (method === 'eth_call') return '0x' + BOX0.slice(2).toLowerCase().padStart(64, '0');
   return null;
@@ -118,7 +125,7 @@ await p.goto(`http://127.0.0.1:${server.address().port}/`);
 await p.waitForTimeout(400);
 
 console.log('a key opens to the vectors');
-ok((await p.textContent('#wallet-label')) === 'Open wallet', 'nothing is open on arrival');
+ok((await p.textContent('#wallet-label')) === 'Sign in', 'nothing is open on arrival');
 ok(await p.isVisible('#f-samt') && await p.isVisible('#f-sto'), 'Shield works with no key open: paying someone needs only their address');
 await p.click('#tabs [data-tab="receive"]');
 await p.click('#form [data-in="paste"]');
@@ -137,6 +144,7 @@ await p.waitForSelector('#form .addr code', {timeout: 30e3});
 ok((await p.textContent('#form .addr code')) === BOX0, 'the deposit address is the vector, shown once the router agrees');
 
 console.log('payment links');
+await p.evaluate(() => { const d = document.querySelector('#f-ropts'); if (d) d.open = true; });
 await p.fill('#f-ramt', '').catch(() => {});
 await p.evaluate((a) => { location.hash = `pay=${a}&amount=0.25&chain=robinhood&for=rent`; }, TACIT1);
 await p.waitForSelector('#req:not([hidden])');
@@ -148,7 +156,7 @@ await p.click('#tabs [data-tab="send"]');
 const mutated = TACIT1.slice(0, 40) + (TACIT1[40] === 'q' ? 'p' : 'q') + TACIT1.slice(41);
 await p.fill('#f-to', mutated); await p.fill('#f-amt', '0.1');
 await p.waitForFunction(() => document.querySelector('#f-rcpt .err'), null, {timeout: 10e3}).catch(() => {});
-ok(/checksum/.test(await p.textContent('#f-rcpt')), 'a one-character change to an address is refused');
+ok(/not a complete address/.test(await p.textContent('#f-rcpt')), 'a one-character change to an address is refused, in plain words');
 await p.fill('#f-to', TACIT1);
 await p.waitForTimeout(200);
 ok(/your own address/.test(await p.textContent('#f-rcpt')), 'and so is paying yourself');
@@ -164,7 +172,7 @@ await open('pay=friend.wei&amount=0.05&chain=base&for=lunch');
 await shot('namerequest');
 let req = (await p.textContent('#req-body')).replace(/\s+/g, ' ');
 ok(/friend\.wei/.test(req) && /0\.05 ETH/.test(req) && /“lunch”/.test(req), 'a name in a link is read from Ethereum and shown with the amount and note');
-ok(req.includes(DEV_TACIT1.slice(0, 10) + '…' + DEV_TACIT1.slice(-8)), 'beside the address it gave, so it can be checked');
+ok(req.includes(DEV_TACIT1.slice(0, 18) + '…' + DEV_TACIT1.slice(-8)), 'beside the address it gave, so it can be checked');
 ok(await p.$eval('#req [data-rc][aria-selected="true"]', (b) => b.textContent.startsWith('Base')), 'on the chain the link names');
 ok((await p.$$eval('#req [data-rc]', (b) => b.map((x) => x.textContent.replace(/[\d.]+ ETH/, '').trim()))).join() === 'Ethereum,Base,Robinhood', 'with the other chains one click away');
 ok(/Connect a wallet to pay/.test(await p.textContent('#req-pay')), 'a payer with no wallet connected is asked for one first');
@@ -179,7 +187,7 @@ ok(/has not published a Tacit address/.test(await p.textContent('#req-body')) &&
 await open('pay=old.wei');
 ok(/publishes an address this page cannot pay/.test(await p.textContent('#req-body')), 'nor can one with a record that is not a usable address');
 await open('pay=split.wei');
-ok(/did not agree/.test(await p.textContent('#req-body')) && !!(await p.$('#req-retry')), 'a name the Ethereum nodes disagree on is not paid, and can be read again');
+ok(/Could not confirm that just now/.test(await p.textContent('#req-body')) && !!(await p.$('#req-retry')), 'a name the Ethereum nodes disagree on is not paid, and can be read again');
 await open('pay=friend.wei&chains=base,robinhood&amount=0.1');
 ok((await p.$$eval('#req [data-rc]', (b) => b.map((x) => x.textContent.replace(/[\d.]+ ETH/, '').trim()))).join() === 'Base,Robinhood', 'a link can offer only some chains');
 ok(await p.$eval('#req [data-rc][aria-selected="true"]', (b) => !b.textContent.startsWith('Ethereum')), 'and the page moves onto one of them');
@@ -192,9 +200,35 @@ await open('pay=not-an-address');
 ok(/not valid/.test(await p.textContent('#req-body')), 'a link that is not an address or a name says so');
 await p.click('#req-x');
 
+console.log('the ETH the pool holds, and a withdrawal to a name');
+await p.waitForFunction(() => /pool holds/.test(document.querySelector('#bal')?.textContent || ''), null, {timeout: 20e3}).catch(() => {});
+ok(/The pool holds 1,234 ETH/.test(await p.textContent('#bal')), 'the pool’s ETH on the chain is shown beside the balance', (await p.textContent('#bal')).replace(/\s+/g, ' ').slice(0, 120));
+await p.click('#tabs [data-tab="withdraw"]');
+const dest = async (v, amt = '') => { await p.fill('#f-wto', v); await p.fill('#f-wamt', amt); await p.waitForFunction(() => !/Reading/.test(document.querySelector('#f-rcpt')?.textContent || 'x'), null, {timeout: 10e3}).catch(() => {}); await p.waitForTimeout(150); return (await p.textContent('#f-rcpt')).replace(/\s+/g, ' '); };
+let w = await dest('bob.wei');
+ok(w.includes('bob.wei') && w.includes(PAYEE) && w.includes(PAYEE.slice(0, 8)), 'a .wei name is read to the address it points to, which is shown in full beside the name', w.slice(0, 140));
+w = await dest('bob.gwei');
+ok(w.includes(PAYEE2), 'a .gwei name too');
+w = await dest('direct.eth');
+ok(w.includes(PAYEE), 'a .eth name through its resolver');
+w = await dest('sub.parent.eth');
+ok(w.includes(PAYEE2), 'and a .eth subname through its parent’s wildcard resolver');
+w = await dest('zero.wei');
+ok(/does not point to an address yet/.test(w), 'a name that points nowhere says so');
+w = await dest('pool.wei');
+ok(/cannot receive a withdrawal/.test(w), 'and one that points at the pool itself is refused');
+w = await dest('foo.com');
+ok(/ends in \.wei, \.gwei or \.eth/.test(w), 'a name of another kind says which names work');
+w = await dest('pay.base.eth');
+ok(/\.base\.eth are not supported/.test(w), 'and .base.eth says so');
+await dest(PAYEE.toLowerCase());
+ok(await p.isHidden('#f-rcpt'), 'a plain address still works as before: nothing to read, nothing to refuse');
+await p.fill('#f-wto', ''); await p.fill('#f-wamt', '');
+await p.click('#tabs [data-tab="shield"]');
+
 console.log('name services, and the forms a link can take');
 const card = async (hash) => { await open(hash); return (await p.textContent('#req-body')).replace(/\s+/g, ' '); };
-const SHORT = DEV_TACIT1.slice(0, 10) + '…' + DEV_TACIT1.slice(-8);
+const SHORT = DEV_TACIT1.slice(0, 18) + '…' + DEV_TACIT1.slice(-8);
 let t = await card('pay=bob.gwei&amount=0.01');
 ok(t.includes('bob.gwei') && t.includes(SHORT) && !!(await p.$('#req-pay')), 'a .gwei name is read from its own registry');
 t = await card('pay=direct.eth&amount=0.01');
@@ -262,6 +296,7 @@ const store = await p.evaluate(() => Object.fromEntries(Object.entries(localStor
 const plain = Object.keys(store).filter((k) => /seen|times|boxes|name-v1|last-v1/.test(k) && !/vault/.test(k));
 ok(!plain.length && Object.entries(store).filter(([k]) => /vault/.test(k)).every(([, v]) => v.startsWith('enc1:')), 'what the page remembers about the key is stored as ciphertext only', plain.join());
 await p.click('#tabs [data-tab="receive"]');
+await p.evaluate(() => { const d = document.querySelector('#f-ropts'); if (d) d.open = true; });
 await p.fill('#f-rname', 'ross.wei');
 await p.waitForFunction(() => /points to this address/.test(document.querySelector('#f-rname-note').textContent), null, {timeout: 20e3});
 ok(/#pay=ross\.wei/.test(await p.textContent('#f-rlink')), 'a name that points at this key goes into the payment link');

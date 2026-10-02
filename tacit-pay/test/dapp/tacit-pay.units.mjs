@@ -34,6 +34,15 @@ ok(addressId(A) === ref(A) && /^[0-9a-f]{4}(·[0-9a-f]{4}){3}$/.test(addressId(A
 ok(addressId(A.toUpperCase()) === addressId(A) && addressId(` ${A.slice(0, 20)} ${A.slice(20)} `) === addressId(A), 'case and spaces do not change it');
 ok(addressId(A) !== addressId(A.slice(0, -1) + 'x'), 'one character does');
 
+console.log('\nshortening an address');
+const short = vm.runInNewContext(`${cut('const short =', '\n')}\nshort`, {RegExp});
+const T = 'tacit1qzzsxne4t0wt0nq27u5w70xwh9s4myrgfw6m9jjlskdtpu9hqsr4sud2qtvmuq4q9swlf55uxmmrlfw9ezfjdzattp93p8hmlg9re4lgr994yq4rgu24e782r5kl9kncq9yt74scx4h2q85tsafmlycp4qsvjqp27u6dukrnm3crr7z38jsg2h2hrwjs769e4jkd9d4gpkhq25mfx7ls2w343ljem2lqqwsylvhg779gn9ye2hp6rgwpl2nt8weweu9k3aetkuyv7k';
+ok(short(T, 6) === T.slice(0, 16) + '…' + T.slice(-6) && short(T, 6).startsWith('tacit1qzzsxne4t0'), 'a tacit1… address keeps its first ten characters, which are the same for everyone, and then six more, as tacit.finance does', short(T, 6));
+ok(short(T, 8) === T.slice(0, 18) + '…' + T.slice(-8), 'and eight more where there is room');
+const X = '0xf39Fd6e51aad88F6F4ce6AB8827279cffFb92266';
+ok(short(X, 6) === '0xf39Fd6…b92266' && short(X) === '0xf39F…2266', 'any other address keeps 0x and n characters');
+ok(short('tacit1qq') === 'tacit1qq' && short('') === '' && short(null) === '', 'a short one is left whole');
+
 console.log('\nnames and notes');
 const nm = vm.runInNewContext(`${cut('const nameOk =', '\n')}\n${cut('const looksName =', '\n')}\n${cut('const nameHint =', '\n')}\n${cut('const noteOf =', '\n')}\n({ nameOk, looksName, nameHint, noteOf })`, {String, RegExp});
 for (const n of ['alice.wei', 'a-b.gwei', 'alice.eth', 'pay.alice.eth', 'a.b.c.wei', '0.wei', 'x'.repeat(63) + '.wei']) ok(nm.nameOk(n), `${n.length > 40 ? 'a 63-letter label' : n} is a name`);

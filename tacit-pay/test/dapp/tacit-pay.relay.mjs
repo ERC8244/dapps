@@ -11,7 +11,7 @@ import {startFork, mockRelay, ok, finish, hexKey, ACCT, POOL, RELAYERS, CHAINS} 
 
 const name = process.env.CHAIN || 'base', c = CHAINS.find((x) => x.key === name), RELAYER = RELAYERS[c.chainId].toLowerCase();
 const relay = mockRelay();
-const lab = await startFork([name], {relay});
+const lab = await startFork([name], {relay, passthrough: ['ethereum']});   // names are read from Ethereum itself
 const f = lab.fork(name);
 const p = await lab.page();
 const K0 = hexKey(), K1 = hexKey();
@@ -89,6 +89,18 @@ bal -= 2n * 10n ** 15n + 5n * E12;
 ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
 const goodHash = await txOf();
 
+console.log('\na withdrawal to a name');
+const NAMED = '0xC1D6F3AC3dFd66bb264f732CB5581DE3E232CC21', n0 = BigInt(await f.rpc('eth_getBalance', [NAMED, 'latest']));   // alakazam.wei points here
+await p.fill('#f-wto', 'alakazam.wei'); await p.fill('#f-wamt', '0.001');
+await p.waitForFunction(() => /Address/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go')?.disabled, null, {timeout: 90e3});
+ok((await p.textContent('#f-rcpt')).toLowerCase().includes(NAMED.toLowerCase()), 'the name is read on Ethereum and the address it points to is shown in full');
+await p.click('#f-go');
+s = await p.status(/Withdrew|err/);
+ok(/Withdrew 0\.001 ETH to alakazam\.wei/.test(s), 'withdraw 0.001 to alakazam.wei through the relay', s);
+ok(BigInt(await f.rpc('eth_getBalance', [NAMED, 'latest'])) - n0 === 10n ** 15n, 'the address the name points to received exactly 0.001 ETH');
+bal -= 1n * 10n ** 15n + 5n * E12;
+ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
+
 console.log('\na fee that moves between the form and the spend');
 await fillSend(K1addr, '0.001');
 await route(/fee 0\.000005 ETH/);
@@ -97,7 +109,7 @@ relay.fee = 100n * E12;                                   // 0.0001 ETH: twenty 
 await p.click('#f-go');
 s = await p.status(/fee moved|Sent|err/);
 ok(/fee moved to 0\.0001 ETH/.test(s), 'the new fee is shown before anything is proved', s);
-ok(calls('/relay') === 2, 'and nothing was sent');
+ok(calls('/relay') === 3, 'and nothing was sent');
 r = await route(/fee 0\.0001 ETH/);
 ok(/fee 0\.0001 ETH/.test(r), 'the form now shows the new fee', r);
 await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
@@ -161,7 +173,7 @@ await route(/Sent by the relay/);
 await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
 await p.click('#f-go');
 s = await p.status(/relay busy|Sent|err/);
-ok(/relay busy/.test(s), 'its error is shown', s);
+ok(/The relay could not do that just now/.test(s) && !/relay busy/.test(s), 'it is told in the page’s words, not the relay’s', s);
 ok(await p.$('#use-wallet') !== null, 'with the wallet offered');
 await p.click('#use-wallet');
 await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});

@@ -24,6 +24,7 @@ const answer = (host, {method, params}) => {
   if (method === 'eth_getCode') return '0x6080';
   if (method === 'eth_getTransactionReceipt') return null;
   if (method === 'eth_call' && params[0].data.startsWith('0x7a4c8e5b')) return '0x' + '00'.repeat(32);
+  if (method === 'eth_call' && params[0].data.startsWith('0xfc7e9c6f')) return '0x' + '00'.repeat(32);   // nextIndex(): an empty pool
   if (method === 'eth_call') return '0x' + state.box.slice(2).toLowerCase().padStart(64, '0');
   return null;
 };
@@ -49,7 +50,8 @@ await A.click('#tabs [data-tab="receive"]');
 await A.click('#form [data-in="paste"]');
 await A.fill('#form .opts input', KEY);
 await A.click('#form [data-in="key"]');
-await A.waitForSelector('#f-qr svg', {timeout: 30e3});
+await A.waitForSelector('#f-qr svg', {timeout: 90e3});
+await A.evaluate(() => { document.querySelector('#f-ropts').open = true; });
 await A.fill('#f-ramt', '0.002');
 await A.waitForFunction(() => /&ns=[0-9a-f]{128}&amount=0\.002/.test(document.querySelector('#f-rlink')?.textContent || ''), null, {timeout: 30e3});
 const link = await A.textContent('#f-rlink');

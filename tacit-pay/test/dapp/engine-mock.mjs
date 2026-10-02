@@ -11,7 +11,7 @@ const {Interface, AbiCoder, id} = await import(new URL('../../../node_modules/et
 
 const a = mod.indexOf('function makePoolWallet('), end = mod.indexOf('\n}\n', a) + 3;
 if (a < 0 || end < 3) throw new Error('page layout changed: makePoolWallet');
-const body = `${mod.slice(0, end)}\nexport { jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
+const body = `${mod.slice(0, end)}\nexport { headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
 const file = path.join(os.tmpdir(), `tacit-pay-engine-${createHash('sha256').update(body).digest('hex').slice(0, 12)}.mjs`);
 fs.writeFileSync(file, body);
 export const lib = await import(file);
@@ -35,6 +35,13 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
     node.logs.push(log);
     node.receipts.set(txh, {status: '0x1', logs: [log], blockNumber: '0x' + block.toString(16)});
     return txh;
+  };
+  // A deposit the pool never saw, as a node that makes one up would serve it: a log, but no root and no leaf in the pool.
+  node.addPhantom = ({block, keys, value}) => {
+    const sealed = sealNote({to: keys, value, asset: poolAsset(1, POOL)}), t = node.tree.clone();
+    t.append([sealed.leaf, 0n]);
+    const data = coder.encode(['bytes32', 'bytes32', 'uint256', 'bytes32', 'address', 'int256', 'address', 'uint256', 'bytes', 'bytes'], [h32(sealed.leaf), h32(0n), node.size, h32(t.root), '0x' + '00'.repeat(20), value, '0x' + '00'.repeat(20), 0n, '0x' + hex(sealed.memo), '0x']);
+    node.logs.push({address: POOL, topics: [T_TRANSACT, h32(rnd()), h32(rnd())], data, blockNumber: '0x' + block.toString(16), transactionHash: '0x' + (++node.txn).toString(16).padStart(64, '0'), logIndex: '0x0'});
   };
   const rpc = async (method, params = []) => {
     node.calls.push(method);

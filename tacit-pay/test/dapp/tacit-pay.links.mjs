@@ -36,6 +36,7 @@ ok(/^tacit1/.test(real), `${NAME} publishes someone’s address on mainnet alrea
 const A = await lab.page();
 const K1addr = await A.openKey(K1);
 ok(real !== K1addr, 'which is not this key’s');
+await A.evaluate(() => { document.querySelector('#f-ropts').open = true; });
 await A.fill('#f-rname', NAME);
 await A.waitForFunction(() => /different Tacit address/.test(document.querySelector('#f-rname-note').textContent), null, {timeout: 60e3});
 ok(true, 'the page reads it from Ethereum and says the link cannot use it yet');
@@ -123,7 +124,7 @@ for (const [mk, why] of forged) {
   await F.waitForSelector('#req:not([hidden])');
   await F.waitForFunction(() => !/Reading/.test(document.querySelector('#req-body').textContent), null, {timeout: 60e3});
   const t = (await F.textContent('#req-body')).replace(/\s+/g, ' ');
-  ok(/was not signed by z0r0z\.wei, so it is ignored/.test(t) && !(await F.$('#req .adv')), `${why}: the address is ignored and the card says so`, t.slice(0, 140));
+  ok(/deposit address could not be verified, so it is not used/.test(t) && !(await F.$('#req .adv')), `${why}: the address is ignored and the card says so`, t.slice(0, 140));
   ok(await F.$('#req-pay') !== null && !/Sent from your wallet to z0r0z\.wei’s own deposit address/.test(t), 'and it pays by proving, into the payee’s private balance');
   ok(!F.errors.length, 'no page errors', F.errors.join(' | '));
   await F.close();

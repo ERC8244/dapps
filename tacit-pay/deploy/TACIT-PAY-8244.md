@@ -30,7 +30,9 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   used, and a gap past it) when a key is opened and every few minutes, and says on the balance when something waits: a
   browser that issued nothing finds it from the key alone. A key issues only as many addresses as it can find again.
 - **Send** privately to a `tacit1…`, `bp1…` or name, or pay an `0x` address out of the pool.
-- **Withdraw** any part to any address.
+- **Withdraw** any part to an address or to a name: a `.wei`, `.gwei` or `.eth` name is read to the Ethereum address it points
+  to (its address record, not its Tacit one), shown in full beside the name, and read again just before the withdrawal, which
+  is not sent if the name has moved.
 - **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`, `.gwei` or `.eth` name, on any chain
   (next section), with a QR code, that anyone with a wallet can pay.
 - **Activity**, rebuilt from the key and the chain: what came in, what went out, with fees.
@@ -104,8 +106,10 @@ reduced to the payments themselves and rebuilt to stand alone.
 links, paying a link from a wallet with no Tacit key, the relay-or-wallet choice for every spend, activity from the
 key alone, and the wallet hardening the source carries: the relay's quote is checked (chain, pool, relay address and
 a per-chain fee ceiling) before anything is signed, a spend rebuilt from the same note takes a fresh one-time key,
-saved state is sealed under the view key, the relay's event index is checked against the pool and replaced by a
-chain-log rebuild weekly, and no nullifier is ever sent to ask whether it is spent. (A proof's public values do go to a node once,
+saved state is sealed under the view key, the relay's event index is checked against the pool (a root the pool never held, or a tree short of its leaf count, sends the
+page to the chain's own logs, and an index that did that is not asked again that session), the unconfirmed tail counts only when
+the pool has held its root at that size, the head a read goes up to is the lower of two nodes' answers, and no nullifier is ever
+sent to ask whether it is spent. An index that leaves a memo out cannot hide a note from *Rebuild*, which reads the chain's logs alone. (A proof's public values do go to a node once,
 in the check against the pool's verifier just before the spend is sent.)
 
 **Left out:** passkey and Bitcoin-wallet sign-in (a passkey is bound to the origin that made it, and the Bitcoin path
@@ -152,14 +156,15 @@ Reading is the same: the relay's event index is a speed-up the page checks again
 be a root the pool has held, and must reach the pool's own leaf count, or the page reads the chain instead), and a
 full read of the logs runs behind the first paint. With no relay, every balance is rebuilt from chain logs alone.
 
-**Reads are batched.** A chain's head is one Multicall3 call that returns the pool's leaf count and what waits at every
-deposit address being watched, followed by the node's own block number (a contract's `block.number` is the other
+**Reads are batched.** A chain's head is one Multicall3 call that returns the pool's leaf count, what waits at every
+deposit address being watched and the ETH the pool itself holds (shown beside the balance; with no key open there is
+nothing to batch it with, so it is one `eth_getBalance`, kept for half a minute), followed by the node's own block number (a contract's `block.number` is the other
 layer's on some chains, so it is not used for the tip). Nothing further is read while the chain has not moved. Reads for
 the activity (receipts, block times) go out as one JSON-RPC batch per chain, and block times are kept; a node that will
 not take a batch is asked one read at a time, and a node that cannot run Multicall3 gets the same reads one by one. Signing in
 costs about 30 requests across the three chains, and an idle chain two per read. A tree is accepted only when the nodes
 agree that the pool has held its root at that size, a chain that fails to read is asked again at a slowing pace, and the
-full check of the logs runs in the background.
+head a read goes up to is the lower of two nodes' answers.
 
 **What the page keeps.** Besides the wallet's sealed state, a key's last balances, the block times of its activity, the
 one-time addresses it issued and the name it uses are sealed under the same view key: storage shows ciphertext only. The
@@ -225,6 +230,9 @@ node ../scripts/verify.mjs tacit-pay           # once deployed: chunks, html() a
 The fork test runs its proofs in the page against the deployed pool's verifier, so a passing run means the page's
 prover, witness builder and transaction encoding are the ones the pool accepts.
 
+`deploy/DEVICE-PROOFS.md` records the proofs checked two independent ways (the deployed verifier and snarkjs) for every
+flow on all three chains and in WebKit, the tampered proofs refused, the proving times measured, and what was not shown.
+
 ## Deploying
 
 From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the module's hash in the page's CSP, the page
@@ -233,7 +241,7 @@ Never run `forge build --force` or `forge clean` between `repin.sh` and the depl
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 249,902-byte page: about 57.8M gas, 0.058 ETH at 1 gwei, 0.006 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 263,886-byte page: about 61M gas, 0.061 ETH at 1 gwei, 0.006 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
    *Deploy what is left*. It confirms the page it serves is the one `manifest.json` pins, checks each chunk's runtime as it

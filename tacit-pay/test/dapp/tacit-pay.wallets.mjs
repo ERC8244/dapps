@@ -141,7 +141,7 @@ const BETA = {name: 'Beta', rdns: 'test.beta', account: TWO.address.toLowerCase(
 console.log('one wallet: a first sign-in, then a later visit');
 {
   const p = await open([ALPHA]);
-  ok(await label(p) === 'Open wallet', 'nothing is asked of the wallet on arrival', (await log(p)).join());
+  ok(await label(p) === 'Sign in', 'nothing is asked of the wallet on arrival', (await log(p)).join());
   await signInFromHeader(p);
   ok(await opened(p), 'the wallet opens the key');
   ok((await log(p)).filter((x) => x === '0:personal_sign').length === 2, 'a first sign-in asks for the signature twice', (await log(p)).join());

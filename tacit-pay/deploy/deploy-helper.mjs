@@ -21,7 +21,8 @@ const chunks = files.map((f) => readFileSync(DIR + 'out/' + f, 'utf8').trim());
 const runtimes = chunks.map((c) => '0x' + c.slice(2 + 20));   // the 10-byte stub, then the runtime
 if (Buffer.concat(runtimes.map((r) => Buffer.from(r.slice(4), 'hex'))).compare(page) !== 0) throw new Error('the chunks do not reassemble to the page');
 const bytecode = JSON.parse(readFileSync(DIR + 'out/TacitPay8244.sol/TacitPay8244.json', 'utf8')).bytecode.object;
-const { keccak256, getCreateAddress, getAddress } = await import(new URL('../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const { keccak256, getCreateAddress, getAddress, namehash } = await import(new URL('../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const NAME = 'anon.wei', WNS = '0x0000000000696760e15f265e828db644a0c242eb', TOKEN = namehash(NAME);
 const pageHash = keccak256(page), GAS = Math.round(page.length * 225 + 1.6e6);   // measured: 54.7M for the 243 KB page
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tacit-pay</title>
@@ -30,10 +31,11 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tac
 <p>Page ${manifest.bytes.toLocaleString('en-US')} bytes, sha256 <code>${manifest.sha256}</code>, keccak <code>${pageHash}</code>. ${chunks.length} chunks, then the wrapper with steward <code>${STEWARD}</code>: ${chunks.length + 1} transactions on Ethereum mainnet. Any account can deploy and pays the gas; the steward is set by the constructor.</p>
 <p><button id="connect">Connect wallet</button> <span id="who"></span></p>
 <p><button id="go" disabled>Deploy what is left</button> <button id="reset">Forget progress</button></p>
+<p><button id="name" hidden>Point ${NAME} at it</button> <span id="named"></span></p>
 <ol id="steps"></ol><pre id="out" hidden></pre>
 <script>
 const CHUNKS = ${JSON.stringify(chunks)}, RUNTIMES = ${JSON.stringify(runtimes)}, BYTECODE = ${JSON.stringify(bytecode)};
-const STEWARD = ${JSON.stringify(STEWARD)}, PAGE_HASH = ${JSON.stringify(pageHash)}, SHA = ${JSON.stringify(manifest.sha256)}, GAS = ${GAS};
+const STEWARD = ${JSON.stringify(STEWARD)}, PAGE_HASH = ${JSON.stringify(pageHash)}, SHA = ${JSON.stringify(manifest.sha256)}, GAS = ${GAS}, NAME = ${JSON.stringify(NAME)}, WNS = ${JSON.stringify(WNS)}, TOKEN = ${JSON.stringify(TOKEN)};
 const KEY = 'tacit-pay-deploy-1-' + SHA.slice(0, 16);
 let st = JSON.parse(localStorage.getItem(KEY) || '{"chunks":[]}'), eth = null, from = null;
 const save = () => localStorage.setItem(KEY, JSON.stringify(st));
@@ -110,12 +112,36 @@ $('#go').onclick = async () => {
     const [hash, steward] = await Promise.all([call('0x5b700b59'), call('0x637eea19')]);
     paint(hash.toLowerCase() === PAGE_HASH.toLowerCase() && steward.slice(-40).toLowerCase() === STEWARD.slice(2).toLowerCase() ? '<span class="ok">Done: the wrapper commits to this page and names the steward.</span>' : '<span class="err">Deployed, but PAGE_HASH or steward does not read back as expected.</span>');
     $('#out').hidden = false;
+    $('#name').hidden = false;
     $('#out').textContent = 'manifest.json "deployment":\\n' + JSON.stringify({ chainId: 1, contract: st.wrapper, pageSha256: SHA, steward: STEWARD, chunkContracts: st.chunks, routes: [
       { kind: 'erc8244', url: 'https://' + st.wrapper.toLowerCase() + '.w4eth.io/', serves: 'exact' },
       { kind: 'erc4804', url: 'https://' + st.wrapper.toLowerCase() + '.1.w3link.io/', serves: 'modified', note: "w3link injects its own script, which the page's CSP refuses; the bytes it serves are not the bytes html() returns" },
       { kind: 'wns', url: 'https://anon.wei.limo/', serves: 'exact' } ] }, null, 2);
   } catch (e) { paint('<span class="err">' + (e.message || e) + '</span>'); }
   $('#go').disabled = false;
+};
+// The name: WNS setAddr(tokenId, wrapper) from the wallet that owns it, simulated first, then read back.
+$('#name').onclick = async () => {
+  const say = (t) => { $('#named').innerHTML = t; };
+  $('#name').disabled = true;
+  try {
+    await onMainnet();
+    [from] = await rpc('eth_accounts');
+    if (!st.wrapper || !(await wrapperOk(st.wrapper))) throw new Error('Deploy the page first.');
+    const data = '0xeba36dbd' + word(TOKEN) + word(st.wrapper);
+    try { await rpc('eth_call', [{ from, to: WNS, data }, 'latest']); }
+    catch { throw new Error('Only the wallet that owns ' + NAME + ' can point it. Switch to that account in your wallet and press again.'); }
+    say('confirm in your wallet');
+    const h = await rpc('eth_sendTransaction', [{ from, to: WNS, data }]);
+    say('waiting for <code>' + h + '</code>');
+    let r = null;
+    for (let i = 0; i < 200 && !r; i++) { r = await rpc('eth_getTransactionReceipt', [h]); if (!r) await sleep(3000); }
+    if (!r || r.status !== '0x1') throw new Error('The transaction did not go through: ' + h);
+    const now = '0x' + (await rpc('eth_call', [{ to: WNS, data: '0x4f896d4f' + word(TOKEN) }, 'latest'])).slice(-40);
+    if (now.toLowerCase() !== st.wrapper.toLowerCase()) throw new Error(NAME + ' resolves to ' + now + ', not the wrapper.');
+    say('<span class="ok">' + NAME + ' now points at ' + st.wrapper + '.</span> Check https://' + NAME + '.limo/ in a minute.');
+  } catch (e) { say('<span class="err">' + (e.message || e) + '</span>'); }
+  $('#name').disabled = false;
 };
 paint();
 </script></body></html>`;

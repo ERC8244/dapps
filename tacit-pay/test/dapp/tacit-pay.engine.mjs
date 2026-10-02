@@ -3,7 +3,7 @@
    a batch fall back. The engine is taken out of dapp/page.html as it ships.
 
    Usage: node test/dapp/tacit-pay.engine.mjs                                                                       */
-import {mkNode, mkWallet, depositTo, lib, POOL} from './engine-mock.mjs';
+import {mkNode, mkWallet, depositTo, lib, POOL, asset} from './engine-mock.mjs';
 
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
@@ -81,6 +81,46 @@ console.log('\ndeposit addresses follow the head');
   node.tip = 131;
   await W.sync([0, 1, 2]);
   ok(W.boxBalances()[1] === E / 10n && W.boxBalances()[2] === E / 5n, 'and a node with no Multicall3 is read address by address', JSON.stringify(Object.fromEntries(Object.entries(W.boxBalances()).map(([k, v]) => [k, String(v)]))));
+}
+
+console.log('\nthe ETH the pool holds');
+{
+  const node = mkNode();
+  const {W, keys} = mkWallet(node);
+  depositTo(node, keys, E / 10n, 101); node.tip = 130;
+  node.balances.set(POOL.toLowerCase(), 1234n * E);
+  await W.sync([0, 1]);
+  ok(W.poolBalance() === 1234n * E, 'comes back with the head read', String(W.poolBalance()));
+  ok(node.calls.filter((m) => m === 'eth_getBalance').length === 0 && node.calls.filter((m) => m === 'eth_call').length >= 1, 'in the same Multicall3 call as the leaf count and the deposit addresses: no read of its own');
+  node.balances.set(POOL.toLowerCase(), 1235n * E); node.tip = 131;
+  await W.sync([0, 1]);
+  ok(W.poolBalance() === 1235n * E, 'and follows the pool from one read to the next');
+  node.multicall = false; node.balances.set(POOL.toLowerCase(), 1236n * E); node.tip = 132;
+  await W.sync([0, 1]);
+  ok(W.poolBalance() === 1236n * E, 'and a node with no Multicall3 gives it in the one batch of balance reads');
+}
+
+console.log('\na payment that was never made');
+{
+  const node = mkNode();
+  const {W, keys} = mkWallet(node);
+  node.tip = 130;
+  node.addPhantom({block: 129, keys, value: 100n * E});     // inside the unconfirmed tail, which the pool has no root for
+  const s = await W.sync().catch((x) => x);
+  ok(s.balance === 0n, 'a node that serves a deposit the pool never saw does not make a balance appear', String(s.balance ?? s.message));
+  const real = mkNode(), w2 = mkWallet(real);
+  depositTo(real, w2.keys, E, 129); real.tip = 130;
+  ok((await w2.W.sync()).balance === E, 'while a real one in the same unconfirmed tail is shown at once');
+}
+
+console.log('\nthe head a read goes up to');
+{
+  const real = globalThis.fetch;
+  const head = (n) => async () => ({json: async () => ({jsonrpc: '2.0', id: 1, result: '0x' + n.toString(16)})});
+  globalThis.fetch = (u, i) => ({'https://a.test': head(2 ** 40), 'https://b.test': head(130), 'https://c.test': head(131)})[u](u, i);
+  ok(await lib.headOf(['https://a.test', 'https://b.test', 'https://c.test']) === 130, 'is the lower of two nodes’ answers, so one node cannot send a read through blocks that do not exist');
+  ok(await lib.headOf(['https://b.test']) === 130, 'and one node is enough when it is the only one');
+  globalThis.fetch = real;
 }
 
 console.log('\nreads sent in one batch');

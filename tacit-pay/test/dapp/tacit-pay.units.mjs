@@ -51,6 +51,38 @@ ok(nm.looksName('alice.com') && !nm.looksName('tacit1qq') && !nm.looksName('a b.
 ok(/\.base\.eth are not supported/.test(nm.nameHint('x.base.eth')) && /ends in \.wei, \.gwei or \.eth/.test(nm.nameHint('x.com')), 'and the refusal names the .base.eth case apart');
 ok(nm.noteOf('a\u202Eb\nc\td') === 'ab c d' && nm.noteOf('\u200Bx\u200F') === 'x' && nm.noteOf('  rent  ') === 'rent' && nm.noteOf('y'.repeat(80)).length === 60 && nm.noteOf(null) === '', 'a note loses control and invisible formatting characters, collapses spaces, and keeps 60 characters');
 
+console.log('\ncombining a balance held in parts');
+const combinePlan = vm.runInNewContext(`${cut('function combinePlan(', '\nfunction maxSpend(')}\ncombinePlan`, {BigInt, Number});
+const W = 10n ** 15n;
+ok(combinePlan(5n * 10n ** 12n, [W, 2n * W]) === null && combinePlan(5n * 10n ** 12n, [W]) === null && combinePlan(0n, []) === null, 'a balance in one or two parts needs nothing');
+const cp = combinePlan(5n * 10n ** 12n, [4n * W, W, W, W, W]);
+ok(cp.parts === 5 && cp.steps === 4 && cp.cost === 20n * 10n ** 12n && cp.after === 8n * W - 20n * 10n ** 12n, 'five parts take four steps, each paying the fee once', JSON.stringify({...cp, cost: String(cp.cost), after: String(cp.after)}));
+ok(combinePlan(null, [W, W, W]).cost === 0n && combinePlan(0n, [W, W, W]).steps === 2, 'with no fee known yet, or none (the wallet pays the gas), the steps still count');
+ok(combinePlan(2n * W, [W, W, W]) === null && combinePlan(W, [W, W, W]).after === W, 'and it is not offered when the fees would eat the balance');
+
+console.log('\nwhy an amount cannot be spent');
+{
+  const w = vm.runInNewContext(`${cut('function plan(', '\nfunction maxSpend(')}\nwhyNot`, {BigInt, Number});
+  const parts = (n) => Array(n).fill(W);
+  ok(w(W, 0n, 2n * W, parts(2)) === null, 'two parts, one of them enough: it can be spent');
+  ok(w(9n * W, 0n, 12n * W, parts(12)) === null, 'twelve parts for nine: the combining a payment does by itself covers it');
+  ok(w(10n * W, 0n, 12n * W, parts(12)) === 'parts', 'twelve parts for ten: the balance covers it, but only after combining first');
+  ok(w(20n * W, 0n, 12n * W, parts(12)) === 'short', 'and twenty from twelve is short, not fragmented');
+}
+
+console.log('\nthe onchain registry of public nodes');
+{
+  const {AbiCoder} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href), coder = AbiCoder.defaultAbiCoder();
+  const unhex = (h) => Uint8Array.from(h.replace(/^0x/, '').match(/../g) || [], (x) => parseInt(x, 16)), big = (b) => b.reduce((x, y) => (x << 8n) | BigInt(y), 0n);
+  const reg = vm.runInNewContext(`${cut('const abiStrings =', '\nasync function readRegistry')}\n({ abiStrings, abiStringLists, topOf, goodUrl })`, {Number, TextDecoder, Error, big, unhex, Set, RegExp});
+  const list = ['https://a.example', 'https://b.example/path', ''], lists = [['https://x.example'], [], ['https://y.example', 'https://z.example']];
+  ok(JSON.stringify(reg.abiStrings(...reg.topOf(coder.encode(['string[]'], [list])))) === JSON.stringify(list), 'a string[] reply decodes as the encoder wrote it');
+  ok(JSON.stringify(reg.abiStringLists(...reg.topOf(coder.encode(['string[][]'], [lists])))) === JSON.stringify(lists), 'and a string[][] reply, empty lists included');
+  let threw = false; try { reg.abiStrings(...reg.topOf('0x' + '00'.repeat(31) + '20' + '00'.repeat(31) + '05')); } catch { threw = true; }
+  ok(threw, 'a reply that claims more than it holds is refused, not read past its end');
+  ok(reg.goodUrl('https://node.example/v1') && !reg.goodUrl('http://node.example') && !reg.goodUrl('https://a b') && !reg.goodUrl('javascript:alert(1)') && !reg.goodUrl(''), 'only https URLs without spaces are taken');
+}
+
 console.log('\na log read that failed');
 const logFailure = vm.runInNewContext(`${cut('function logFailure(', '\nasync function getLogs(')}\nlogFailure`, {JSON, Math, Number, String});
 const err = (...msgs) => Object.assign(new Error(msgs[0]), {all: msgs.map((m) => Object.assign(new Error(m), {rpc: {data: ''}}))});

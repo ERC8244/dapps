@@ -299,7 +299,7 @@ console.log('the chain, before anything is proved');
   await until(p, () => /Wallet/.test(document.querySelector('#f-max')?.textContent || ''));
   await p.fill('#f-samt', '0.01'); await p.fill('#f-sto', PAYEE);
   await p.click('#f-go');
-  await until(p, () => /could not be fetched|proving key/i.test(document.querySelector('#status').textContent), null, 30e3);
+  await until(p, () => /could not be downloaded|proving key/i.test(document.querySelector('#status').textContent), null, 30e3);
   const l = await log(p), sw = l.indexOf('0:wallet_switchEthereumChain'), add = l.indexOf('0:wallet_addEthereumChain');
   ok(sw >= 0 && add > sw && l.lastIndexOf('0:wallet_switchEthereumChain') > add, 'the wallet is switched, the chain added, and switched to', l.join());
   ok(await p.evaluate(() => window.__added?.chainName === 'Robinhood Chain' && window.__added?.nativeCurrency?.symbol === 'ETH' && /^https:\/\//.test(window.__added?.rpcUrls?.[0])), 'with the chain’s name, currency and a node');

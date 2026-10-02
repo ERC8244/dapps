@@ -49,7 +49,7 @@ ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c
 
 // Each chain a hundred blocks past the pool's deployment with nothing in the pool: enough for the page to read, and
 // a router that names BOX0 as the deposit address.
-const seen = new Set();
+const seen = new Set(), DOWN = new Set();
 const TIP = {base: 51864114, robinhood: 73991761, ethereum: 26069345};
 // A tacit1 record with only the pool lane (flags 0x04), as a name may publish.
 const POOLONLY = b32m('tacit', [0, 0x04, ...Array(66).fill(0), ...unb32(DEV_TACIT1).slice(-97)]);
@@ -71,8 +71,11 @@ const RECORDS = {
 const coder = AbiCoder.defaultAbiCoder();
 const PAYEE = '0xC1D6F3AC3dFd66bb264f732CB5581DE3E232CC21', PAYEE2 = '0x3e407f4158440F1e5a9E6BA98b0198AEA6d837E3';
 const POINTS = {[namehash('bob.wei')]: PAYEE, [namehash('bob.gwei')]: PAYEE2, [namehash('direct.eth')]: PAYEE, [namehash('sub.parent.eth')]: PAYEE2, [namehash('zero.wei')]: '0x' + '00'.repeat(20), [namehash('pool.wei')]: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9'};
+const ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12', ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288';
 const answer = (host, {method, params}) => {
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
+  if (to === ZRPC && data === '0xd77e4c79') return coder.encode(['string[]'], [['https://registry-eth.example', 'http://insecure.example', 'https://ethereum-rpc.publicnode.com']]);
+  if (to === ZEND && data.startsWith('0xc03c2d74')) return coder.encode(['string[][]'], [[['https://registry-base.example'], ['https://registry-rh.example'], ['https://registry-logs.example']]]);
   if ([WNS, GNS, R_DIRECT].includes(to) && data.startsWith('0x59d1d43c')) {
     const rec = RECORDS['0x' + data.slice(10, 74)];
     return coder.encode(['string'], [rec ? rec(host) : '']);
@@ -102,6 +105,7 @@ const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard
 await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   const req = route.request(), url = new URL(req.url());
   seen.add(url.host);
+  if (DOWN.has(url.host)) return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"down"}'});
   if (req.method() === 'POST' && !/onrender\.com$/.test(url.host)) {
     const body = JSON.parse(req.postData() || '{}');
     const reply = (b) => { try { return {jsonrpc: '2.0', id: b.id, result: answer(url.host, b)}; } catch (e) { if (e.rpcError) return {jsonrpc: '2.0', id: b.id, error: e.rpcError}; throw e; } };
@@ -236,7 +240,7 @@ ok(t.includes('direct.eth') && t.includes(SHORT) && !!(await p.$('#req-pay')), '
 t = await card('pay=sub.parent.eth&amount=0.01');
 ok(t.includes('sub.parent.eth') && t.includes(SHORT) && !!(await p.$('#req-pay')), 'a .eth subname is read through its parent’s wildcard resolver');
 t = await card('pay=off.eth');
-ok(/keeps its records off-chain/.test(t) && !(await p.$('#req-pay')), 'a name whose records are off-chain says so and cannot be paid');
+ok(/keeps its records off chain/.test(t) && !(await p.$('#req-pay')), 'a name whose records are off chain says so and cannot be paid');
 t = await card('pay=nobody.eth');
 ok(/has no resolver set/.test(t) && !(await p.$('#req-pay')), 'a .eth name with no resolver says so');
 t = await card('pay=pay.base.eth');
@@ -326,6 +330,19 @@ await p.waitForFunction(() => /^tacit1/.test(document.querySelector('#wallet-lab
 await p.click('#tabs [data-tab="receive"]');
 ok((await p.textContent('#form .addr code')) === DEV_TACIT1, 'a wallet’s signature over the identity message opens the key every Tacit app derives');
 
+console.log('the onchain registry of public nodes');
+await p.waitForFunction(() => !!localStorage.getItem('tacit-pay-registry-v1'), null, {timeout: 20e3}).catch(() => {});
+const reg = JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-registry-v1') || 'null'));
+ok(!!reg && reg.rpc[1].includes('https://registry-eth.example') && reg.rpc[1].includes('https://registry-logs.example') && reg.rpc[8453][0] === 'https://registry-base.example' && reg.rpc[4663][0] === 'https://registry-rh.example', 'the registry’s lists are read at load, through the page’s own nodes, and kept', JSON.stringify(reg?.rpc));
+ok(!reg.rpc[1].includes('http://insecure.example') && reg.rpc[1].filter((u) => u === 'https://ethereum-rpc.publicnode.com').length === 1, 'an http entry is dropped');
+ok(!seen.has('registry-base.example'), 'while the page’s own nodes answer, the registry’s are not asked');
+for (const h of ['mainnet.base.org', 'base.gateway.tenderly.co', 'base-rpc.publicnode.com', 'base.drpc.org']) DOWN.add(h);
+await p.click('#chains [data-chain="8453"]');
+await p.click('#bal-re');
+await p.waitForFunction(() => /0 ETH|^0$/.test(document.querySelector('#bal .v')?.textContent || '') && !document.querySelector('#bal .err'), null, {timeout: 30e3}).catch(() => {});
+ok(seen.has('registry-base.example') && !(await p.$('#bal .err')), 'with every one of the page’s Base nodes down, the balance is read through a node the registry listed', (await p.textContent('#bal')).replace(/\s+/g, ' ').slice(0, 100));
+DOWN.clear();
+
 console.log('endpoints');
 await p.click('#settings-open');
 await p.fill('#e-rpc-8453', 'https://example.org/rpc');
@@ -335,7 +352,7 @@ await p.click('#settings-open');
 await p.click('#e-reset');
 ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')))) === '{}', 'and the defaults come back');
 
-const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|tacit\.finance|ipfs\.filebase\.io|ipfs\.io|[a-z0-9]+\.ipfs\.dweb\.link)$/.test(h));
+const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.io|[a-z0-9]+\.ipfs\.dweb\.link)$/.test(h));
 ok(!hosts.length, 'it talks only to its listed nodes, relays and proving-key mirrors', hosts.join(' '));
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();

@@ -30,6 +30,9 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   used, and a gap past it) when a key is opened and every few minutes, and says on the balance when something waits: a
   browser that issued nothing finds it from the key alone. A key issues only as many addresses as it can find again.
 - **Send** privately to a `tacit1…`, `bp1…` or name, or pay an `0x` address out of the pool.
+- **Combine.** A balance held in more than two parts cannot all be spent at once (a spend takes two). The balance says so
+  and one press combines them into one, through the relay or the wallet, with the steps and the fee shown first; spends
+  that need a few parts combined do it by themselves.
 - **Withdraw** any part to an address or to a name: a `.wei`, `.gwei` or `.eth` name is read to the Ethereum address it points
   to (its address record, not its Tacit one), shown in full beside the name, and read again just before the withdrawal, which
   is not sent if the name has moved.
@@ -200,6 +203,13 @@ to `127.0.0.1` and `localhost`, for a reader's own node). A gateway that injects
 that policy. The Tacit key is derived in the tab from the wallet's signature over the fixed identity message every
 Tacit app asks for (the same account opens the same key everywhere), is never stored, and never leaves the tab.
 
+**More nodes, from an onchain registry.** At load the page reads two curated lists on Ethereum, `zRpcList`
+(`0x8C7348D039f58C4e9cfA936EF410eec759213b12`, `rpcs()`) and `zEndpoints` (`0x00000051F365d898132f4ebF345Cd3968e02F288`,
+`listsOf` for `rpc` on Base and Robinhood Chain and `logs` on Ethereum), through its own fixed nodes with two agreeing,
+keeps the https entries for six hours, and uses them only after its own nodes, and only for ordinary reads: names and the
+pool's root checks go through the page's own nodes alone, so two listed nodes agreeing with each other cannot decide where
+money goes. A reader who sets their own nodes under Endpoints uses those alone.
+
 ## Build
 
 Everything below is run from this directory. `forge` comes from Foundry; the browser tests need `npm i` at the repo
@@ -241,7 +251,7 @@ Never run `forge build --force` or `forge clean` between `repin.sh` and the depl
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 263,886-byte page: about 61M gas, 0.061 ETH at 1 gwei, 0.006 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 276,488-byte page: about 64M gas, 0.064 ETH at 1 gwei, 0.0064 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press

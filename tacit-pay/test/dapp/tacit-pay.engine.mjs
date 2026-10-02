@@ -30,6 +30,20 @@ console.log('a spend that needs notes merged first');
   ok(/does not cover/.test(e.message) && proves === 0, 'an amount no merging can reach is refused before anything is proved or paid', `${e.message} · ${proves} proof(s)`);
 }
 
+console.log('\ncombining every part into one');
+{
+  const node = mkNode();
+  let proves = 0, steps = [];
+  const {W, keys} = mkWallet(node, {prove: async () => { proves++; throw new Error('PROVE-CALLED'); }});
+  for (const v of [4n, 1n, 1n, 1n, 1n]) depositTo(node, keys, v * E / 1000n, 101);
+  node.tip = 130; await W.sync();
+  const e = await W.consolidate({via: 'self', onStep: (m) => steps.push(m)}).catch((x) => x);
+  ok(/PROVE-CALLED/.test(e.message) && proves === 1 && steps[0] === 'Combining 1 of 4', 'five parts: the first of four steps is proved, and the step is said', `${e.message} · ${steps[0]}`);
+  const one = mkNode(), w1 = mkWallet(one, {prove: async () => { throw new Error('PROVE-CALLED'); }});
+  depositTo(one, w1.keys, E, 101); one.tip = 130; await w1.W.sync();
+  ok(await w1.W.consolidate({via: 'self', onStep: () => {}}) === 0, 'one part: nothing is proved and nothing is paid');
+}
+
 console.log('\na node that lags the pool by a block or two');
 {
   const node = mkNode();

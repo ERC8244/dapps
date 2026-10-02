@@ -44,7 +44,7 @@ by its measured speed), every flow in the repository's fork tests was proved aga
 verifier: shield, send, withdraw, merges, take-ins, links on all three chains, the real relay server, and a relay
 that misbehaves (`test/dapp/tacit-pay.fork.mjs`, `.links.mjs`, `.boxes.mjs`, `.relay.mjs`, `.keeper.mjs`).
 
-The release build itself (`dapp/page.html`, sha256 `15e9bbae74bf3932…`) was captured again on Base: shield into one's own balance, private
+The release build (`dapp/page.html`, sha256 `1b3495233c3380ee…`; its prover block is byte for byte the one captured here, pinned by the page as `a68b9f8d…`) was captured again on Base: shield into one's own balance, private
 send, withdraw, shield into someone else's balance, a link paid with no key, and both kinds of take-in. All seven proofs were
 valid by the deployed verifier and by snarkjs (checked twice, separately) and every transaction was mined; 72 of 72 tampered
 variants were refused by both verifiers.

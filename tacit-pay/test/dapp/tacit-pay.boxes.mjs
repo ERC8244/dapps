@@ -19,7 +19,7 @@ const A = await lab.page();
 await A.openKey(K1);
 await exchange(A);
 const standing = await A.textContent('#form .addr code');
-for (const label of ['Ann', 'Bob']) { await A.fill('#f-boxlabel', label); await A.click('#f-newbox'); await A.waitForSelector(`#form .rows li:has-text("${label}")`); }
+for (const label of ['Ann', 'Bob']) { await A.fill('#f-boxlabel', label); await A.click('#f-newbox', {timeout: 600e3}); await A.waitForSelector(`#form .rows li:has-text("${label}")`); }   // the button waits for every chain's history
 let rows = await rowsOf(A);
 ok(rows.length === 2 && rows[0].label === 'Bob' && rows[1].label === 'Ann', 'two one-time addresses are issued, newest first', rows.map((r) => r.label).join());
 ok(new Set([standing, ...rows.map((r) => r.addr)]).size === 3 && rows.every((r) => /^0x[0-9a-fA-F]{40}$/.test(r.addr)), 'each distinct from the standing address and from the other');
@@ -64,7 +64,7 @@ await D.openKey(K2);
 await exchange(D);
 for (let i = 1; i <= 20; i++) { await D.click('#f-newbox'); await D.waitForFunction((n) => document.querySelectorAll('#form .rows li').length === n, i, {timeout: 20e3}); }
 await D.click('#f-newbox');
-await D.waitForFunction(() => [...document.querySelectorAll('#toasts .toast')].some((t) => /addresses are out and unused/.test(t.textContent)), null, {timeout: 10e3}).catch(() => {});
-ok((await rowsOf(D)).length === 20 && (await D.$$eval('#toasts .toast', (t) => t.some((x) => /addresses are out and unused/.test(x.textContent)))), 'twenty are issued, then it says why there are no more until one is used');
+await D.waitForFunction(() => [...document.querySelectorAll('#toasts .toast')].some((t) => /No more addresses can be issued/.test(t.textContent)), null, {timeout: 10e3}).catch(() => {});
+ok((await rowsOf(D)).length === 20 && (await D.$$eval('#toasts .toast', (t) => t.some((x) => /No more addresses can be issued/.test(x.textContent)))), 'twenty are issued, then it says why there are no more until one is used');
 ok(![A, B, C, D].some((p) => p.errors.length), 'no page errors', [A, B, C, D].flatMap((p) => p.errors).join(' | '));
 finish(() => lab.close());

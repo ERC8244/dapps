@@ -3,7 +3,7 @@
    a batch fall back. The engine is taken out of dapp/page.html as it ships.
 
    Usage: node test/dapp/tacit-pay.engine.mjs                                                                       */
-import {mkNode, mkWallet, depositTo, lib, POOL, asset} from './engine-mock.mjs';
+import {mkNode, mkWallet, mkWorld, depositTo, sweepTo, fakeSweep, lib, POOL, asset} from './engine-mock.mjs';
 
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
@@ -145,6 +145,57 @@ console.log('\nreads sent in one batch');
   await rpc.batch([['eth_blockNumber', []], ['eth_chainId', []]]);
   ok(out.every((x) => !x.error) && hits.a === first, 'a node that will not take a batch is not asked for one again', `asked ${hits.a} time(s) in all`);
   globalThis.fetch = real;
+}
+
+console.log('\na transaction the wallet replaced lands under another hash');
+{
+  const {node, wallet} = mkWorld();
+  const FAKE = '0x' + 'ee'.repeat(32);
+  let fake = false;
+  const A = wallet(7, {send: (h) => (fake ? (fake = false, FAKE) : h)}), B = wallet(9);
+  await A.W.deposit({amount: E}); await A.W.deposit({amount: E});
+  // the hash the wallet hands back never lands; the replacement does. The clock moves 20 s at each look for it.
+  const realNow = Date.now; let skew = 0; Date.now = () => realNow() + skew;
+  const get = node.receipts.get.bind(node.receipts);
+  node.receipts.get = (h) => { if (h === FAKE) { skew += 20_000; return undefined; } return get(h); };
+  fake = true;
+  const r = await A.W.send({to: B.keys, amount: E / 2n, via: 'self'}).catch((x) => x);
+  Date.now = realNow;
+  ok(typeof r === 'string', 'the send is reported as landed, not as unconfirmed', r?.message || r);
+  const a = await A.W.sync(), b = await B.W.sync();
+  ok(a.balance === 3n * E / 2n && b.balance === E / 2n, 'and the balances show the one payment', `A ${a.balance} B ${b.balance}`);
+}
+
+console.log('\na head a few blocks behind the leaf count');
+{
+  const node = mkNode();
+  let lag = 0;
+  const {W, keys} = mkWallet(node, {head: async () => node.tip - lag});
+  depositTo(node, keys, E / 10n, 105); node.tip = 130;
+  await W.sync();
+  depositTo(node, keys, E / 10n, 133); node.tip = 135; lag = 4;      // the head two nodes agree on is before the new deposit
+  node.logReads.length = 0;
+  const s = await W.sync().catch((e) => e);
+  ok(!(s instanceof Error) && s.balance === E / 10n, 'the leaf count is read at that head, so nothing is inconsistent', s?.message || `balance ${s.balance}`);
+  ok(node.logReads.length && node.logReads.every((b) => b > 120), 'and nothing is rebuilt from the first block', `logs read from ${node.logReads.join(', ')}`);
+  lag = 0; node.tip = 140;
+  const s2 = await W.sync();
+  ok(s2.balance === E / 5n, 'the deposit shows once the head reaches it', `balance ${s2.balance}`);
+}
+
+console.log('\na made-up sweep into a deposit address, from a lying node');
+{
+  const node = mkNode();
+  const {W, keys} = mkWallet(node);
+  depositTo(node, keys, E / 10n, 101); node.tip = 130;
+  fakeSweep(node, keys, 20, E, 110);
+  await W.sync().catch(() => {});
+  ok(W.nextBox() === 1 && W.boxSpan() === 21, 'does not move the deposit addresses forward', `nextBox ${W.nextBox()} span ${W.boxSpan()}`);
+  const honest = mkNode();
+  const {W: H, keys: hk} = mkWallet(honest);
+  depositTo(honest, hk, E / 10n, 101); sweepTo(honest, hk, 5, E, 115); honest.tip = 130;
+  const s = await H.sync();
+  ok(s.balance === E + E / 10n && H.nextBox() === 6 && H.boxSpan() === 26, 'while a real one does', `balance ${s.balance} nextBox ${H.nextBox()} span ${H.boxSpan()}`);
 }
 
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);

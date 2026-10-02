@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-m0T+kEGD6o7V1xnW2kOb0p+Y2sHXD6nS+S/O2ojqZTQ=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-rRp/KrUUOhQornCyMY8/VDBx9uyj36DMGQq2C6qLlAk=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -192,7 +192,7 @@ input::placeholder { color: var(--mute); opacity: 1; }
 .rows .in { color: var(--ok); }
 .adv { margin-top: 12px; }
 .adv > summary { cursor: pointer; font-size: 12.5px; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; }
-.adv textarea { display: block; width: 100%; min-height: 64px; font: 12px/1.5 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 8px 10px; resize: vertical; }
+.adv textarea, #settings-body textarea { display: block; width: 100%; min-height: 64px; font: 12px/1.5 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 8px 10px; resize: vertical; }
 .foot-a { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; margin-top: 14px; }
 .sk { display: inline-block; width: var(--w, 6ch); max-width: 100%; height: .9em; vertical-align: -.08em; border-radius: 2px; background: var(--hair); }
 .stale { color: var(--mute); }
@@ -258,7 +258,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
       <div class="bal" id="bal"></div>
       <div id="bal-note"></div>
       <div class="seg sub" role="tablist" aria-label="Action" id="tabs"></div>
-      <div id="form"><p class="note old">This page needs a current browser (2021 or later). Update yours, or open it in another.</p></div>
+      <div id="form"><p class="note old">This page needs a current browser (2022 or later). Update yours, or open it in another.</p></div>
       <div class="status" role="status" aria-live="polite" id="status" tabindex="-1"></div>
     </section>
 
@@ -1509,7 +1509,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // REFUND_GAP past the last one used, so a wallet rebuilt from the key finds them all.
   const boxes = new Map();
   const boxTopics = () => {
-    for (let i = 0; i < saved.nextRefund + REFUND_GAP; i++) if (![...boxes.values()].includes(i)) boxes.set(topicOf(boxOf(i)), i);
+    for (let i = 0, n = Math.max(saved.nextRefund + REFUND_GAP, ...boxIdx.map((x) => x + 1)); i < n; i++) if (![...boxes.values()].includes(i)) boxes.set(topicOf(boxOf(i)), i);
     return [...boxes.keys()];
   };
 
@@ -1588,9 +1588,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       const r = await keeperGet(`/events?from=${from}`);
       if (Number(r.chainId) !== chain.chainId || lc(r.pool) !== lc(chain.pool)) throw new Error('index is for another pool');
       const through = Math.min(Number(r.through), safe);
-      if (!Number.isFinite(through) || !Array.isArray(r.events)) throw new Error('the index is not usable');
+      if (!Number.isSafeInteger(through) || !Array.isArray(r.events)) throw new Error('the index is not usable');
       if (through < from) break;
-      const evs = r.events.filter((e) => e.block >= from && e.block <= through && /^0x[0-9a-f]{64}$/i.test(String(e.tx)));
+      const evs = r.events.filter((e) => Number.isSafeInteger(e.block) && e.block >= from && e.block <= through && /^0x[0-9a-f]{64}$/i.test(String(e.tx)));
       const ts = evs.filter((e) => e.kind === 'transact').map((e) => ({
         nf: [BigInt(e.nf0), BigInt(e.nf1)], outLeaf: [BigInt(e.outLeaf0), BigInt(e.outLeaf1)], firstIndex: Number(e.firstIndex),
         memo: [unhex(e.memo0 || '0x'), unhex(e.memo1 || '0x')], block: e.block, tx: e.tx,
@@ -1599,8 +1599,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         box: topicOf(e.box), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx,
       }));
       const next = { ...absorb(cand, ts, rs), block: through };
-      if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; boxTopics(); continue; }
       if (next.tree.size !== cand.tree.size) await held(next.tree);
+      if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; boxTopics(); continue; }
       cand = next;
     }
     if (cand !== saved) { saved = cand; persist(); }
@@ -1629,28 +1629,29 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   let boxIdx = [0], boxW = {}, poolWei = null, lastKey = null, strikes = 0, lastRebuild = 0, feedPause = 0;
   const sync = (idx) => { if (idx) boxIdx = idx; return (reading = reading.catch(() => {}).then(readNew)); };
   // The chain's head: the pool's leaf count, what waits at some deposit addresses and the ETH the pool holds, in one
-  // Multicall3 call (or, where a node cannot answer it, one batch), then the block number the node reports. The block is read last, so the logs read
-  // up to it can only be longer than the leaf count. It is the node's own number: a contract's block.number is the other
-  // layer's on some chains.
+  // Multicall3 call (or, where a node cannot answer it, one batch) at the head read first, so the logs read up to that head
+  // hold exactly the leaves counted. The head is a node's own number: a contract's block.number is the other layer's on
+  // some chains.
   const MULTICALL = '0xcA11bde05977b3631167028862bE2a173976CA11';
   async function headRead(indexes) {
+    const tip = chain.head ? await chain.head() : Number(BigInt(await chain.rpc('eth_blockNumber'))), at = '0x' + tip.toString(16);
     const bal = (a) => [MULTICALL, calldata('getEthBalance(address)', ['address'], [a])];
     const calls = [[chain.pool, '0x' + hex(selector('nextIndex()'))], ...indexes.map((i) => bal(boxOf(i))), bal(chain.pool)];
     let leaves = null, waiting = null, pool = null;
     try {
-      const rs = aggregate(await chain.rpc('eth_call', [{ to: MULTICALL, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [calls.map(([t, d]) => [t, 1n, d])]) }, 'latest']));
+      const rs = aggregate(await chain.rpc('eth_call', [{ to: MULTICALL, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [calls.map(([t, d]) => [t, 1n, d])]) }, at]));
       if (rs.length === calls.length && rs[0].ok) {
         leaves = big(rs[0].data); waiting = Object.fromEntries(indexes.map((i, k) => [i, rs[k + 1].ok ? big(rs[k + 1].data) : null]));
         pool = rs[rs.length - 1].ok ? big(rs[rs.length - 1].data) : null;
       }
     } catch {}
     if (leaves == null) {
-      leaves = await poolCall('nextIndex()', [], []).then(BigInt, () => null);
+      leaves = await chain.rpc('eth_call', [{ to: chain.pool, data: calldata('nextIndex()', [], []) }, at]).then((x) => BigInt(x)).catch(() => null);
       const got = await chain.rpc.batch([...indexes.map((i) => ['eth_getBalance', [boxOf(i), 'latest']]), ['eth_getBalance', [chain.pool, 'latest']]]);
       waiting = Object.fromEntries(indexes.map((i, k) => [i, got[k].error ? null : BigInt(got[k].result)]));
       pool = got[indexes.length].error ? null : BigInt(got[indexes.length].result);
     }
-    return { tip: chain.head ? await chain.head() : Number(BigInt(await chain.rpc('eth_blockNumber'))), leaves, waiting, pool };
+    return { tip, leaves, waiting, pool };
   }
   async function readNew() {
     const { tip, leaves, waiting, pool } = await headRead(boxIdx), safe = tip - chain.confirmations, key = `${tip}:${leaves}:${boxIdx.join()}`;
@@ -1681,9 +1682,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         boxTopics();
         const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z), getLogs(chain.rpc, chain.router, [T_RECEIVED], a, z)]);
         const next = { ...absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived).filter((r) => boxes.has(r.box))), block: z };
+        if (next.tree.size !== saved.tree.size) await held(next.tree);
         // A deposit address used in this window widens the set watched: read the same window again with the longer list.
         if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; continue; }
-        if (next.tree.size !== saved.tree.size) await held(next.tree);
         saved = next; view = null;
         persist();
       }
@@ -1741,8 +1742,13 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // spent others does not count); 'no' if it reverted; 'wrong' if it is some other transaction; 'pending' if the
   // chain has not shown it within three minutes.
   async function landed(hash, nfs = [], expect = null) {
+    // A wallet may replace or speed up the transaction, so its hash never lands while the payment does: the pool's record
+    // of the first nullifier (a deposit's is a dummy, unique to this transaction) says whether it did.
+    const nf = expect?.nf?.[0] ?? nfs[0];
+    const spent = async () => nf && BigInt(await chain.rpc('eth_call', [{ to: chain.pool, data: calldata('nullified(bytes32)', ['uint256'], [BigInt(nf)]) }, 'latest']).catch(() => '0x0')) !== 0n;
     for (let i = 0, end = Date.now() + 180_000; Date.now() < end; i++) {
       const r = await chain.rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
+      if (!r && i % 3 === 2 && await spent()) return 'yes';
       if (r) {
         if (r.status !== '0x1') return 'no';
         if (expect) {
@@ -2100,6 +2106,7 @@ function errText(e) {
   for (let x = e; x; x = x.cause) for (const d of [x?.data, x?.data?.data, x?.rpc?.data, x?.rpc?.data?.data, x?.error?.data]) {
     if (typeof d === 'string' && REVERTS[d.slice(2, 10).toLowerCase()]) return REVERTS[d.slice(2, 10).toLowerCase()];
   }
+  if (e?.relay) return 'The relay could not do that just now. Try again, or send it from your wallet.';
   const m = String(e?.shortMessage || e?.message || e || 'Something went wrong');
   if (codeOf(e) === 4001 || /user (rejected|denied)|rejected the request|denied transaction/i.test(m)) return 'Cancelled in your wallet.';
   if (codeOf(e) === -32002 || /already (pending|processing)|request .{0,40}pending/i.test(m)) return 'Your wallet already has a request open. Open its popup or toolbar icon, approve or reject it there, then try again.';
@@ -2108,8 +2115,7 @@ function errText(e) {
   if (/rate.?limit|too many requests|\b429\b/i.test(m)) return 'That network is busy right now. Try again in a moment.';
   if (/timed? ?out|timeout|aborted/i.test(m)) return 'The network took too long to answer. Try again.';
   if (shortOfMemory(e)) return 'Proving stopped on this device, likely short of memory. Close other tabs and try again.';
-  if (e?.relay) return 'The relay could not do that just now. Try again, or send it from your wallet.';
-  if (e?.rpc || e?.all) return 'A node answered with an error. Try again in a moment.';
+  if (e?.rpc || e?.all || e instanceof SyntaxError || e instanceof TypeError) return 'A node answered with an error. Try again in a moment.';
   return m.replace(/^Error:\s*/, '').slice(0, 240);
 }
 const relayTrouble = (e) => /relay|failed to fetch|\b5\d\d\b|timed? ?out/i.test(String(e?.message || e));
@@ -2226,11 +2232,17 @@ function prover(files = null) {
     // The workers run the code in the document's prover block, which the module's own hash pin does not cover: it is checked here.
     const src = $('#prover').textContent;
     if (await sha256hex(utf8(src)) !== PROVER_SHA256) throw new Error('The proving code in this page is not the code it was published with. Open the page from its contract again.');
+    if (proverP !== made) throw new Quiet('replaced');
     const pool = proverPool(src, Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1)));
-    try { await pool.load(zkey, wasm); } catch (e) { pool.stop(); throw e; }
+    // A worker the browser stops without an error never answers here either: past the deadline the workers are replaced.
+    let timer;
+    try { await Promise.race([pool.load(zkey, wasm), new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Proving could not get ready on this device. Nothing was sent. Press the button to try again.'), { stalled: true })), 180_000); })]); }
+    catch (e) { pool.stop(); throw e; }
+    finally { clearTimeout(timer); }
+    if (proverP !== made) { pool.stop(); throw new Quiet('replaced'); }
     Object.assign(PROVER, { state: 'ready', saved: true }); paintDevice();
     return pool;
-  })().catch((e) => { if (proverP === made) proverP = null; Object.assign(PROVER, { state: 'idle', err: e }); paintDevice(); throw e; });
+  })().catch((e) => { if (proverP === made) { proverP = null; Object.assign(PROVER, { state: 'idle', err: e }); paintDevice(); } throw e; });
   return made;
 }
 // Every proof is checked against the pool's own verifier before anything is sent.
@@ -2250,7 +2262,7 @@ async function prove(input, chain) {
   PROVER.ms = performance.now() - t; paintDevice();
   const { proof: p, publicSignals } = out;
   const ok = await chain.rpc('eth_call', [{ to: VERIFIER, data: VERIFY([p.pi_a.slice(0, 2), [[p.pi_b[0][1], p.pi_b[0][0]], [p.pi_b[1][1], p.pi_b[1][0]]], p.pi_c.slice(0, 2), publicSignals]) }, 'latest']);
-  if (BigInt(ok) !== 1n) throw new Error('The proof did not check out against the pool’s verifier, so nothing was sent.');
+  if (!/^0x0{63}1$/i.test(String(ok))) throw new Error('The proof did not check out against the pool’s verifier, so nothing was sent.');
   return out;
 }
 // Fetched ahead of the press, unless the reader has asked their browser to save data.
@@ -2367,14 +2379,15 @@ async function walletReady(c, say) {
 const signerFor = (c) => ({
   get address() { return S.account; },
   ready: async () => { if (!S.account) await connect(); await onChain(c.chainId); },
-  send: ({ to, data, value }) => S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.account, to, ...(data ? { data } : {}), value: '0x' + BigInt(value).toString(16) }] }),
+  send: ({ to, data, value }) => S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.account, to, ...(data ? { data } : {}), value: '0x' + BigInt(value).toString(16), chainId: '0x' + c.chainId.toString(16) }] }),
 });
 
 // The Tacit key is a hash of the wallet's signature over one fixed message, the same in every Tacit app, so the same
 // account opens the same key wherever it signs. A first signature is taken only when a second one is the same.
 const IDENTITY = ['Tacit identity', '', 'Signing this creates your Tacit private key. Anyone who has this signature controls all of your Tacit funds.', '', 'Sign it only in a Tacit app you trust. Every Tacit app asks for exactly this message.', '', 'network: mainnet', 'version: 1'].join('\n');
+let SIGNIN = 0;
 async function openWithWallet(say = () => {}) {
-  const a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
+  const gen = ++SIGNIN, was = S.key, a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
   const code = await p.request({ method: 'eth_getCode', params: [a, 'latest'] }).catch(() => '0x');
   if (/^0x[0-9a-f]+$/i.test(code) && !/^0x0*$/i.test(code) && !/^0xef0100[0-9a-f]{40}$/i.test(code)) throw new Error('A smart-contract wallet signs differently each time, so it cannot hold a Tacit key. Use an ordinary account.');
   const anchor = `tacit-eth-identity-anchor:${a}`, first = !store.get(anchor);
@@ -2382,7 +2395,8 @@ async function openWithWallet(say = () => {}) {
     say(text);
     const b = unhex(await ask(p, 'personal_sign', ['0x' + hex(msg), a], say));
     if (b.length !== 65) throw new Error('Your wallet signs in a format that cannot hold a Tacit key (a smart-contract wallet does). Use an ordinary account.');
-    if (b[64] < 27) b[64] += 27;
+    if (b[64] === 0 || b[64] === 1) b[64] += 27;
+    if (b[64] !== 27 && b[64] !== 28) throw new Error('Your wallet signs in a format that cannot hold a Tacit key. Use an ordinary account.');
     return b;
   };
   const sig = await signed('Sign the message in your wallet to open your Tacit key.');
@@ -2396,6 +2410,7 @@ async function openWithWallet(say = () => {}) {
   const pub = hex(pubOf(key));
   if (store.get(anchor) && store.get(anchor) !== pub) throw new Error('This account opened a different Tacit key here before, so nothing was opened.');
   store.set(anchor, pub);
+  if (gen !== SIGNIN || S.key !== was) throw new Quiet('another key was opened meanwhile');
   setKey(key, a);
 }
 function openWithKey(text) {
@@ -2405,14 +2420,19 @@ function openWithKey(text) {
 }
 function setKey(key, account) {
   const pool = poolKeys(key);
+  if (S.key) { for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const k of Object.keys(DRAFT)) delete DRAFT[k]; }
   S.key = { pool, address: tacitAddress(key, pool), account };
+  RECV.s = null; RECV.for = '';
   Object.assign(TIMES, vget('times') || {});
   for (const c of CHAINS) CH[c.chainId] = { last: vget('seen')?.[c.chainId] ?? null };
   toast(`Opened ${short(S.key.address, 8)}`);
   render(); syncAll(true);
   if (PROVER.saved) warm();
 }
-function lock() { S.key = null; for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const k of Object.keys(DRAFT)) delete DRAFT[k]; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
+function lock() {
+  // During an action the key is needed to its end: the lock is kept and taken once it is over.
+  if (S.busy) { S.lockAfter = true; toast('The key locks once the current action finishes.'); return; }
+  S.key = null; RECV.s = null; RECV.for = ''; for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const k of Object.keys(DRAFT)) delete DRAFT[k]; for (const c of CHAINS) CH[c.chainId] = {}; render(); }
 
 // ── per chain ───────────────────────────────────────────────────────────────────────────────────────────────
 // A relay the reader set is held to the fee ceiling but not to the default relay's address.
@@ -2426,10 +2446,11 @@ function syncChain(c, fresh = false) {
   if (!key || (st.syncing && !fresh)) return st.syncing || Promise.resolve();
   const W = walletOn(c);
   const p = st.syncing = (st.syncing || Promise.resolve()).catch(() => {}).then(async () => {
-    const everyone = !st.scanAt || Date.now() - st.scanAt > 300_000, idx = everyone ? Array.from({ length: W.boxSpan() }, (_, i) => i) : boxIndexes(st);
+    if (S.key !== key) return;
+    const span = W.boxSpan(), everyone = !st.scanAt || Date.now() - st.scanAt > 300_000 || st.scanSpan !== span, idx = everyone ? Array.from({ length: span }, (_, i) => i) : boxIndexes(st);
     const [s, q] = await Promise.all([W.sync(idx), relayOf(c) ? W.quote().catch((e) => ({ error: e })) : null]);
     const bw = W.boxBalances();
-    if (everyone && idx.every((i) => bw[i] != null)) st.scanAt = Date.now();
+    if (everyone && idx.every((i) => bw[i] != null)) { st.scanAt = Date.now(); st.scanSpan = span; }
     st.boxW = { ...st.boxW, ...Object.fromEntries(Object.entries(bw).filter(([, v]) => v != null)) };
     const waiting = st.boxW[0] ?? null;
     if (S.key !== key) return;
@@ -2513,20 +2534,25 @@ const boxList = (st) => {
   const have = boxes().issued, known = new Set(have.map((x) => x.i));
   return [...have, ...Object.keys(st.boxW || {}).map(Number).filter((i) => i > 0 && !known.has(i) && st.boxW[i] > 0n).map((i) => ({ i, label: '' }))].sort((a, b) => b.i - a.i);
 };
-// The next deposit address index this key can hand out and find again from the key alone, or null when the gap is full.
+// The highest deposit address with ETH waiting at it on any chain; 0 when none.
+const paidBox = () => Math.max(0, ...CHAINS.flatMap((c) => Object.entries(CH[c.chainId].boxW || {}).filter(([, v]) => v > 0n).map(([i]) => Number(i))));
+// The next deposit address index this key can hand out and find again from the key alone on every chain (each chain is read
+// as far as the addresses used on it plus the gap, so the lowest of them bounds what can be issued), or null when it is full.
 function nextBoxIndex() {
   const ws = CHAINS.map((c) => walletOn(c)), limit = Math.min(...ws.map((w) => w.boxSpan())) - 1;
-  const next = Math.max(Math.max(0, ...boxes().issued.map((x) => x.i)) + 1, ...ws.map((w) => w.nextBox()));
+  const next = Math.max(Math.max(0, ...boxes().issued.map((x) => x.i)) + 1, paidBox() + 1, ...ws.map((w) => w.nextBox()));
   return next > limit ? null : next;
 }
-const watchBox = (i) => { for (const c of CHAINS) if (relayOf(c)) walletOn(c).watch(i).catch(() => {}); };
+const WATCHED = new Set();
+const watchBox = (i, cs = CHAINS) => { for (const c of cs) { const k = `${c.chainId}:${i}`; if (relayOf(c) && !WATCHED.has(k)) { WATCHED.add(k); walletOn(c).watch(i).catch(() => WATCHED.delete(k)); } } };
 let issuing = false;
 function issueBox(label) {
   if (issuing) return;
   issuing = true;
   try {
+    if (!historyRead()) return toast('Your history is still being read, so no address was issued. Try again in a moment.', true);
     const b = boxes(), next = nextBoxIndex();
-    if (next == null) return toast(`${b.issued.length} addresses are out and unused. Once one is used, more open up: that keeps each one findable from your key alone.`, true);
+    if (next == null) return toast('No more addresses can be issued right now: each is issued only as far as your key can find it again on every chain.', true);
     b.issued.push({ i: next, label: label.slice(0, 40), at: Date.now() });
     vset('boxes', b);
     if (boxes().issued.length !== b.issued.length) return toast('This browser would not keep the address, so none was issued.', true);
@@ -2542,7 +2568,7 @@ function issueBox(label) {
 const historyRead = () => CHAINS.every((c) => CH[c.chainId].at != null || (CH[c.chainId].fails || 0) >= 2);
 function linkBox() {
   if (!historyRead()) return undefined;
-  const b = boxes(), used = Math.max(...CHAINS.map((c) => walletOn(c).nextBox()));
+  const b = boxes(), used = Math.max(paidBox() + 1, ...CHAINS.map((c) => walletOn(c).nextBox()));
   let i = vget('linkbox')?.i;
   if (i == null || i < used || !b.issued.some((x) => x.i === i)) {
     i = nextBoxIndex();
@@ -2674,7 +2700,7 @@ async function act(btn, fn, target = '#status') {
   if (S.busy) return;
   const status = $(target), c = S.chain;
   S.busy = true; paintChains(); paintTabs();
-  $$('#form button, #form input, #req button').forEach((x) => { x.disabled = true; });
+  $$('#form button, #form input, #req button, #req input').forEach((x) => { x.disabled = true; });
   btn.setAttribute('aria-busy', 'true');
   let label = '', since = 0, proving = false, drawn = '';
   // The line a screen reader announces is drawn when the step changes; the seconds and the key's progress change inside a
@@ -2690,9 +2716,9 @@ async function act(btn, fn, target = '#status') {
   const step = (m) => { label = STEPS[m] || m; proving = m === 'proving'; since = performance.now(); show(); };
   const tick = setInterval(show, 250);
   let ok = false, syncAfter = false;
-  try { step('Getting ready'); await cur().syncing?.catch(() => {}); await fn(step, c); ok = true; S.sent = null; }
+  try { step('Getting ready'); await cur().syncing?.catch(() => {}); await fn(step, c); ok = true; if (S.sent?.c === c) S.sent = null; }
   catch (e) {
-    if (e?.unconfirmed && (target === '#req-status' || S.tab === 'shield')) S.sent = { h: e.unconfirmed, c };
+    if (e?.unconfirmed) S.sent = { h: e.unconfirmed, c };
     const offer = relayTrouble(e) && viaOf(S.tab) !== 'self' && (S.tab === 'send' || S.tab === 'withdraw');
     if (e?.feeMoved || e?.unconfirmed) syncAfter = true;
     mount(status, e instanceof Quiet ? '' : e?.unconfirmed ? html`<span>${errText(e)}</span> ${txLink(c, e.unconfirmed)}` : html`<span class="err">${errText(e)}</span>${offer ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}${/from disk/.test(errText(e)) ? html` <button class="link" type="button" id="act-disk">Load them from disk</button>` : ''}`);
@@ -2700,6 +2726,7 @@ async function act(btn, fn, target = '#status') {
     clearInterval(tick);
     btn.removeAttribute('aria-busy');
     S.busy = false;
+    if (S.lockAfter) { S.lockAfter = false; lock(); }
     const kept = status.innerHTML;
     render();
     status.innerHTML = kept;
@@ -2753,7 +2780,7 @@ function formShield(f) {
     $$('[data-take]', f).forEach((b) => b.onclick = () => act(b, async (step) => { await walletReady(c, step); const h = await W.sweep({ index: Number(b.dataset.take), onStep: step }); done(c, h, 'Taken in.'); }));
     $('#f-check').onclick = async () => { st.scanAt = 0; await Promise.all(boxIndexes(st).map((i) => W.watch(i).catch(() => {}))); await syncChain(c, true); mount($('#status'), waitingTotal() > 0n ? `${fmt(waitingTotal())} ETH is waiting at your deposit addresses.` : 'Nothing is waiting at your deposit addresses.'); renderForm(); };
     $('#f-sweep')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => { await walletReady(c, step); const h = await W.sweep({ index: 0, onStep: step }); done(c, h, 'Taken in.'); }));
-    if (relayOf(c)) boxIndexes(st).forEach((i) => W.watch(i).catch(() => {}));
+    boxIndexes(st).forEach((i) => watchBox(i, [c]));
   } else {
     mount(f, html`${seg}
       ${amountField('f-samt', 'Amount', S.account ? html`<button type="button" id="f-max">Wallet <span id="f-wb" class="num">…</span> ETH</button>` : html`<button type="button" id="f-conn">Connect a wallet</button>`)}
@@ -2884,6 +2911,7 @@ function formWithdraw(f) {
     shown = fee;
     rc.hidden = true; mount(rc, ''); go.disabled = true;
     const say = (v) => { mount(rc, v); rc.hidden = false; };
+    if (S.sent?.c === c) { say(sentNote(c)); return sentWire(renderForm); }
     // A name is read to the address it points to, and that address is what the rest of the form checks and shows.
     const t = raw && looksName(raw) ? destOf(raw) : null, dest = t?.addr ?? raw;
     if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
@@ -2907,8 +2935,10 @@ function formWithdraw(f) {
     // A name is read again just before the withdrawal: one that moved since it was shown is not paid.
     let dest = raw;
     if (looksName(raw)) {
-      const shownTo = destOf(raw), now = await addressOfName(raw);
-      if (shownTo.addr && lc(shownTo.addr) !== lc(now.addr)) { ADDRS.delete(raw.toLowerCase()); throw new Error(`${now.name} now points somewhere else, so nothing was sent. Check it and try again.`); }
+      const shownTo = destOf(raw);
+      if (!shownTo.addr) throw new Error(shownTo.error || `${raw} is still being read. Try again in a moment.`);
+      const now = await addressOfName(raw);
+      if (lc(shownTo.addr) !== lc(now.addr)) { ADDRS.delete(raw.toLowerCase()); throw new Error(`${now.name} now points somewhere else, so nothing was sent. Check it and try again.`); }
       if (!payable(now.addr)) throw new Error(`${now.name} points to an address that cannot receive a withdrawal.`);
       dest = now.addr;
     }
@@ -3070,12 +3100,15 @@ async function boxPay(r, a, ch, step) {
   const n = BigInt('0x' + r.n);
   const got = await rpcOn(ch)('eth_call', [{ to: ROUTER, data: calldata('receiveBoxOf(uint256,uint16)', ['uint256', 'uint16'], [n, RECEIVE_FEE_BPS]) }, 'latest']);
   if (lc('0x' + String(got).slice(-40)) !== lc(r.box)) throw new Error(`The pool’s router on ${ch.full} does not confirm that deposit address, so nothing was sent.`);
+  const held = () => rpcOn(ch)('eth_getBalance', [r.box, 'latest']).then(BigInt).catch(() => null), before = await held();
   step('confirm in your wallet');
   const h = await signerFor(ch).send({ to: r.box, value: a });
   step('waiting for the block');
   for (let i = 0, end = Date.now() + 180_000; Date.now() < end; i++) {
     const rc = await rpcOn(ch)('eth_getTransactionReceipt', [h]).catch(() => null);
     if (rc) { if (rc.status !== '0x1') throw new Error('The transfer did not go through. Nothing was sent.'); return h; }
+    // A transfer the wallet replaced or sped up lands under another hash: the address's balance says so.
+    if (i % 3 === 2 && before != null) { const now = await held(); if (now != null && now >= before + a) return h; }
     await sleep(Math.min(5000, 1000 + 400 * i));
   }
   throw Object.assign(new Error('The network has not confirmed it yet. If it lands, it reaches them by itself.'), { unconfirmed: h });
@@ -3221,7 +3254,7 @@ function quorum(to, data, urls = nodesOf(CHAINS[0]), lone = false) {
     };
     for (const u of urls) {
       fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }), signal: timeoutSignal(10_000) })
-        .then((r) => r.json()).then((j) => answered(j.error ? (String(j.error.data?.data ?? j.error.data ?? '').startsWith('0x556f1830') ? 'offchain' : /revert/i.test(j.error.message || '') ? '0x' : null) : j.result), () => answered(null));
+        .then((r) => r.json()).then((j) => j.error ? (String(j.error.data?.data ?? j.error.data ?? '').startsWith('0x556f1830') ? 'offchain' : /revert/i.test(j.error.message || '') ? '0x' : null) : j.result).catch(() => null).then(answered);
     }
   });
 }
@@ -3283,20 +3316,25 @@ const NAMES = new Map();
 function recipientOf(raw, again = () => FORM.check?.()) {
   const s = raw.trim(), n = s.toLowerCase();
   if (!nameOk(n)) { if (looksName(s)) return { error: nameHint(n) }; try { return { r: parseRecipient(s) }; } catch (e) { return { error: plainErr(e.message) }; } }
-  const hit = NAMES.get(n);
-  if (hit && (hit.pending || Date.now() - hit.at < (hit.error ? 5_000 : 60_000))) return hit.pending ? { pending: true, name: n } : hit.error ? { error: hit.error, name: n } : { r: hit.r, name: n, to: hit.to };
-  NAMES.set(n, { pending: true });
-  resolveName(n).then((x) => NAMES.set(n, { ...x, at: Date.now() }), (e) => NAMES.set(n, { error: e.message, at: Date.now() })).finally(again);
-  return { pending: true, name: n };
+  const hit = NAMES.get(n), fresh = hit && (hit.pending || Date.now() - hit.at < (hit.error ? 5_000 : 60_000));
+  // Read, or read again once what was shown has aged: what was shown stays, and is what the press checks against.
+  if (!fresh && !hit?.again) {
+    NAMES.set(n, hit?.r ? { ...hit, again: true } : { pending: true });
+    resolveName(n).then((x) => NAMES.set(n, { ...x, at: Date.now() }), (e) => NAMES.set(n, { error: e.message, at: Date.now() })).finally(again);
+  }
+  const now = NAMES.get(n);
+  return now.pending ? { pending: true, name: n } : now.error ? { error: now.error, name: n } : { r: now.r, name: n, to: now.to };
 }
 // A withdrawal's destination typed as a name: read once and kept briefly. { addr, name } | { error } | { pending }
 const ADDRS = new Map();
 function destOf(raw, again = () => FORM.check?.()) {
-  const n = raw.trim().toLowerCase(), hit = ADDRS.get(n);
-  if (hit && (hit.pending || Date.now() - hit.at < (hit.error ? 5_000 : 60_000))) return hit.pending ? { pending: true, name: n } : hit.error ? { error: hit.error, name: n } : { addr: hit.addr, name: n };
-  ADDRS.set(n, { pending: true });
-  addressOfName(n).then((x) => ADDRS.set(n, { ...x, at: Date.now() }), (e) => ADDRS.set(n, { error: e.message, at: Date.now() })).finally(again);
-  return { pending: true, name: n };
+  const n = raw.trim().toLowerCase(), hit = ADDRS.get(n), fresh = hit && (hit.pending || Date.now() - hit.at < (hit.error ? 5_000 : 60_000));
+  if (!fresh && !hit?.again) {
+    ADDRS.set(n, hit?.addr ? { ...hit, again: true } : { pending: true });
+    addressOfName(n).then((x) => ADDRS.set(n, { ...x, at: Date.now() }), (e) => ADDRS.set(n, { error: e.message, at: Date.now() })).finally(again);
+  }
+  const now = ADDRS.get(n);
+  return now.pending ? { pending: true, name: n } : now.error ? { error: now.error, name: n } : { addr: now.addr, name: n };
 }
 // Read again just before paying: a name that has moved since it was shown is not paid.
 async function recipientNow(t) {
@@ -3389,7 +3427,7 @@ function paintActivity() {
         <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${ethStr(d.fee)}` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
     })}</ul>` : CHAINS.every((c) => CH[c.chainId].at) ? html`<p class="note">${pal('ninja')}Nothing yet. Shield some ETH to start. Expecting something? Rebuild, below, reads the chain without the relay’s index.</p>` : ''}
     <details class="adv" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads every chain again from the pool’s first block, without the relay’s index.</p><button class="btn ghost sm" type="button" id="rebuild">Rebuild</button></details>`);
-  $('#rebuild').onclick = (e) => busy(e.currentTarget, async () => {
+  $('#rebuild').onclick = (e) => S.busy ? toast('Wait for the current action to finish, then rebuild.', true) : busy(e.currentTarget, async () => {
     const res = await Promise.allSettled(CHAINS.map(async (c) => { const W = walletOn(c); await W.rescan(); await syncChain(c, true); }));
     const bad = CHAINS.filter((c, i) => res[i].status === 'rejected').map((c) => c.name);
     toast(bad.length ? `Rebuilt, except ${bad.join(' and ')}, which could not be read. Try again.` : 'Rebuilt from your key.', !!bad.length);
@@ -3478,6 +3516,7 @@ function renderSettings() {
   $('#e-reset').onclick = () => applyEndpoints({});
 }
 function applyEndpoints(next) {
+  if (S.busy) return toast('Wait for the current action to finish, then save.', true);
   ends = next; writeJson(ENDPOINTS, next);
   for (const k of Object.keys(RPC)) delete RPC[k];
   for (const c of CHAINS) { CH[c.chainId].W = null; CH[c.chainId].quote = null; CH[c.chainId].syncing = null; }

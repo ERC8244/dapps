@@ -100,13 +100,16 @@ async function viaCreateX(data, expected, landed) {
   if (await landed(expected)) return expected;
   if ((await code(expected)).length > 2) throw new Error('Something else is already at ' + expected + '. Nothing was sent.');
   const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, to: CREATEX, data }]))) * 1.1).toString(16);
+  const nonce = parseInt(await rpc('eth_getTransactionCount', [from, 'pending']), 16);
   paint('confirm the wrapper in your wallet (through CreateX)');
-  const h = await rpc('eth_sendTransaction', [{ from, to: CREATEX, data, gas }]);
+  const h = await rpc('eth_sendTransaction', [{ from, to: CREATEX, data, gas, nonce: '0x' + nonce.toString(16) }]);
   paint('the wrapper: waiting for <code>' + h + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
     if (r && r.status !== '0x1') throw new Error('The wrapper reverted in ' + h);
     if (await landed(expected)) return expected;
+    if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await landed(expected)))
+      throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
     await sleep(3000);
   }
 }
@@ -209,7 +212,7 @@ const port = Number(process.argv[2] || 8444);
 http.createServer((q, r) => {
   const u = new URL(q.url, 'http://localhost');
   if (u.pathname === '/mine') {
-    mine(getAddress(u.searchParams.get('from'))).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
+    Promise.resolve().then(() => mine(getAddress(u.searchParams.get('from')))).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
       (e) => { r.writeHead(500, { 'content-type': 'text/plain' }); r.end(String(e.message || e)); });
     return;
   }

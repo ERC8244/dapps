@@ -14,7 +14,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | page source | `dapp/page.html` |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -222,6 +222,7 @@ node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-i
 node test/dapp/tacit-pay.units.mjs             # amount parsing, an address's ID, how a failed log read is judged
 node test/dapp/tacit-pay.sig.mjs               # the page's signatures against an independent implementation
 node test/dapp/tacit-pay.engine.mjs            # the wallet engine on a chain in memory: merges, lagging nodes, an index that lies, batched reads
+node test/dapp/tacit-pay.artifacts.mjs         # the proving key and witness program: a file that is not the pinned one is never used
 node test/dapp/tacit-pay.unconfirmed.mjs       # a wallet payment the network never confirms is not sent a second time
 node test/dapp/tacit-pay.ens.mjs               # a .eth name's text record, set on a fork of the real registry, read, shown and linked
 node test/dapp/tacit-pay.wallets.mjs           # external wallets: picker, refusals, account and chain changes, no network

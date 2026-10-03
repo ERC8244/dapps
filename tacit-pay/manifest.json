@@ -9,5 +9,43 @@
     "artifact": "TacitPay8244",
     "maxPayload": 24575,
     "prefix": "00"
+  },
+  "deployment": {
+    "chainId": 1,
+    "contract": "0x0000005a9E52BD30867872DCb323bc78Eb5cF919",
+    "pageSha256": "947bc1a7b9d25f449b602bd0b543726dfcf035d29654fbd59316fafc63d1313c",
+    "steward": "0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20",
+    "chunkContracts": [
+      "0xB0d9a87d555c8b597107369643F09d91F3c81058",
+      "0x86671Ec8a873FC9277e99b4a0da244087476e7f2",
+      "0xE4bF37A5ce872F27946C17ee803c0f7F827c68b3",
+      "0xe8fb74740De2D47d71D760139B30e30B652B13f4",
+      "0xc572e7526224F74911Ad4A580E0402ecD6DaE0c2",
+      "0xC7ab1591cC002729CB63939b2cF426c8936d78Fc",
+      "0x9a4EEEae095B3BC7F59fdc4e3d8ed0A5f84c4E56",
+      "0x01f0F5152C48F9478Ca4881320b8dbc6bFBD1357",
+      "0x276C7d1Eca90825A42E7B85061168F3E8Bd4710A",
+      "0x0c6bC4b50E2e4245042043fC16790B1f17f1F08F",
+      "0x9DaB8DD31f7A5f964e98014bBC58c2C74364015d",
+      "0x4C30b26aeBfDa219B1866908780dA3392554E0B4"
+    ],
+    "routes": [
+      {
+        "kind": "erc8244",
+        "url": "https://0x0000005a9e52bd30867872dcb323bc78eb5cf919.w4eth.io/",
+        "serves": "exact"
+      },
+      {
+        "kind": "erc4804",
+        "url": "https://0x0000005a9e52bd30867872dcb323bc78eb5cf919.1.w3link.io/",
+        "serves": "modified",
+        "note": "w3link injects its own script after <body>; the bytes it serves are not the bytes html() returns"
+      },
+      {
+        "kind": "wns",
+        "url": "https://anon.wei.limo/",
+        "serves": "exact"
+      }
+    ]
   }
 }

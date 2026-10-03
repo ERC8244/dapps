@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ry8QZ2wxnZA7JwEbSEITEn3y32P+NNtDjZ5r/cqpqSY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Ywaa1WO7fjh/k1UZvFYDkDai1+814rOvOQGv0Auz/HE=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -2937,6 +2937,7 @@ function formShield(f) {
       if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
       if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
       // The button says what is still missing.
+      if (a && !t && !S.key) { go.textContent = 'Sign in to shield to yourself'; go.disabled = false; return; }
       if (!a || !t || t.error) { go.textContent = !a ? 'Enter an amount' : 'Enter who it is for'; return who || badAmt(amt) ? say(badAmt(amt)) : undefined; }
       if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
       say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${kvRow('Fee', 'none · your wallet pays the gas')}`);
@@ -2944,6 +2945,7 @@ function formShield(f) {
     };
     go.onclick = () => {
       if (!S.account) return connectHere();
+      if (!S.key && !to.value.trim()) return openSheet();
       act(go, async (step) => {
         const a = parseEth(amt.value), t = await recipientNow(target());
         if (!a) throw new Error('Enter an amount.');

@@ -47,10 +47,12 @@ const NAME = 'anon.wei', WNS = '0x0000000000696760e15f265e828db644a0c242eb', TOK
 const pageHash = keccak256(page), GAS = Math.round(page.length * 225 + 1.6e6);   // measured: 54.7M for the 243 KB page
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tacit-pay</title>
-<style>body{font:14px/1.6 ui-monospace,Menlo,monospace;max-width:760px;margin:40px auto;padding:0 16px}button{font:inherit;padding:8px 14px;margin:4px 0}code{overflow-wrap:anywhere}.ok{color:#0a7d3a}.err{color:#b8341d}li{margin:4px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f1e8;padding:12px}</style></head><body>
+<style>body{font:14px/1.6 ui-monospace,Menlo,monospace;max-width:760px;margin:40px auto;padding:0 16px}button{font:inherit;padding:8px 14px;margin:4px 0}code{overflow-wrap:anywhere}.ok{color:#0a7d3a}.err{color:#b8341d}li{margin:4px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f1e8;padding:12px}
+#pick{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}#pick button{display:flex;align-items:center;gap:8px}#pick img{width:20px;height:20px;border-radius:4px}</style></head><body>
 <h2>deploy tacit-pay (anon.wei)</h2>
 <p>Page ${manifest.bytes.toLocaleString('en-US')} bytes, sha256 <code>${manifest.sha256}</code>, keccak <code>${pageHash}</code>. ${chunks.length} chunks, then the wrapper with steward <code>${STEWARD}</code>: ${chunks.length + 1} transactions on Ethereum mainnet. Any account can deploy and pays the gas; the steward is set by the constructor.</p>
 <p><button id="connect">Connect wallet</button> <span id="who"></span></p>
+<div id="pick" hidden></div>
 <p id="where"></p>
 <p><button id="go" disabled>Deploy what is left</button> <button id="reset">Forget progress</button></p>
 <p><button id="name" hidden>Point ${NAME} at it</button> <span id="named"></span></p>
@@ -61,8 +63,53 @@ const STEWARD = ${JSON.stringify(STEWARD)}, PAGE_HASH = ${JSON.stringify(pageHas
 const KEY = 'tacit-pay-deploy-1-' + SHA.slice(0, 16);
 let st = JSON.parse(localStorage.getItem(KEY) || '{"chunks":[]}'), eth = null, from = null;
 const save = () => localStorage.setItem(KEY, JSON.stringify(st));
+// Whether every chunk slot 0..CHUNKS.length-1 is filled: checked by index, not by scanning st.chunks itself, since
+// that array starts empty (st.chunks.some(...) on [] is always false, which would say "nothing left to do" when
+// really nothing has even been attempted yet).
+const allChunksIn = () => Array.from({ length: CHUNKS.length }, (_, i) => i).every((i) => st.chunks[i]);
 const $ = (s) => document.querySelector(s), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const rpc = (method, params = []) => eth.request({ method, params });
+// A wallet's own RPC node can answer "rate limit exceeded" under a burst of reads (discover() below can send several
+// dozen in a row); that is backed off and retried here, rather than left to abort whatever called it.
+async function rpc(method, params = []) {
+  for (let i = 0; ; i++) {
+    try { return await eth.request({ method, params }); }
+    catch (e) {
+      if (i >= 5 || !/rate.?limit|too many requests|\b429\b/i.test(e?.message || '')) throw e;
+      await sleep(500 * 2 ** i);
+    }
+  }
+}
+// A wallet that never answers (its popup dismissed, backgrounded, or dropped) would otherwise hang this await with no
+// sign of it: after 8 s a note appears saying so. There is no way to cancel a pending wallet request, so the only way
+// out is to find and answer it in the wallet, or reload: reconcile() re-checks every address against the chain before
+// anything more is sent, so a reload never sends what is already on it twice.
+function nudged(p, label, append = (el) => $('#steps').appendChild(el)) {
+  const t = setTimeout(() => {
+    const el = document.createElement('div');
+    el.innerHTML = '<span class="err">Still waiting on your wallet for ' + label + '. Check its popup or toolbar icon (it can open behind this window). If there is truly nothing pending there, reload this page and press the button again: nothing already sent is ever sent twice.</span>';
+    append(el);
+  }, 8000);
+  return Promise.resolve(p).finally(() => clearTimeout(t));
+}
+// Every extension that announces itself (EIP-6963: MetaMask, Rainbow, Coinbase Wallet, Rabby, …) is offered by name, not
+// just whichever one happened to grab window.ethereum first; a wallet that only sets window.ethereum is used when none
+// announces.
+const WALLETS = [];
+window.addEventListener('eip6963:announceProvider', (e) => {
+  const d = e.detail;
+  if (!d?.info || !d.provider?.request || WALLETS.some((w) => w.info.uuid === d.info.uuid)) return;
+  WALLETS.push(d);
+});
+const askWallets = () => window.dispatchEvent(new Event('eip6963:requestProvider'));
+askWallets();
+const installed = () => (WALLETS.length ? WALLETS : window.ethereum?.request ? [{ info: { name: 'Browser wallet', rdns: 'window.ethereum' }, provider: window.ethereum }] : []);
+function pickWallet(list) {
+  return new Promise((resolve) => {
+    $('#pick').innerHTML = list.map((w, i) => '<button type="button" data-i="' + i + '">' + ((w.info.icon || '').indexOf('data:image') === 0 ? '<img src="' + w.info.icon + '" alt="">' : '') + '<span>' + w.info.name + '</span></button>').join('');
+    $('#pick').hidden = false;
+    document.querySelectorAll('#pick [data-i]').forEach((b) => b.onclick = () => { $('#pick').hidden = true; $('#pick').innerHTML = ''; resolve(list[b.dataset.i]); });
+  });
+}
 const word = (h) => h.replace(/^0x/, '').toLowerCase().padStart(64, '0');
 function paint(note) {
   const items = CHUNKS.map((_, i) => '<li>chunk ' + (i + 1) + ': ' + (st.chunks[i] ? '<span class="ok">' + st.chunks[i] + '</span>' : '…') + '</li>');
@@ -84,7 +131,7 @@ async function create(data, label, landed) {
   if (await landed(expected)) return expected;
   const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, data }]))) * 1.1).toString(16);
   paint('confirm ' + label + ' in your wallet');
-  const h = await rpc('eth_sendTransaction', [{ from, data, gas, nonce: '0x' + nonce.toString(16) }]);
+  const h = await nudged(rpc('eth_sendTransaction', [{ from, data, gas, nonce: '0x' + nonce.toString(16) }]), label);
   paint(label + ': waiting for <code>' + h + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
@@ -102,7 +149,7 @@ async function viaCreateX(data, expected, landed) {
   const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, to: CREATEX, data }]))) * 1.1).toString(16);
   const nonce = parseInt(await rpc('eth_getTransactionCount', [from, 'pending']), 16);
   paint('confirm the wrapper in your wallet (through CreateX)');
-  const h = await rpc('eth_sendTransaction', [{ from, to: CREATEX, data, gas, nonce: '0x' + nonce.toString(16) }]);
+  const h = await nudged(rpc('eth_sendTransaction', [{ from, to: CREATEX, data, gas, nonce: '0x' + nonce.toString(16) }]), 'the wrapper');
   paint('the wrapper: waiting for <code>' + h + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
@@ -133,18 +180,44 @@ async function reconcile() {
   if (st.wrapper && !(await wrapperOk(st.wrapper))) delete st.wrapper;
   save();
 }
+// A chunk's own address is remembered only once its transaction is seen confirmed, in this browser, in this tab: closing
+// or reloading the page a moment too early, before that happens, leaves nothing recorded even though the chunk really
+// did land. So before trusting what is remembered, this account's most recent nonces are checked directly against the
+// chain: a plain creation's address is the same function of (account, nonce) whether or not anything was saved, and a
+// chunk's bytes, once deployed, are exactly its build, nothing else ever matches. The window looks only at the most
+// recent nonces, not every one back to zero, so it costs the same whether this account is brand new or has a long
+// history of its own unrelated activity. (The wrapper does not need this: its address comes from a mined CreateX salt,
+// not a nonce, so it is already found this way regardless of what is saved.)
+async function discover() {
+  if (allChunksIn() || !st.chunks.length) return;   // nothing missing, or nothing ever attempted: nothing to find
+  let left = CHUNKS.length - st.chunks.filter(Boolean).length;
+  const sent = parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16);
+  const WINDOW = 8, from0 = Math.max(0, sent - WINDOW);   // the gap is always just the last send or two, never more
+  for (let n = sent - 1; n >= from0 && left > 0; n--) {
+    const a = await (await fetch('/addr?from=' + from + '&nonce=' + n)).text(), c = await code(a);
+    for (let i = 0; i < CHUNKS.length; i++) if (!st.chunks[i] && c === RUNTIMES[i].toLowerCase()) { st.chunks[i] = a; left--; break; }
+  }
+  save();
+}
 $('#connect').onclick = async () => {
-  eth = window.ethereum;
-  if (!eth) return paint('<span class="err">No wallet in this browser.</span>');
+  askWallets(); await sleep(150);
+  const list = installed();
+  if (!list.length) return paint('<span class="err">No wallet found in this browser. Install one (MetaMask, Rainbow, Coinbase Wallet, …) and reload.</span>');
+  const w = list.length > 1 ? await pickWallet(list) : list[0];
+  if (!w) return;
+  eth = w.provider;
+  $('#who').textContent = 'connecting to ' + w.info.name + '…';
+  const whereNudge = (el) => $('#where').appendChild(el);
   try {
-    [from] = await rpc('eth_requestAccounts');
-    if (parseInt(await rpc('eth_chainId'), 16) !== 1) { try { await rpc('wallet_switchEthereumChain', [{ chainId: '0x1' }]); } catch {} }
+    [from] = await nudged(rpc('eth_requestAccounts'), 'connecting ' + w.info.name, whereNudge);
+    if (parseInt(await rpc('eth_chainId'), 16) !== 1) { try { await nudged(rpc('wallet_switchEthereumChain', [{ chainId: '0x1' }]), 'switching to Ethereum mainnet', whereNudge); } catch {} }
     await onMainnet();
     await reconcile();
+    if (!allChunksIn()) { $('#where').textContent = 'Checking this account’s recent transactions for anything already deployed…'; await discover(); paint(); }
     const v = await vanity();
     $('#where').innerHTML = v ? 'The page’s contract will be at <code>' + v.address + '</code>, deployed through CreateX: only ' + from + ' can claim it.' : 'The wrapper will be a plain creation (the address miner is not built).';
     const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
-    $('#who').textContent = from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the whole deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
+    $('#who').textContent = w.info.name + ' · ' + from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the whole deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
     $('#go').disabled = false;
     paint();
   } catch (e) { paint('<span class="err">' + (e.message || e) + '</span>'); }
@@ -195,7 +268,7 @@ $('#name').onclick = async () => {
     try { await rpc('eth_call', [{ from, to: WNS, data }, 'latest']); }
     catch { throw new Error('Only the wallet that owns ' + NAME + ' can point it. Switch to that account in your wallet and press again.'); }
     say('confirm in your wallet');
-    const h = await rpc('eth_sendTransaction', [{ from, to: WNS, data }]);
+    const h = await nudged(rpc('eth_sendTransaction', [{ from, to: WNS, data }]), 'pointing ' + NAME, (el) => $('#named').appendChild(el));
     say('waiting for <code>' + h + '</code>');
     let r = null;
     for (let i = 0; i < 200 && !r; i++) { r = await rpc('eth_getTransactionReceipt', [h]); if (!r) await sleep(3000); }

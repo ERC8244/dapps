@@ -352,8 +352,8 @@ await p.click('#settings-open');
 await p.click('#e-reset');
 ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')))) === '{}', 'and the defaults come back');
 
-const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.io|[a-z0-9]+\.ipfs\.dweb\.link)$/.test(h));
-ok(!hosts.length, 'it talks only to its listed nodes, relays and proving-key mirrors', hosts.join(' '));
+const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
+ok(!hosts.length, 'it talks only to its listed nodes, relays, proving-key mirrors and the nodes of the key’s onchain copy', hosts.join(' '));
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-iqyjaji7F//B0ID0fLZIKAQ7TTE3fNoy27k2clM4Igk=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KNmOsnDe2Jbz6Vt0MUj5d2msBLWw3RxBLY36yOLKs/U=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -2278,7 +2278,8 @@ const CEREMONY = {
   wasm: { name: 'transact.wasm', sha256: '02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1', bytes: 4916992 },
   zkey: { name: 'transact_final.zkey', sha256: '40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b', bytes: 28558285 },
 };
-const MIRRORS = ['https://tacit.finance/evm-pool/', `https://ipfs.filebase.io/ipfs/${CEREMONY.bundle}/`, `https://${CEREMONY.bundle}.ipfs.dweb.link/`, `https://ipfs.io/ipfs/${CEREMONY.bundle}/`];
+// ipfs.io, dweb.link and w3s.link serve a service worker now, not files (2026-10), so they are not in this list.
+const MIRRORS = ['https://tacit.finance/evm-pool/', `https://ipfs.filebase.io/ipfs/${CEREMONY.bundle}/`, `https://ipfs.orbitor.dev/ipfs/${CEREMONY.bundle}/`, `https://gateway.pinata.cloud/ipfs/${CEREMONY.bundle}/`];
 
 // ── small things ──
 const $ = (s, el = document) => el.querySelector(s);

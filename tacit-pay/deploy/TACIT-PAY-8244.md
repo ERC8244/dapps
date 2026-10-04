@@ -138,7 +138,7 @@ needed to pay or be paid.
 
 The circuit's proving key (28.5 MB) and witness program (4.9 MB) are the one dependency too large for any contract.
 The page fetches them once, from tacit.finance or the ceremony bundle on IPFS
-(`bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy`, via Filebase, dweb.link or ipfs.io), uses them only if
+(`bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy`, via Filebase, ipfs.orbitor.dev or the Pinata gateway, or as a last resort its onchain copy on Base Sepolia), uses them only if
 their SHA-256 equals the pins the page carries (also readable from the contract as `PROVING_KEY_SHA256` and
 `WITNESS_PROGRAM_SHA256`), and keeps them in the browser. A reader can add a mirror, or load the two files from disk.
 
@@ -177,7 +177,7 @@ page asks the Ethereum nodes to agree before it shows which contract serves it a
 | --- | --- | --- |
 | public JSON-RPC nodes, 2 to 4 per chain (replaceable under *Endpoints*) | every read and send, and names | the next node is tried; the page remembers the one that answered |
 | a wallet (EIP-1193, EIP-6963) | gas for wallet-sent spends and shielding | relayed spends and reading need none |
-| the proving key and witness program, 33 MB, from tacit.finance, Filebase, dweb.link or ipfs.io, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
+| the proving key and witness program, 33 MB, from tacit.finance, Filebase, ipfs.orbitor.dev or the Pinata gateway, from its onchain copy on Base Sepolia, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
 | a relay (optional) | spends with no gas, deposit-address sweeps, a fast first read | the wallet route and chain logs |
 | a gateway to serve the page | getting the page | any ERC-8244 gateway, or `html()` from any node |
 

@@ -40,7 +40,7 @@ for (const name of (process.env.CHAINS || 'ethereum,base,robinhood').split(','))
   for (let i = 0; ; i++) { try { await post(url, 'eth_chainId', []); break; } catch { if (i > 240) throw new Error('anvil did not start'); await sleep(500); } }
   const block = '0x' + BigInt(await post(url, 'eth_blockNumber', [])).toString(16);
   for (const [sym, [token, dec]] of Object.entries(c.tokens)) {
-    const amount = 10n ** 16n, slip = 50n, deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
+    const amount = process.env.AMOUNT ? BigInt(process.env.AMOUNT) : 10n ** 16n, slip = 50n, deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
     const stand = Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join(''), me = '0'.repeat(24) + stand;
     const tk = (sl) => W(0) + A(0) + A(token) + W(amount) + W(sl) + W(deadline);
     const s2 = slip / 2n || 1n, s3 = slip / 3n || 1n, w = slip * 3n, ss = w < 150n ? 150n : w > 500n ? 500n : w;

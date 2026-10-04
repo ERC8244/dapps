@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-nTdU9+l3TMF8KodVyyoqQ0AKDtcHv20oK44mHcJq0IM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-B0qkTxWsLbbMllBAVrUGdI4yGNRHpyemhYaPGecKEOU=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -2027,10 +2027,20 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
           if (r.status === 429) await sleep(5000);
           continue;
         }
+        // The relay refused it before sending, for its fee: proved again at the fee it names, from the same notes, when
+        // that is within half again of the quote and the page's limits (the quote is checked the same way).
+        if (r.status === 400 && /^\d+$/.test(String(r.body.needFee ?? '')) && !q.refee) {
+          const need = BigInt(r.body.needFee);
+          if (need <= fee * 3n / 2n + 10n ** 12n) {
+            if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {});
+            return transact({ ins, outs, ext, recipient, q: { ...(await vetGas(vet({ ...q, fee: String(need) }))), refee: true }, onStep, guard, pay, call });
+          }
+          throw Object.assign(inFlight(id, `The relay asks ${fmt(need, 8)} ETH for this, more than it quoted.`), { relay: true });
+        }
         if (r.status !== 200 || !r.body.txHash) {
           if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {});
           if (/AlreadyNullified|already spent/i.test(r.body.error || '')) await rescan().catch(() => {});
-          throw Object.assign(inFlight(id, 'The relay did not take this payment.'), { relay: true });
+          throw Object.assign(inFlight(id, `The relay did not take this payment${r.body.error ? ` (${String(r.body.error).slice(0, 120)})` : ''}.`), { relay: true });
         }
         h = /^0x[0-9a-f]{64}$/i.test(String(r.body.txHash)) ? r.body.txHash : null;
         onStep('waiting for the block');
@@ -3575,8 +3585,12 @@ async function swapRoute(c, t, amount, slip, to) {
   const got = await Promise.all(jobs.map(([q, d, sl, ...r]) => quorum(q, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => routeOf(h, sl, ...r)).catch(() => null)));
   const best = got.filter((r) => r && r.value === amount && r.data.includes(stand)).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0))[0];
   if (!best) return null;
+  // The relay is paid for the gas it buys: the withdrawal and its escrow (about 470k) and the route itself, estimated
+  // as sent from the pool (which holds the ETH) with the stand-in still in it, so the node never sees where it goes.
+  const multi = best.data.startsWith('0xac9650d8');
+  const routeGas = await rpcOn(c)('eth_estimateGas', [{ from: POOL, to: ZROUTER, value: '0x' + best.value.toString(16), data: best.data }]).then((x) => BigInt(x), () => (multi ? 700_000n : 400_000n));
   const data = best.data.split(stand).join(lc(to).slice(2));
-  return { ...best, data, deadline, gas: 450_000 + (data.startsWith('0xac9650d8') ? 700_000 : 250_000) };
+  return { ...best, data, deadline, gas: Number(520_000n + routeGas * 3n / 2n) };
 }
 const SWAPQ = { key: '', r: null, fee: null, err: null, busy: false, at: 0 };
 function formSwap(f, seg) {

@@ -19,9 +19,14 @@ import {createHash} from 'node:crypto';
 const {JsonRpcProvider, Wallet, keccak256, getCreate2Address, concat, toBeHex, zeroPadValue, formatEther} = await import(new URL('../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 
 const SRC = '/Users/z/tacit/dapp/evm-pool';
+// The files a wallet checks by hash and otherwise fetches from tacit.finance or IPFS: the ceremony's proving key and
+// witness program, the verifying key, its pin record, and the standalone wallet as served (BUNDLE: a path to that file).
 const FILES = [
   {name: 'transact_final.zkey', sha256: '40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b'},
   {name: 'transact.wasm', sha256: '02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1'},
+  {name: 'transact_vk.json', sha256: 'f3e36ac06ad59428003b90abd80b807180badeb06c3960c50b060ebc59b626b3'},
+  {name: 'pin.json', sha256: '79ddf12a68239eb9d1ddeaff9518d05ef57fa56e20deea8aae730413c3be78f9'},
+  ...(process.env.BUNDLE ? [{name: 'tacit-evm-pool-wallet.js', path: process.env.BUNDLE, sha256: 'cdc59dd5d5c95370a30161dd64637e32590b85290241944184283a05098c15c0'}] : []),
 ];
 const PROXY = '0x4e59b44847b379578588920ca78fbf26c0b4956c', SALT = '0x' + '00'.repeat(32), PIECE = 24_575, TAG = Buffer.from('tacit-artifact-v1');
 const IN_FLIGHT = Number(process.env.IN_FLIGHT || 4);
@@ -32,7 +37,7 @@ const addressOf = (init) => getCreate2Address(PROXY, SALT, keccak256(init));
 
 const plan = [];
 for (const f of FILES) {
-  const b = fs.readFileSync(`${SRC}/${f.name}`), sha = createHash('sha256').update(b).digest('hex');
+  const b = fs.readFileSync(f.path || `${SRC}/${f.name}`), sha = createHash('sha256').update(b).digest('hex');
   if (sha !== f.sha256) throw new Error(`${f.name}: sha256 ${sha} is not the pinned ${f.sha256}`);
   const pieces = [];
   for (let at = 0; at < b.length; at += PIECE) { const init = initcode(Buffer.concat([Buffer.from([0]), b.subarray(at, at + PIECE)])); pieces.push({init, addr: addressOf(init)}); }

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-jCype81PpBNSs9hY9YV7E9ZsNxCTI7TN29Bs6GkF+0o=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-65uUMdA15dfOcvsAdN6SLNxpjrd3wF148kBzFl22+g4=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -3670,6 +3670,8 @@ async function moveCall(to, box, amount) {
   const gp = BigInt(await l2('eth_gasPrice', [])), maxFee = gp * 8n > 10n ** 8n ? gp * 8n : 10n ** 8n;
   let gl = 300_000n;
   try { gl = BigInt(await l2('eth_estimateGas', [{ to: NODE_INTERFACE, data: calldata('estimateRetryableTicket(address,uint256,address,uint256,address,address,bytes)', ['address', 'uint256', 'address', 'uint256', 'address', 'address', 'bytes'], [any, 10n ** 18n + 1n, any, 1n, any, any, '0x']) }])) * 3n / 2n; } catch {}
+  // A ticket whose gas runs short waits for someone to redeem it by hand: never less than 100k, refunded when unused.
+  if (gl < 100_000n) gl = 100_000n;
   const value = amount + sub + gl * maxFee;
   return { gas: 700_000, value, call: call(b.inbox, value, calldata('createRetryableTicket(address,uint256,uint256,address,address,uint256,uint256,bytes)', ['address', 'uint256', 'uint256', 'address', 'address', 'uint256', 'uint256', 'bytes'], [box, amount, sub, box, box, gl, maxFee, '0x'])) };
 }

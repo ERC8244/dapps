@@ -51,6 +51,7 @@ for (const name of names) {
   ok(await p.balance('0.01') === '0.01', 'private balance 0.01');
 
   await p.click('#tabs [data-tab="send"]');
+  await p.click('[data-route="wallet"]', {timeout: 20e3}).catch(() => {});     // with the relays down the page offers the wallet; it never picks it alone
   await p.fill('#f-to', K1addr); await p.fill('#f-amt', '0.004');
   await p.waitForFunction(() => /They receive/.test(document.querySelector('#f-rcpt').textContent), null, {timeout: 30e3});
   await p.click('#f-go');
@@ -60,6 +61,7 @@ for (const name of names) {
 
   const DEST = '0x' + '5e'.repeat(20), before = BigInt(await f.rpc('eth_getBalance', [DEST, 'latest']));
   await p.click('#tabs [data-tab="withdraw"]');
+  await p.click('[data-route="wallet"]', {timeout: 20e3}).catch(() => {});
   await p.fill('#f-wto', DEST); await p.fill('#f-wamt', '0.002');
   await p.waitForFunction(() => /Arrives/.test(document.querySelector('#f-rcpt').textContent), null, {timeout: 30e3});
   await p.click('#f-go');

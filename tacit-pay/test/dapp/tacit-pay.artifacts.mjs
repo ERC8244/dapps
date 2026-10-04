@@ -19,6 +19,22 @@ const real = {'transact.wasm': fs.readFileSync(DIR + '/transact.wasm'), 'transac
 const PIN = {'transact.wasm': '02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1', 'transact_final.zkey': '40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b'};
 for (const [n, b] of Object.entries(real)) if (createHash('sha256').update(b).digest('hex') !== PIN[n]) throw new Error(`${DIR}/${n} is not the pinned file`);
 
+// The onchain copy on Base Sepolia, computed here from the same files as deploy/artifact-backup.mjs lays it out: the code of
+// each piece and manifest at its CREATE2 address. `CHAIN.bad` changes one byte of one piece.
+const {keccak256, getCreate2Address} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const CHAIN = {code: new Map(), bad: null};
+{
+  const init = (rt) => Buffer.concat([Buffer.from([0x61, rt.length >> 8, rt.length & 255, 0x80, 0x60, 0x0a, 0x5f, 0x39, 0x5f, 0xf3]), rt]);
+  const at = (rt) => getCreate2Address('0x4e59b44847b379578588920ca78fbf26c0b4956c', '0x' + '00'.repeat(32), keccak256(init(rt))).toLowerCase();
+  for (const [n, b] of Object.entries(real)) {
+    const pieces = [];
+    for (let i = 0; i < b.length; i += 24_575) { const rt = Buffer.concat([Buffer.from([0]), b.subarray(i, i + 24_575)]); pieces.push(at(rt)); CHAIN.code.set(pieces.at(-1), rt); }
+    const head = Buffer.alloc(10); head.writeBigUInt64BE(BigInt(b.length)); head.writeUInt16BE(pieces.length, 8);
+    const man = Buffer.concat([Buffer.from([0]), Buffer.from('tacit-artifact-v1'), Buffer.from(PIN[n], 'hex'), head, ...pieces.map((x) => Buffer.from(x.slice(2), 'hex'))]);
+    CHAIN.code.set(at(man), man);
+    CHAIN[n] = {manifest: at(man), pieces};
+  }
+}
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
 
@@ -43,6 +59,15 @@ async function open(serve, {ends} = {}) {
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = new URL(route.request().url()), name = /\/(transact\.wasm|transact_final\.zkey)$/.exec(url.pathname)?.[1];
     const cors = {'access-control-allow-origin': '*'};
+    if (/base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org/.test(url.host) && CHAIN.on) {
+      const req = JSON.parse(route.request().postData() || '[]'), one = (x) => {
+        const c = CHAIN.code.get(String(x.params?.[0]).toLowerCase());
+        const out = c && CHAIN.bad === String(x.params[0]).toLowerCase() ? (() => { const d = Buffer.from(c); d[d.length >> 1] ^= 1; return d; })() : c;
+        return {jsonrpc: '2.0', id: x.id, result: '0x' + (out ? out.toString('hex') : '')};
+      };
+      asked.push(`chain:${(Array.isArray(req) ? req : [req]).length}`);
+      return route.fulfill({status: 200, headers: {...cors, 'content-type': 'application/json'}, body: JSON.stringify(Array.isArray(req) ? req.map(one) : one(req))});
+    }
     if (name) {
       asked.push(`${url.host}/${name}`);
       const body = serve(url.host, name);
@@ -92,6 +117,26 @@ console.log('\na mirror the reader added, serving bad bytes ahead of the good on
   ok(await workers(p) > 0, 'the prover started on the good bytes');
   ok(!p.errors.length, 'no page errors', p.errors.join(' '));
   await p.context().close();
+}
+
+console.log('\nevery mirror down: the onchain copy on Base Sepolia');
+{
+  CHAIN.on = true;
+  const p = await open(() => null);
+  await press(p);
+  const r = await outcome(p, 300e3);
+  ok(r.ready, 'the proving key and witness program are read from their pieces on chain and pass their SHA-256', r.err.slice(0, 90));
+  ok(p.asked.some((a) => a.startsWith('chain:16')), 'in batches of pieces', p.asked.filter((a) => a.startsWith('chain')).slice(0, 3).join(' '));
+  ok(await workers(p) > 0 && await saved(p) === 2, 'the prover starts, and both files are kept for next time');
+  await p.context().close();
+  CHAIN.bad = CHAIN['transact_final.zkey'].pieces[600];
+  const q = await open(() => null);
+  await press(q);
+  const s2 = await outcome(q, 300e3);
+  ok(!s2.ready && /could not be downloaded/.test(s2.err) && await workers(q) === 0, 'one byte changed in one piece: refused, no prover', s2.err.slice(0, 80));
+  ok(!p.errors.length && !q.errors.length, 'no page errors', [...p.errors, ...q.errors].join(' '));
+  await q.context().close();
+  CHAIN.on = false; CHAIN.bad = null;
 }
 
 console.log('\nfiles loaded from disk');

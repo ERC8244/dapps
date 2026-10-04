@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pjZlz6WPzVMLoImuT0k0pVE2e8vo97JNhTZTqYEZaDY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-iqyjaji7F//B0ID0fLZIKAQ7TTE3fNoy27k2clM4Igk=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -2460,6 +2460,40 @@ const PROVER = { state: 'idle', got: 0, total: CEREMONY.wasm.bytes + CEREMONY.zk
 const ARTIFACTS = 'tacit-pay-artifacts-v1';
 const PROVER_SHA256 = '2f8c83329da7933ac6e074f77e74ace6ec9856067c04b49b2a5b2e470da1b33a';   // set by deploy/repin.sh
 const sha256hex = async (b) => (globalThis.crypto?.subtle ? hex(new Uint8Array(await crypto.subtle.digest('SHA-256', b))) : hex(sha256(b)));
+// The onchain copy, tried once every mirror has failed: each file's pieces are the code of contracts on Base Sepolia
+// (a STOP byte, then the bytes), listed in order by the file's manifest (deploy/ARTIFACT-BACKUP.md). Read in batches from
+// public nodes and held to the same SHA-256 as a mirror's file; the manifest must name that SHA-256 and size first.
+const CHAIN_COPY = { rpc: ['https://base-sepolia-rpc.publicnode.com', 'https://sepolia.base.org'], manifest: { 'transact_final.zkey': '0xF7679584f6dc84495374dA5B5350C2E7828ad620', 'transact.wasm': '0xc63e43d159429583A9fb3fF0b5053e4D12415F55' } };
+async function fromChain(a, onBytes) {
+  const m = CHAIN_COPY.manifest[a.name], TAG = utf8('tacit-artifact-v1');
+  if (!m) return null;
+  for (const u of CHAIN_COPY.rpc) {
+    let got = 0;
+    try {
+      const codes = async (addrs) => {
+        const j = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(addrs.map((x, id) => ({ jsonrpc: '2.0', id, method: 'eth_getCode', params: [x, 'latest'] }))), signal: timeoutSignal(60_000) }).then((r) => r.json());
+        if (!Array.isArray(j) || j.length !== addrs.length) throw new Error('short batch');
+        return j.sort((x, y) => x.id - y.id).map((x) => unhex(x.result));
+      };
+      const [man] = await codes([m]);
+      let at = 1 + TAG.length;
+      if (man[0] !== 0 || !same(man.subarray(1, at), TAG) || hex(man.subarray(at, at + 32)) !== a.sha256 || Number(big(man.subarray(at + 32, at + 40))) !== a.bytes) continue;
+      const n = Number(big(man.subarray(at + 40, at + 42)));
+      at += 42;
+      if (man.length !== at + 20 * n) continue;
+      const pieces = Array.from({ length: n }, (_, i) => '0x' + hex(man.subarray(at + 20 * i, at + 20 * i + 20))), b = new Uint8Array(a.bytes);
+      for (let i = 0; i < n; i += 16) {
+        for (const c of await codes(pieces.slice(i, i + 16))) {
+          if (c[0] !== 0 || got + c.length - 1 > a.bytes) throw new Error('not a piece');
+          b.set(c.subarray(1), got); got += c.length - 1; onBytes(c.length - 1);
+        }
+      }
+      if (got === a.bytes && await sha256hex(b) === a.sha256) return b;
+      onBytes(-got);
+    } catch { onBytes(-got); }
+  }
+  return null;
+}
 async function artifact(a, onBytes) {
   const key = `${location.origin}/${a.name}?sha256=${a.sha256}`;
   let cache = null;
@@ -2500,6 +2534,8 @@ async function artifact(a, onBytes) {
       return b;
     } catch { clearTimeout(stall); onBytes(-got); }
   }
+  const b = await fromChain(a, onBytes);
+  if (b) { await cache?.put(key, new Response(b)).catch(() => {}); return b; }
   throw new Error(`The proving key could not be downloaded. Try again, add a mirror under Endpoints, or load the files from disk.`);
 }
 function proverPool(src, n) {

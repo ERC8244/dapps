@@ -21,3 +21,6 @@ compares its SHA-256 onchain; true for the verifying key and the pin record).
 
 Read one back, checked: `RPC=https://base-sepolia-rpc.publicnode.com node deploy/artifact-read.mjs <manifest> [out]`.
 All five were read back and matched on 2026-10-04. A testnet is not permanent; this is one copy among several.
+
+The anon.wei page (from its next version) reads the proving key and witness program from here when every mirror fails,
+through public Base Sepolia nodes, and keeps them only if they match the SHA-256 it pins.

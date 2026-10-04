@@ -14,5 +14,10 @@ files deployed on any other chain land at the same addresses. A manifest per fil
 | `pin.json` | 1,501 | 1 | `79ddf12a…6f8f9` | `0x75578ab320147Af1f8d39e7e3643621Bc57e5bE9` |
 | `tacit-evm-pool-wallet.js` (standalone wallet, as served) | 705,182 | 29 | `cdc59dd5…c15c0` | `0x202fF20B540794CD6f8F54cF80A0Af6170BEaDB4` |
 
+**Index:** `TacitArtifacts` at `0x250FCb513A809727b9b538A313895Eec5A36674C` (source `src/TacitArtifacts.sol`, verified on
+Sourcify and on sepolia.basescan.org) names the five files and reads them from an explorer: `files()`, `manifest(m)` (the
+SHA-256, size and piece addresses), `piece(m, i)` (one piece's bytes) and `check(m)` (reassembles a small file and
+compares its SHA-256 onchain; true for the verifying key and the pin record).
+
 Read one back, checked: `RPC=https://base-sepolia-rpc.publicnode.com node deploy/artifact-read.mjs <manifest> [out]`.
 All five were read back and matched on 2026-10-04. A testnet is not permanent; this is one copy among several.

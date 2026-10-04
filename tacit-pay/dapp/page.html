@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KNmOsnDe2Jbz6Vt0MUj5d2msBLWw3RxBLY36yOLKs/U=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-rSoGIvWZhiwHBla8+E00bb2ex3LeDbiDMeszBk2+0ZY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -1865,6 +1865,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     await signer.ready();
     try { await own()('eth_call', [{ from: signer.address, to, data, value: '0x' + value.toString(16) }, 'latest']); }
     catch (e) { if (RACED.has(revertData(e).slice(0, 10))) return null; throw e; }
+    // A wallet without the ETH for the gas is told so here, not by a failed estimate that names some other reason.
+    const [gas, price, held] = await Promise.all([own()('eth_estimateGas', [{ from: signer.address, to, data, value: '0x' + value.toString(16) }]), own()('eth_gasPrice', []), own()('eth_getBalance', [signer.address, 'latest'])].map((x) => x.then(BigInt, () => null)));
+    if (gas != null && price != null && held != null && held < value + gas * price) throw new Error(`Your wallet holds ${fmt(held, 8)} ETH here, short of the ${fmt(value + gas * price, 8)} ETH this needs with its gas. Add a little ETH${value ? '' : ', or let the relay send it'}.`);
     onStep('confirm in your wallet');
     const undo = handOut();
     try { return await signer.send({ to, data, value }); }
@@ -3319,9 +3322,12 @@ function formShield(f) {
     $('#f-check').onclick = (e) => busy(e.currentTarget, async () => { const key = S.key; mount($('#status'), html`<span class="spin" aria-hidden="true"></span>Checking each of your deposit addresses…`); await checkBoxes(c, true); Object.entries(st.boxW || {}).filter(([, v]) => v > 0n).forEach(([i]) => watchBox(Number(i), [c], true)); await syncChain(c, true); if (S.key !== key) return; mount($('#status'), waitingTotal() > 0n ? `${fmt(waitingTotal())} ETH is waiting at your deposit addresses.` : 'Nothing is waiting at your deposit addresses.'); renderForm(); });
     $('#f-sweep')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => { await walletReady(c, step); const h = await W.sweep({ index: 0, onStep: step }); done(c, h, 'Taken in.'); }));
     boxIndexes(st).forEach((i) => watchBox(i, [c]));
+  } else if ((S.inTok ||= {})[c.chainId] && S.account) {
+    formShieldToken(f, seg);
   } else {
     mount(f, html`${seg}
       ${amountField('f-samt', 'Amount', S.account ? html`<button type="button" id="f-max">Wallet <span id="f-wb" class="num">…</span> ETH</button>` : html`<button type="button" id="f-conn">Connect a wallet</button>`)}
+      ${S.account ? tokRow(c, 'inTok', 'Pay with') : ''}
       <div class="lbl"><span>To</span><span>${S.key ? 'yourself, unless you name someone' : 'their tacit1… address or name'}</span></div>
       <div class="amt text"><input id="f-sto" placeholder="${S.key ? 'Yourself · or tacit1…, bp1… or name.wei' : 'tacit1…, bp1… or name.wei'}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Shield to"></div>
       <div class="rcpt" id="f-rcpt" hidden></div>
@@ -3331,6 +3337,7 @@ function formShield(f) {
     const amt = $('#f-samt'), to = $('#f-sto'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
     $('#f-conn')?.addEventListener('click', () => connectHere());
     $('#f-open')?.addEventListener('click', () => openSheet());
+    wireTok(f, 'inTok');
     if (S.account) walletRead(c, 'eth_getBalance', [S.account, 'latest']).then((b) => { wb = BigInt(b); const e = $('#f-wb'); if (e) e.textContent = fmt(wb, 4); FORM.check?.(); }).catch(() => { const e = $('#f-wb'); if (e) e.textContent = '—'; });
     $('#f-max')?.addEventListener('click', () => { if (wb == null) return; maxPublic(amt, wb > c.gasReserve ? wb - c.gasReserve : 0n, 'in your wallet'); });
     const target = () => { const raw = to.value.trim(); return raw ? recipientOf(raw) : S.key ? { self: true } : null; };
@@ -3572,10 +3579,11 @@ function tokenList() {
   })().finally(() => { TOKENS.busy = null; }));
 }
 const tokIcon = (t) => (t?.logo ? html`<img src="${t.logo}" alt="" width="18" height="18">` : html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`);
-const tokRow = (c) => { const t = S.outTok?.[c.chainId]; return html`<div class="lbl"><span>Arrives as</span><button type="button" id="f-tok" class="tokchip" aria-expanded="false">${tokIcon(t)}${t ? t.sym : 'ETH'} ▾</button></div><div class="toks" id="f-toks" hidden></div>`; };
+// `slot`: 'outTok', the token a withdrawal arrives as, or 'inTok', the token a shield is paid with.
+const tokRow = (c, slot = 'outTok', label = 'Arrives as') => { const t = S[slot]?.[c.chainId]; return html`<div class="lbl"><span>${label}</span><button type="button" id="f-tok" class="tokchip" aria-expanded="false">${tokIcon(t)}${t ? t.sym : 'ETH'} ▾</button></div><div class="toks" id="f-toks" hidden></div>`; };
 // The token picker: ETH, then the list's tokens on this chain, searchable. A token on a rollup is taken only if the
 // chain's own token contract reports the decimals the list gives.
-function wireTok(f) {
+function wireTok(f, slot = 'outTok') {
   const c = S.chain, btn = $('#f-tok', f), box = $('#f-toks', f);
   if (!btn) return;
   btn.onclick = async () => {
@@ -3586,14 +3594,14 @@ function wireTok(f) {
     try { all = (await tokenList()).filter((t) => t.chainId === c.chainId); } catch { return mount(box, html`<p class="note err">Could not read the token list just now. Try again in a moment.</p>`); }
     const draw = (q = '') => {
       const k = q.trim().toLowerCase(), list = all.filter((t) => !k || t.sym.toLowerCase().includes(k) || t.name.toLowerCase().includes(k) || lc(t.addr) === k);
-      mount($('#f-tokl', box), html`<button type="button" data-tk="">${tokIcon(null)}<span>ETH<small>a plain withdrawal</small></span></button>${list.map((t) => html`<button type="button" data-tk="${t.addr}">${tokIcon(t)}<span>${t.sym}<small>${t.name} · ${short(t.addr)}</small></span></button>`)}`);
+      mount($('#f-tokl', box), html`<button type="button" data-tk="">${tokIcon(null)}<span>ETH<small>${slot === 'inTok' ? 'from your wallet’s ETH' : 'a plain withdrawal'}</small></span></button>${list.map((t) => html`<button type="button" data-tk="${t.addr}">${tokIcon(t)}<span>${t.sym}<small>${t.name} · ${short(t.addr)}</small></span></button>`)}`);
       $$('[data-tk]', box).forEach((b) => b.onclick = async () => {
         const t = all.find((x) => x.addr === b.dataset.tk) || null;
         if (t && c.chainId !== 1) {
           const d = await quorum(t.addr, '0x313ce567', ownNodes(c)).then((x) => Number(BigInt(x))).catch(() => null);
           if (d !== t.dec) return toast(`${t.sym} on ${c.full} does not report the decimals the list gives, so it is not offered.`, true);
         }
-        S.outTok[c.chainId] = t; renderForm();
+        (S[slot] ||= {})[c.chainId] = t; renderForm();
       });
     };
     mount(box, html`<div class="amt text"><input id="f-toksq" placeholder="Search tokens" autocomplete="off" spellcheck="false" aria-label="Search tokens"></div><div id="f-tokl"></div>`);
@@ -3602,8 +3610,9 @@ function wireTok(f) {
   };
 }
 // zQuoter's reply, as zSwap reads it: quote words, then the router call's offset (word `v`) and the ETH it takes
-// (word `mv`). `u` is the last leg's first word, `S` the amount of a split route. Exact amount in only.
-function routeOf(h, slip, u, v, S, mv) {
+// (word `mv`). `u` is the last leg's first word, `S` the amount of a split route. `eo`: an exact amount out, where the
+// limit is the most the route may take in.
+function routeOf(h, slip, u, v, S, mv, eo = false) {
   const x = h.replace(/^0x/, ''), num = (i) => BigInt('0x' + (x.slice(i * 64, (i + 1) * 64) || '0'));
   if (x.length < Math.max(v + 2, (mv || v + 1) + 1) * 64) return null;
   const o = Number(num(v)) * 2;
@@ -3614,7 +3623,8 @@ function routeOf(h, slip, u, v, S, mv) {
   const src = [];
   for (let w = 0; w <= u; w += 4) if (num(w + 2) > 0n || num(w + 3) > 0n) src.push(Number(num(w)));
   if (!out || src.includes(2)) return null;
-  return { source: Number(num(k)), out, limit: S ? num(3) * (B - slip) / B + g * (B - slip) / B : out * (B - slip) / B, value: num(mv || v + 1), data: '0x' + x.slice(o + 64, o + 64 + n * 2) };
+  const inp = S || num(2);
+  return { source: Number(num(k)), out, inp, limit: eo ? (inp * (B + slip) + B - 1n) / B : S ? num(3) * (B - slip) / B + g * (B - slip) / B : out * (B - slip) / B, value: num(mv || v + 1), data: '0x' + x.slice(o + 64, o + 64 + n * 2) };
 }
 // The best route for `amount` wei of ETH into token `t` on chain `c`, paying `to`: the quoter's single best pool, routes
 // through ETH and three hops as multicalls, and split routes, each with the share of slippage `slip` (basis points) it
@@ -3764,6 +3774,124 @@ function formSwap(f, seg) {
       const h = await walletOn(c).callOut({ intent, value: r.value, gas: r.gas, via: viaOf(tab), onStep: step, expectFee: was?.fee ?? null, fresh: takeFresh(), why: { swap: { addr: t.addr, sym: t.sym, dec: t.dec }, dest, slip: String(S.slip) } });
       delete DRAFT['f-wamt'];
       done(c, h, `Sent about ${units(r.out, t.dec)} ${t.sym} to ${short(dest)}.`);
+    });
+  };
+}
+
+// ── shielding from a token ──
+// The wallet swaps a listed token through zRouter for an exact, round amount of ETH, paid to a new deposit address of
+// this key (never used or shown, and registered with the relay first), which then moves into the private balance: by
+// the relay, or under its minimum by this wallet right after the swap. Exact out, so the amount entering the pool is
+// the round one asked for. The wallet, the token and the amount show on chain; whose balance it lands in does not.
+async function shieldRoute(c, t, amount, slip, to = null) {
+  const stand = hex(randomBytes(20)), A = (a) => hex(addrWord(a)), U = (v) => hex(word(v)), deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
+  const me = '0'.repeat(24) + stand, tk = (sl) => U(1n) + A(t.addr) + A(ZERO_ADDRESS) + U(amount) + U(sl) + U(deadline);
+  const jobs = [['e7798987' + me + tk(slip), slip, 0, 4, 0, 6], ['e453166e' + me + me + tk(slip / 2n || 1n), slip / 2n || 1n, 4, 9, 0]];
+  const block = '0x' + Math.max(0, (await headOf(nodesOf(c))) - 2).toString(16);
+  const got = await Promise.all(jobs.map(([d, sl, ...r]) => quorum(ZQUOTER, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => routeOf(h, sl, ...r, true)).catch(() => null)));
+  const best = got.filter((r) => r?.out >= amount && r.value === 0n && r.inp > 0n && r.data.includes(stand)).sort((a, b) => (a.limit < b.limit ? -1 : a.limit > b.limit ? 1 : 0))[0];
+  if (!best) return null;
+  const multi = best.data.startsWith('0xac9650d8'), r = { ...best, stand, deadline, gas: multi ? 900_000 : 450_000 };
+  return to ? withDest(r, to) : r;
+}
+// A transaction the wallet sent, until its receipt: the receipt, or an error when it failed.
+async function walletMined(c, h, what) {
+  for (let i = 0, end = Date.now() + 240_000; Date.now() < end; i++) {
+    const rc = await walletRead(c, 'eth_getTransactionReceipt', [h]).catch(() => null);
+    if (rc) { if (rc.status !== '0x1') throw new Error(`The ${what} failed on chain, so nothing was shielded.`); return rc; }
+    await sleep(Math.min(5000, 1000 + 400 * i));
+  }
+  throw Object.assign(new Error(`The network has not confirmed the ${what} yet.`), { unconfirmed: h });
+}
+const SHQ = { key: '', r: null, err: null, busy: false, at: 0 };
+function formShieldToken(f, seg) {
+  const c = S.chain, t = S.inTok[c.chainId];
+  S.slip ??= 50n;
+  mount(f, html`${seg}
+    ${amountField('f-samt', 'ETH to shield', html`<span class="num" id="f-tb">…</span>`)}
+    ${tokRow(c, 'inTok', 'Pay with')}
+    <div class="lbl"><span>Slippage</span><span class="seg sub" role="tablist" aria-label="Slippage">${[10n, 50n, 100n].map((v) => html`<button type="button" role="tab" data-sl="${v}" aria-selected="${String(S.slip === v)}">${Number(v) / 100}%</button>`)}</span></div>
+    <div class="rcpt" id="f-rcpt" hidden></div>
+    <button class="btn" type="button" id="f-go" disabled>${S.key ? `Swap ${t.sym} and shield` : 'Sign in to shield to yourself'}</button>
+    <p class="note">${pal('face')}Your wallet swaps ${t.sym} through zRouter for exactly this much ETH, sent to a new deposit address of yours, and it moves into your private balance: by the relay (up to 0.25%), or by your wallet right after when it is under the relay’s minimum. Your wallet, the token and the ETH amount show on chain; whose balance it lands in does not. A round amount blends in best.</p>`);
+  wireTok(f, 'inTok');
+  $$('[data-sl]', f).forEach((b) => b.onclick = () => { S.slip = BigInt(b.dataset.sl); renderForm(); });
+  const amt = $('#f-samt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
+  let tb = null;
+  const balOf = () => walletRead(c, 'eth_call', [{ to: t.addr, data: '0x70a08231' + hex(addrWord(S.account)) }, 'latest']).then((x) => { tb = BigInt(x); const e = $('#f-tb'); if (e) e.textContent = `${units(tb, t.dec)} ${t.sym}`; FORM.check?.(); }, () => { const e = $('#f-tb'); if (e) e.textContent = ''; });
+  balOf();
+  // The relay's minimum, from its own quote: under it (or with no relay) the wallet takes the ETH in itself.
+  let least = relayOf(c) ? undefined : null;
+  if (relayOf(c)) walletOn(c).quote().then((q) => { least = BigInt(q.receiveMin ?? 0); }, () => { least = null; }).finally(() => FORM.check?.());
+  let timer = null;
+  const want = (a) => {
+    const key = `${c.chainId}|${t.addr}|${a}|${S.slip}`;
+    if (SHQ.busy || (SHQ.key === key && Date.now() - SHQ.at < 30_000)) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      Object.assign(SHQ, { key, busy: true, r: null, err: null });
+      shieldRoute(c, t, a, S.slip).then((r) => { SHQ.r = r; }, (e) => { SHQ.err = e; }).finally(() => { SHQ.busy = false; SHQ.at = Date.now(); if (!S.busy && S.inTok?.[c.chainId] === t) FORM.check?.(); });
+    }, 400);
+  };
+  FORM.check = () => {
+    const a = parseEth(amt.value);
+    rc.hidden = true; mount(rc, ''); go.disabled = !S.key ? false : true; go.textContent = label;
+    const say = (v) => { mount(rc, v); rc.hidden = false; };
+    if (!S.key) return;
+    if (S.sent?.c === c) { say(sentNote(c)); return sentWire(renderForm); }
+    if (!a) { go.textContent = 'Enter an amount'; return badAmt(amt) ? say(badAmt(amt)) : undefined; }
+    want(a);
+    const key = `${c.chainId}|${t.addr}|${a}|${S.slip}`;
+    if (SHQ.key !== key || SHQ.busy) return say(html`<p class="note">Finding the best route…</p>`);
+    if (SHQ.err || !SHQ.r) return say(html`<p class="note err">${SHQ.err ? errText(SHQ.err) : `No route from ${t.sym} for this amount on ${c.full} right now.`}</p>`);
+    const r = SHQ.r;
+    if (least === undefined) return say(html`<p class="note">Reading the relay’s minimum…</p>`);
+    if (tb != null && r.limit > tb) return say(html`${kvRow('Costs at most', `${units(r.limit, t.dec)} ${t.sym}`)}<p class="note err">More ${t.sym} than your wallet holds on ${c.full}.</p>`);
+    say(html`${kvRow('Into your private balance', `${fmt(a)} ETH`)}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${units(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[c.chainId]?.[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
+      ${least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}`);
+    go.disabled = false;
+  };
+  go.onclick = () => {
+    if (!S.key) return openSheet();
+    act(go, async (step) => {
+      const a = parseEth(amt.value);
+      if (!a) throw new Error('Enter an amount.');
+      await walletReady(c, step);
+      // The new address must be unused on this chain: its history is read first.
+      if (CH[c.chainId].at == null) { step('Reading your history'); await syncChain(c, true); }
+      if (CH[c.chainId].at == null) throw new Error(`Could not read your history on ${c.full}, so nothing was sent. Try again in a moment.`);
+      const i = nextBoxIndex();
+      if (i == null) throw new Error('No new deposit address is free right now: take in what waits at the ones you have first.');
+      const W = walletOn(c), box = W.receiveBox(i);
+      const key = `${c.chainId}|${t.addr}|${a}|${S.slip}`, fresh = SHQ.key === key && SHQ.r?.stand && Date.now() - SHQ.at < 60_000;
+      if (!fresh) step('Finding the best route');
+      const r = fresh ? withDest(SHQ.r, box) : await shieldRoute(c, t, a, S.slip, box);
+      if (!r) throw new Error(`No route from ${t.sym} for this amount right now. Nothing was sent.`);
+      const pad = (x) => hex(addrWord(x)), send = async (to, data, what) => {
+        step('confirm in your wallet');
+        const h = await signerFor(c).send({ to, data, value: 0n });
+        step('waiting for the block');
+        await walletMined(c, h, what);
+        return h;
+      };
+      // zRouter takes the token from the wallet: allowed up to the most the route may take (set to zero first where
+      // something else is allowed, which some tokens require).
+      const allowed = BigInt(await walletRead(c, 'eth_call', [{ to: t.addr, data: '0xdd62ed3e' + pad(S.account) + pad(ZROUTER) }, 'latest']));
+      if (allowed < r.limit) {
+        if (allowed > 0n) await send(t.addr, '0x095ea7b3' + pad(ZROUTER) + hex(word(0n)), 'approval');
+        await send(t.addr, '0x095ea7b3' + pad(ZROUTER) + hex(word(r.limit)), 'approval');
+      }
+      const bx = boxes(); bx.issued.push({ i, label: `From ${t.sym}`, at: Date.now() }); vset('boxes', bx);
+      await watchBox(i, [c], true);
+      const h = await send(ZROUTER, r.data, 'swap');
+      delete DRAFT['f-samt']; SHQ.at = 0; balOf();
+      // The relay's minimum now; with no relay answering, or under it, this wallet takes it in itself.
+      const min = relayOf(c) ? await W.quote().then((q) => BigInt(q.receiveMin ?? 0), () => null) : null;
+      if (min == null || a < min) {
+        const h2 = await W.sweep({ index: i, onStep: step });
+        return done(c, h2, `Shielded ${fmt(a)} ETH from ${t.sym}.`);
+      }
+      done(c, h, `Swapped ${t.sym} for ${fmt(a)} ETH at a new deposit address of yours; the relay moves it into your private balance shortly.`);
     });
   };
 }

@@ -21,13 +21,15 @@ const CFG = {
   robinhood: {id: 4663, rpc: 'https://rpc.mainnet.chain.robinhood.com', tokens: [['USDG', '0x5fc5360d0400a0fd4f2af552add042d716f1d168', 6], ['NVDA', '0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', 18]]},
 }[CHAIN];
 const SHIELD = (process.env.SHIELD || '0.0028').split(','), SWAP = process.env.SWAP || '0.001';
-const RPC = {1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://base-rpc.publicnode.com', 4663: 'https://rpc.mainnet.chain.robinhood.com'};
+const RPC = {1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com'};
 const PROV = Object.fromEntries(Object.entries(RPC).map(([k, u]) => [k, new JsonRpcProvider(u, Number(k), {staticNetwork: true})]));
 const eth = PROV[CFG.id], base = PROV[8453];
-const funder = new Wallet(K.funder.key, eth);
+// WALLET: which of the canary's wallets signs (funder by default; destUSDC holds the swapped USDC).
+const funder = new Wallet(K[process.env.WALLET || 'funder'].key, eth);
 const {getAddress} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 const TOKENS = CFG.tokens.map(([sym, a, d]) => [sym, getAddress(a), d]);
 const bal = async (t, a) => BigInt(await eth.call({to: t, data: '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0')}));
+const units = (v, d) => { const s = v.toString().padStart(d + 1, '0'); return `${s.slice(0, s.length - d)}.${s.slice(s.length - d)}`.replace(/\.?0+$/, ''); };
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
 const log = (m) => console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`);
@@ -48,8 +50,9 @@ await ctx.exposeFunction('__rpc', async (method, params) => {
   if (method === 'eth_sendTransaction') {
     const t = params[0], w = funder.connect(p);
     // A small tip and a fee cap of 1.5× the base fee, so a small balance is not held back for gas it will never pay.
-    const baseFee = (await p.getBlock('latest')).baseFeePerGas, tip = 50_000_000n;
+    const baseFee = (await p.getBlock('latest')).baseFeePerGas, tip = chain === 1 ? 50_000_000n : 1_000_000n;
     const req = {to: t.to, data: t.data || '0x', value: BigInt(t.value || 0), maxPriorityFeePerGas: tip, maxFeePerGas: baseFee * 3n / 2n + tip};
+    if (process.env.DUMP) fs.writeFileSync(process.env.DUMP, JSON.stringify({to: t.to, data: t.data, value: String(t.value || 0), chain}));
     req.gasLimit = t.gas ? BigInt(t.gas) : (await p.estimateGas({...req, from: funder.address})) * 6n / 5n;
     const tx = await w.sendTransaction(req);
     log(`wallet sent ${tx.hash} on ${chain}`);
@@ -63,7 +66,7 @@ const p = await ctx.newPage();
 p.errors = [];
 p.on('pageerror', (e) => p.errors.push(String(e)));
 await p.goto(`http://127.0.0.1:${server.address().port}/`);
-const status = async (re, ms = 900e3) => { await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#status').textContent) || document.querySelector('#status .err'), re.source, {timeout: ms}); return (await p.textContent('#status')).trim(); };
+const status = async (re, ms = 900e3) => { await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#status').textContent) || document.querySelector('#status .err') || /not confirmed/.test(document.querySelector('#status').textContent), re.source, {timeout: ms}); return (await p.textContent('#status')).trim(); };
 await p.click('#tabs [data-tab="receive"]');
 await p.click('#form [data-in="paste"]'); await p.fill('#form .opts input', K.tacitKey); await p.click('#form [data-in="key"]');
 await p.waitForSelector('#form .addr code');
@@ -137,6 +140,45 @@ if (steps.has('base')) {
     else if (i % 8 === 0) log(`at the box on Base: ${await base.getBalance(box)} wei`);
   }
   ok(swept, 'Base’s live relay moved it into the private balance on Base');
+}
+if (steps.has('tokenshield')) {
+  const [sym, token, dec] = TOKENS[0], amt = process.env.TOKEN_SHIELD || '0.0002';
+  console.log(`\nshield exactly ${amt} ETH from ${sym}`);
+  await p.click('#tabs [data-tab="shield"]');
+  await p.click('[data-from="wallet"]');
+  if (await p.$('#f-conn')) await p.click('#f-conn');
+  await p.waitForSelector('#f-tok', {timeout: 60e3});
+  if (!new RegExp(sym).test(await p.textContent('#f-tok'))) {
+    await p.click('#f-tok');
+    await p.waitForSelector(`[data-tk="${token}"]`, {timeout: 120e3});
+    await p.click(`[data-tk="${token}"]`);
+    await p.waitForFunction((x) => new RegExp(x).test(document.querySelector('#f-tok')?.textContent || ''), sym, {timeout: 60e3});
+  }
+  const before = await bal(token, funder.address);
+  await p.fill('#f-samt', amt);
+  const ready = await p.waitForFunction(() => /At most/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3}).then(() => true, () => false);
+  const r = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' ');
+  log(r.slice(0, 240));
+  if (ready) {
+    await p.click('#f-go');
+    const s = await status(/Shielded|Swapped|err/);
+    ok(/Shielded|Swapped/.test(s), 'the page shielded it', s);
+    log(`${sym} spent: ${units(before - await bal(token, funder.address), dec)}; private balance on ${CHAIN}: ${(await p.textContent('#bal .v').catch(() => '?')).trim()} ETH`);
+  } else ok(false, 'the form was ready', r.slice(0, 200));
+}
+if (steps.has('takein')) {
+  console.log('\ntake in what waits at the deposit addresses');
+  await p.click('#tabs [data-tab="shield"]');
+  await p.click('[data-from="exchange"]');
+  await p.waitForSelector('#f-check', {timeout: 120e3});
+  await p.click('#f-check');
+  const found = await p.waitForSelector('[data-take]', {timeout: 240e3}).then(() => true, () => false);
+  log((await p.textContent('#form .rows').catch(() => '')).replace(/\s+/g, ' ').slice(0, 200));
+  if (found) {
+    await p.click('[data-take]');
+    const s = await status(/Taken in|err/);
+    ok(/Taken in/.test(s), 'taken in', s.slice(0, 400));
+  } else ok(false, 'something waits at a deposit address');
 }
 ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
 log(`funder holds ${Number(await eth.getBalance(funder.address)) / 1e18} ETH; private balance on Ethereum: ${(await p.textContent('#bal .v').catch(() => '?')).trim()} ETH`);

@@ -51,8 +51,8 @@ ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c
 // a router that names BOX0 as the deposit address.
 const seen = new Set(), DOWN = new Set();
 const TIP = {base: 51864114, robinhood: 73991761, ethereum: 26069345};
-// A tacit1 record with only the pool lane (flags 0x04), as a name may publish.
-const POOLONLY = b32m('tacit', [0, 0x04, ...Array(66).fill(0), ...unb32(DEV_TACIT1).slice(-97)]);
+// A tacit1 record with the Bitcoin and pool lanes and no Ethereum-side key (flags 0x05), as a name may publish.
+const POOLONLY = b32m('tacit', [0, 0x05, ...unb32(DEV_TACIT1).slice(2)]);
 const WNS = '0x0000000000696760e15f265e828db644a0c242eb', GNS = '0x9d51d507bc7264d4fe8ad1cf7fe191933a0a81d6', ENSREG = '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e';
 const R_DIRECT = '0x' + '11'.repeat(20), R_WILD = '0x' + '22'.repeat(20), R_OFF = '0x' + '33'.repeat(20);
 // ENS: the resolver set on a name's own node, a parent's resolver that answers for its subnames, and one that answers off-chain.

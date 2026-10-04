@@ -17,7 +17,8 @@ import { createHash } from 'node:crypto';
 
 const DIR = new URL('../', import.meta.url).pathname;
 const STEWARD = '0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20';
-const OLD_WRAPPER = '0x0000001e01D6ee371b51b49dc80E9B96b238e7c5';   // the live, verified generation this one succeeds
+// Any generation finds the rest: latest() walks forward to the live tip, the only one deployNext can extend.
+const LINEAGE = process.env.LINEAGE || '0x0000001e01D6ee371b51b49dc80E9B96b238e7c5';
 const manifest = JSON.parse(readFileSync(DIR + 'manifest.json', 'utf8'));
 const page = readFileSync(DIR + manifest.page);
 if (page.length !== manifest.bytes || createHash('sha256').update(page).digest('hex') !== manifest.sha256) throw new Error('the page is not the one the manifest pins');
@@ -28,16 +29,6 @@ if (Buffer.concat(runtimes.map((r) => Buffer.from(r.slice(4), 'hex'))).compare(p
 const bytecode = JSON.parse(readFileSync(DIR + 'out/TacitPay8244.sol/TacitPay8244.json', 'utf8')).bytecode.object;
 const { keccak256, getCreateAddress, getAddress, concat, AbiCoder, id, namehash } = await import(new URL('../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 
-// The live generation's chunk addresses, in order. Whichever of these still carries the right bytes for the current
-// chunk at the same index is reused; the rest are redeployed. Checked against mainnet below, not assumed.
-const PREV_CHUNKS = [
-  '0x55090Db872Cd69abC404065652FbfF00bB7C0d0c', '0x86671Ec8a873FC9277e99b4a0da244087476e7f2',
-  '0xE4bF37A5ce872F27946C17ee803c0f7F827c68b3', '0xe8fb74740De2D47d71D760139B30e30B652B13f4',
-  '0xc572e7526224F74911Ad4A580E0402ecD6DaE0c2', '0xC7ab1591cC002729CB63939b2cF426c8936d78Fc',
-  '0x9a4EEEae095B3BC7F59fdc4e3d8ed0A5f84c4E56', '0x01f0F5152C48F9478Ca4881320b8dbc6bFBD1357',
-  '0x97F63235F5a01d5409Ed1d6521b2F3C549D1a022', '0xdc7308635c813580d955118c88a682fAB974521f',
-  '0x9572e4D8F0e85f073FAB9d77989A7739B8A79576', '0xe83358905B560D9a97133d008C7f276E3fa941de',
-];
 const RPC_URL = process.env.ETH_RPC_URL || 'https://ethereum-rpc.publicnode.com';
 const rpcCall = async (method, params) => {
   const res = await fetch(RPC_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
@@ -45,11 +36,23 @@ const rpcCall = async (method, params) => {
   if (j.error) throw new Error(method + ': ' + j.error.message);
   return j.result;
 };
-const reused = await Promise.all(PREV_CHUNKS.map(async (a, i) => {
-  if (i >= runtimes.length) return null;
-  const code = (await rpcCall('eth_getCode', [a, 'latest'])).toLowerCase();
-  return code === runtimes[i].toLowerCase() ? a : null;
-}));
+const abi = AbiCoder.defaultAbiCoder();
+const view = async (to, sig, types = [], args = []) => rpcCall('eth_call', [{ to, data: id(sig).slice(0, 10) + abi.encode(types, args).slice(2) }, 'latest']);
+const addrOf = (word) => getAddress('0x' + String(word).slice(-40));
+const OLD_WRAPPER = addrOf(await view(LINEAGE, 'latest()'));
+if (addrOf(await view(OLD_WRAPPER, 'steward()')) !== getAddress(STEWARD)) throw new Error(`${OLD_WRAPPER} is not stewarded by ${STEWARD}`);
+// Every chunk the lineage already holds, newest generation first, by its exact bytes: a chunk whose bytes are already on
+// chain anywhere in the lineage is reused at that address instead of redeployed. Read from mainnet, not assumed.
+const onchain = new Map();
+for (let g = OLD_WRAPPER; BigInt(g); g = addrOf(await view(g, 'PREVIOUS()'))) {
+  const n = Number(BigInt(await view(g, 'chunkCount()')));
+  for (let i = 0; i < n; i++) {
+    const a = addrOf(await view(g, 'chunkAt(uint256)', ['uint256'], [i]));
+    const code = (await rpcCall('eth_getCode', [a, 'latest'])).toLowerCase();
+    if (!onchain.has(code)) onchain.set(code, a);
+  }
+}
+const reused = runtimes.map((r) => onchain.get(r.toLowerCase()) ?? null);
 const needsDeploy = reused.map((a, i) => (a ? -1 : i)).filter((i) => i !== -1);
 if (!needsDeploy.length) throw new Error('every chunk already matches the live generation; there is nothing to deploy next');
 

@@ -191,7 +191,7 @@ console.log('\na head a few blocks behind the leaf count');
   node.logReads.length = 0;
   const s = await W.sync().catch((e) => e);
   ok(!(s instanceof Error) && s.balance === E / 10n, 'the leaf count is read at that head, so nothing is inconsistent', s?.message || `balance ${s.balance}`);
-  ok(node.logReads.length && node.logReads.every((b) => b > 120), 'and nothing is rebuilt from the first block', `logs read from ${node.logReads.join(', ')}`);
+  ok(node.logReads.every((b) => b > 120), 'and nothing is rebuilt from the first block (a head with no new leaf reads no logs at all)', `logs read from ${node.logReads.join(', ') || 'nowhere'}`);
   lag = 0; node.tip = 140;
   const s2 = await W.sync();
   ok(s2.balance === E / 5n, 'the deposit shows once the head reaches it', `balance ${s2.balance}`);

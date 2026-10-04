@@ -99,6 +99,8 @@ const WALLET = `(() => {
       if (method === 'eth_chainId') return st.chain;
       if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') { st.chain = params[0].chainId; p.emit('chainChanged', st.chain); return null; }
       if (method === 'eth_getCode') return '0x';
+      // Reads the page sends through the wallet are answered by the chain the wallet is on, as a wallet's node would.
+      if (['eth_call', 'eth_getBalance', 'eth_getTransactionReceipt', 'eth_blockNumber'].includes(method)) return window.__read(parseInt(st.chain, 16), method, params);
       if (method === 'personal_sign') return window.__sign(params[0]);
       if (method === 'eth_sendTransaction') return window.__send(parseInt(st.chain, 16), params[0]);
       throw Object.assign(new Error('not in this test: ' + method), { code: 4200 });
@@ -134,6 +136,7 @@ async function open(C, {hash = '', modes = null, viewport = {width: 1100, height
     return route.fulfill({status: 503, headers: cors, body: '{}'});
   });
   await ctx.exposeFunction('__sign', (h) => DEV.signMessage(Buffer.from(h.slice(2), 'hex')));
+  await ctx.exposeFunction('__read', (cid, method, params) => (C[cid] ? answer(C[cid], {method, params}) : null));
   await ctx.exposeFunction('__send', (cid, tx) => {
     if (tx.to.toLowerCase() !== POOL.toLowerCase()) return C[cid].transfer(tx.to, BigInt(tx.value || 0));
     const d = iface.decodeFunctionData('transact', tx.data);

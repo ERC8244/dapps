@@ -60,8 +60,11 @@ ok(/#pay=tacit1[a-z0-9]+&n=[0-9a-f]{64}&ns=/.test(link), 'a signed link with a d
 console.log('\nthe payer pays it from a wallet, and the network never confirms');
 const ctx = await browser.newContext();
 await routes(ctx);
+// Reads the page sends through the wallet are answered as the wallet's own node on Base would.
+await ctx.exposeFunction('__read', (method, params) => answer('mainnet.base.org', {method, params}));
 await ctx.addInitScript(`window.__sent = 0; window.ethereum = { on() {}, removeListener() {}, request: async ({ method, params }) => {
   if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [${JSON.stringify(PAYER)}];
+  if (['eth_call', 'eth_getBalance', 'eth_getTransactionReceipt', 'eth_blockNumber', 'eth_getCode'].includes(method)) return window.__read(method, params);
   if (method === 'eth_chainId') return '0x2105';
   if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') return null;
   if (method === 'eth_sendTransaction') { window.__sent++; return ${JSON.stringify(SENT)}; }

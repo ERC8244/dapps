@@ -58,7 +58,8 @@ ok(combinePlan(5n * 10n ** 12n, [W, 2n * W]) === null && combinePlan(5n * 10n **
 const cp = combinePlan(5n * 10n ** 12n, [4n * W, W, W, W, W]);
 ok(cp.parts === 5 && cp.steps === 4 && cp.cost === 20n * 10n ** 12n && cp.after === 8n * W - 20n * 10n ** 12n, 'five parts take four steps, each paying the fee once', JSON.stringify({...cp, cost: String(cp.cost), after: String(cp.after)}));
 ok(combinePlan(null, [W, W, W]).cost === 0n && combinePlan(0n, [W, W, W]).steps === 2, 'with no fee known yet, or none (the wallet pays the gas), the steps still count');
-ok(combinePlan(2n * W, [W, W, W]) === null && combinePlan(W, [W, W, W]).after === W, 'and it is not offered when the fees would eat the balance');
+ok(combinePlan(2n * W, [W, W, W]) === null && combinePlan(W / 2n, [W, W, W]).after === 2n * W, 'and it is not offered when the fees would eat the balance');
+ok(combinePlan(W, [W, W, W]) === null && combinePlan(W, [2n * W, 2n * W, 2n * W, W]).parts === 3, 'a part worth no more than one step\'s fee is left out: combining it would cost what it holds');
 
 console.log('\nwhy an amount cannot be spent');
 {

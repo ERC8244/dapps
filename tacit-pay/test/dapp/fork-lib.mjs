@@ -32,12 +32,15 @@ const FORK_FROM = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https
 // The first development account, as a plain account: on real chains it carries delegation code.
 export const ACCT = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266';
 const TRANSACT = new Interface(['function transact(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1)']);
+const ROUTER_CALL = new Interface(['function withdrawAndCall((uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1) t, ((address target, uint256 value, address token, uint256 amount, bool push, bytes data)[] calls, address[] outTokens, uint256[] minOuts, address to, address refund, uint64 deadline, uint256 nonce) intent)']);
 
 export const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 /** Forks `names` (chain keys), serves the page, and returns the harness. `relay` is the mock relay's state, or null for
  *  relays that are down: { mode, fee, relayer, quote, events, calls }. */
-export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = []} = {}) {
+// `realCalls`: contracts whose eth_call reads are answered by the chain itself rather than the fork (read-only contracts
+// whose state a fork would fetch slot by slot, such as a token list or a quoter); everything else is the fork's.
+export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = [], realCalls = []} = {}) {
   const forks = {};
   for (const name of names) {
     const c = CHAINS.find((x) => x.key === name);
@@ -98,9 +101,11 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
       if (relay.mode === 'error') return json(route, 500, {error: 'relay busy'});
       if (relay.mode === 'nowhere') return json(route, 200, {txHash: '0x' + hexKey()});
       if (relay.mode === 'other') return json(route, 200, {txHash: relay.other});
-      const t = body.tx;
-      const data = TRANSACT.encodeFunctionData('transact', [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, BigInt(t.extAmount), t.relayer, BigInt(t.fee), t.memo0, t.memo1]);
-      try { return json(route, 200, {txHash: await f.rpc('eth_sendTransaction', [{from: t.relayer, to: POOL, data, gas: '0x7a1200'}])}); }
+      const t = body.tx, args = [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, BigInt(t.extAmount), t.relayer, BigInt(t.fee), t.memo0, t.memo1];
+      // A call intent goes through the router (withdrawAndCall), as the relay sends it; anything else to the pool.
+      const i = body.call, data = i ? ROUTER_CALL.encodeFunctionData('withdrawAndCall', [args, [i.calls.map((c) => [c.target, BigInt(c.value), c.token, BigInt(c.amount), !!c.push, c.data]), i.outTokens, i.minOuts.map(BigInt), i.to, i.refund, BigInt(i.deadline), BigInt(i.nonce)]])
+        : TRANSACT.encodeFunctionData('transact', args);
+      try { return json(route, 200, {txHash: await f.rpc('eth_sendTransaction', [{from: t.relayer, to: i ? ROUTER : POOL, data, gas: '0x' + (i ? 3_000_000 : 8_000_000).toString(16)}])}); }
       catch (e) { return json(route, 400, {error: e.message}); }
     }
     return json(route, 404, {error: 'unknown'});
@@ -121,6 +126,7 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
     return JSON.stringify(bad ? {jsonrpc: '2.0', id: req.id, error: bad.error || {code: -32000, message: 'not a log list'}} : {jsonrpc: '2.0', id: req.id, result: out.flatMap((x) => x.result)});
   }
   const nodes = Object.fromEntries(Object.values(forks).map((f) => [f.c.chainId, f.c.rpc[0]]));
+  const realSet = new Set(realCalls.map((a) => a.toLowerCase()));
   async function newContext() {
     const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
     await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -130,7 +136,8 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         let t;
         try {
           const req = JSON.parse(body || '{}');
-          t = req.method === 'eth_getLogs' ? await logs(f, req) : await (await fetch(f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
+          const real = !Array.isArray(req) && req.method === 'eth_call' && realSet.has(String(req.params?.[0]?.to || '').toLowerCase());
+          t = req.method === 'eth_getLogs' ? await logs(f, req) : await (await fetch(real ? REAL[f.c.key] : f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
         }
         catch (e) { t = JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}); }
         return route.fulfill({status: 200, contentType: 'application/json', headers: cors, body: t}).catch(() => {});

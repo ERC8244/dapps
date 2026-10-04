@@ -37,7 +37,7 @@ const move = async (amount, via) => {
   await p.click('#f-go');
   const said = await p.status(/Moving|err/);
   const logs = await f.rpc('eth_getLogs', [{address: BRIDGE, topics: [T_DEPOSIT], fromBlock: '0x' + (before + 1).toString(16), toBlock: 'latest'}]);
-  return {said, logs};
+  return {said, logs, hash: logs[0]?.transactionHash};
 };
 
 console.log('\nmove 0.01 ETH to Base through the relay');
@@ -66,5 +66,35 @@ const shown = await p.balance((Number(left) / 1e18).toString());
 ok(shown === (Number(left) / 1e18).toString(), 'the balance is less the two moves and one relay fee', shown);
 const rows = await p.rows(3);
 ok(rows.filter((r) => /Moved to Base/.test(r)).length === 2, 'Activity reads "Moved to Base" for both', rows.join(' | '));
+
+console.log('\non Base: the bridge delivers it, and it moves into the private balance');
+// The deposit as Base executes it: the L1 messenger's message, relayed by its aliased address to the L2 messenger.
+const L1M = '0x866E82a600A1414e583f7F13623F1aC5d58b0Afa', L2M = '0x4200000000000000000000000000000000000007';
+const alias = '0x' + ((BigInt(L1M) + 0x1111000000000000000000000000000000001111n) % (1n << 160n)).toString(16).padStart(40, '0');
+const MSG = new Interface(['event SentMessage(address indexed target, address sender, bytes message, uint256 messageNonce, uint256 gasLimit)', 'event SentMessageExtension1(address indexed sender, uint256 value)', 'function relayMessage(uint256 _nonce, address _sender, address _target, uint256 _value, uint256 _minGasLimit, bytes _message) payable']);
+const rc1 = await f.rpc('eth_getTransactionReceipt', [a.hash]);
+const sentLog = rc1.logs.find((l) => l.address.toLowerCase() === L1M.toLowerCase() && l.topics[0] === MSG.getEvent('SentMessage').topicHash);
+const extLog = rc1.logs.find((l) => l.address.toLowerCase() === L1M.toLowerCase() && l.topics[0] === MSG.getEvent('SentMessageExtension1').topicHash);
+ok(!!sentLog && !!extLog, 'the Ethereum transaction sent one message through Base’s messenger');
+const m = MSG.parseLog(sentLog).args, v = MSG.parseLog(extLog).args.value;
+const fb = lab.fork('base');
+await fb.rpc('anvil_impersonateAccount', [alias]);
+await fb.rpc('anvil_setBalance', [alias, '0x' + (10n ** 18n).toString(16)]);
+const relayHash = await fb.rpc('eth_sendTransaction', [{from: alias, to: L2M, value: '0x' + v.toString(16), data: MSG.encodeFunctionData('relayMessage', [m.messageNonce, m.sender, m.target, v, m.gasLimit, m.message]), gas: '0x' + (2_000_000).toString(16)}]);
+let rr = null;
+for (let i = 0; i < 40 && !rr; i++) { rr = await fb.rpc('eth_getTransactionReceipt', [relayHash]); if (!rr) await new Promise((r) => setTimeout(r, 500)); }
+const onBase = BigInt(await fb.rpc('eth_getBalance', [to1, 'latest']));
+ok(rr?.status === '0x1' && onBase === 10n ** 16n, 'Base’s bridge pays the new deposit address 0.01 ETH', `${onBase} wei at ${to1}`);
+await p.chain('base');
+await p.click('#tabs [data-tab="shield"]');
+await p.click('[data-from="exchange"]');
+await p.waitForSelector('#f-check', {timeout: 120e3});
+await p.click('#f-check');
+await p.waitForSelector('[data-take]', {timeout: 180e3});
+ok(/0\.01 ETH is waiting here on Base/.test(await p.textContent('#form')), 'the page finds it waiting at that address on Base');
+await p.click('[data-take]');
+const taken = await p.status(/Taken in|err/);
+ok(/Taken in/.test(taken), 'and takes it in from the wallet', taken);
+ok(await p.balance('0.01') === '0.01', 'the private balance on Base is 0.01');
 ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
 finish(lab.close);

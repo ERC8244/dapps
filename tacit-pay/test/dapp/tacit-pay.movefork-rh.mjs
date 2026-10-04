@@ -47,5 +47,28 @@ ok(logs.length === 1 && t && logs[0].data.toLowerCase().includes(t.to.slice(2).t
 ok((await f.rpc('eth_getCode', [t?.to, 'latest'])) === '0x', 'which holds no code on Ethereum, so the ticket’s refunds are not aliased');
 const rows = await p.rows(2);
 ok(rows.some((r) => /Moved to Robinhood/.test(r)), 'Activity reads "Moved to Robinhood"', rows.join(' | '));
+
+console.log('\non Robinhood Chain: the ticket pays it, and it moves into the private balance');
+// What the ticket's redemption does on Robinhood Chain (ArbOS runs it; anvil cannot): a call from the escrow's aliased
+// address to the new deposit address with the ticket's value, within the ticket's gas.
+const fr = lab.fork('robinhood'), escrow = sent.body.tx.recipient;
+const alias = '0x' + ((BigInt(escrow) + 0x1111000000000000000000000000000000001111n) % (1n << 160n)).toString(16).padStart(40, '0');
+await fr.rpc('anvil_impersonateAccount', [alias]);
+await fr.rpc('anvil_setBalance', [alias, '0x' + (10n ** 18n).toString(16)]);
+const redeem = await fr.rpc('eth_sendTransaction', [{from: alias, to: t.to, value: '0x' + t.l2CallValue.toString(16), data: '0x', gas: '0x' + t.gasLimit.toString(16)}]);
+let rr = null;
+for (let i = 0; i < 40 && !rr; i++) { rr = await fr.rpc('eth_getTransactionReceipt', [redeem]); if (!rr) await new Promise((r) => setTimeout(r, 500)); }
+ok(rr?.status === '0x1' && BigInt(rr.gasUsed) <= t.gasLimit, 'the redemption fits the ticket’s gas and pays the new address', `gas ${rr ? BigInt(rr.gasUsed) : '?'} of ${t.gasLimit}`);
+await p.chain('robinhood');
+await p.click('#tabs [data-tab="shield"]');
+await p.click('[data-from="exchange"]');
+await p.waitForSelector('#f-check', {timeout: 120e3});
+await p.click('#f-check');
+await p.waitForSelector('[data-take]', {timeout: 180e3});
+ok(/0\.01 ETH is waiting here on Robinhood Chain/.test(await p.textContent('#form')), 'the page finds it waiting at that address on Robinhood Chain');
+await p.click('[data-take]');
+const taken = await p.status(/Taken in|err/);
+ok(/Taken in/.test(taken), 'and takes it in from the wallet', taken);
+ok(await p.balance('0.01') === '0.01', 'the private balance on Robinhood Chain is 0.01');
 ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
 finish(lab.close);

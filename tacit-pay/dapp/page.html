@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-65uUMdA15dfOcvsAdN6SLNxpjrd3wF148kBzFl22+g4=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-nTdU9+l3TMF8KodVyyoqQ0AKDtcHv20oK44mHcJq0IM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -2121,11 +2121,11 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const maxOf = (fee) => { const u = unspent().map((n) => BigInt(n.v)).sort((a, b) => (b < a ? -1 : 1)), t = (u[0] ?? 0n) + (u[1] ?? 0n); if (t <= fee) throw new Error('Your private balance does not cover its fee.'); return t - fee; };
   // While a payment from this balance may still land, a new one waits for the user to say it is a different payment
   // (`fresh`): the usual way out is to try the held one again, which cannot pay twice.
-  async function spend({ to, amount, via, out, onStep, expectFee = null, guard = null, fresh = false, call = null, gas = null }) {
+  async function spend({ to, amount, via, out, onStep, expectFee = null, guard = null, fresh = false, call = null, gas = null, why = null }) {
     await sync();
     const held = !fresh && saved.inflight.find((x) => x.pay);
     if (held) throw Object.assign(new Error('A payment from this balance may still land. Try it again, or wait for the network to show it.'), { inflight: held.id, hold: true });
-    const pay = call ? { kind: 'call', to, amount: String(amount), call: intentJson(call), gas } : out ? { kind: 'withdraw', to, amount: String(amount) } : { kind: 'send', to: bech32m.encode('bp', to.raw), amount: String(amount) };
+    const pay = call ? { kind: 'call', to, amount: String(amount), call: intentJson(call), gas, why } : out ? { kind: 'withdraw', to, amount: String(amount) } : { kind: 'send', to: bech32m.encode('bp', to.raw), amount: String(amount) };
     if (!fresh && amount !== 'max' && (saved.landed || []).some((y) => samePay(y.pay, pay) && Date.now() - y.at < 3_600_000)) throw Object.assign(new Error('This same payment landed within the last hour. Press again only to pay it a second time.'), { duplicate: true });
     let q = await quoteWithin(via, expectFee, gas);
     const fee = q ? BigInt(q.fee) : 0n;
@@ -2154,12 +2154,15 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const inflight = () => saved.inflight.filter((x) => x.pay).map(({ id, pay, at }) => ({ id, pay, at }));
   // The same payment again, from the same notes, by the relay or the wallet: if the first one lands after all, this one
   // cannot (they spend the same notes). → tx hash, or null when the first one has landed or can no longer land.
-  async function retry(id, { via = null, onStep = () => {}, expectFee = null } = {}) {
+  // `renew(pay)`: a call whose deadline is near or past is built again (a new route or bridge fee, a new deadline) for
+  // the same purpose, from the same notes, so either it or the first one lands, never both.
+  async function retry(id, { via = null, onStep = () => {}, expectFee = null, renew = null } = {}) {
     await sync();
     const x = saved.inflight.find((y) => y.id === id);
     if (!x?.pay) return null;
     const live = new Map(state().notes.map((n) => [String(n.nf), n])), ins = x.nfs.map((nf) => live.get(nf));
     if (ins.some((n) => !n)) return null;
+    if (x.pay.kind === 'call' && renew && Number(x.pay.call.deadline) * 1000 < Date.now() + 600_000) { x.pay = await renew(x.pay); persist(); }
     const q = await quoteWithin(via, expectFee, x.pay.gas ?? null);
     try { return await payWith(ins, x.pay, { to: x.pay.kind === 'send' ? parseRecipient(x.pay.to) : x.pay.to, q, onStep }); }
     catch (e) { if (e?.landed) return null; throw e; }
@@ -2195,9 +2198,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     },
     // Pays `value` wei out of the pool into call intent `intent`'s escrow, which makes its calls in the same
     // transaction (router.withdrawAndCall); `gas` sizes the relay's quote. → tx hash.
-    callOut({ intent, value, gas, via = null, onStep = () => {}, expectFee = null, fresh = false }) {
+    callOut({ intent, value, gas, via = null, onStep = () => {}, expectFee = null, fresh = false, why = null }) {
       if (BigInt(intent.deadline) * 1000n < BigInt(Date.now() + 600_000)) throw new Error('That has expired. Start it again.');
-      return spend({ to: escrowOf(chain.router, intent), amount: BigInt(value), via, out: true, onStep, expectFee, fresh, call: intent, gas });
+      return spend({ to: escrowOf(chain.router, intent), amount: BigInt(value), via, out: true, onStep, expectFee, fresh, call: intent, gas, why });
     },
     // Shields `amount` wei from the signer into a note for `to` ({ V, A, N }), this wallet by default. → tx hash.
     async deposit({ amount, to = keys, onStep = () => {}, guard = null }) {
@@ -3139,10 +3142,28 @@ const wireRoute = (f, tab) => $$('[data-route]', f).forEach((b) => b.onclick = (
 let FRESH = false;
 const takeFresh = () => { const f = FRESH; FRESH = false; return f; };
 // The held payment again, from the same notes: by the relay, or by the wallet.
+// A held swap or move whose deadline has come is built again for the same purpose: a new route, or the bridge's fee now.
+async function renewCall(c, pay) {
+  const w = pay.why || {};
+  let intent, value, gas, label;
+  if (w.swap) {
+    const r = await swapRoute(c, w.swap, BigInt(pay.amount), BigInt(w.slip), w.dest);
+    if (!r) throw new Error(`No route into ${w.swap.sym} right now, so nothing was sent. Try again in a moment.`);
+    intent = { calls: [{ target: ZROUTER, value: r.value, token: ZERO_ADDRESS, amount: 0n, push: false, data: r.data }], outTokens: [], minOuts: [], to: ZERO_ADDRESS, refund: w.dest, deadline: r.deadline, nonce: big(randomBytes(16)) };
+    ({ value, gas } = r); label = `Swapped for ${w.swap.sym}`;
+  } else if (w.move) {
+    const to = CHAINS.find((x) => x.chainId === w.move), box = walletOn(to).receiveBox(w.index), m = await moveCall(to, box, BigInt(w.amount));
+    intent = { calls: [m.call], outTokens: [], minOuts: [], to: ZERO_ADDRESS, refund: box, deadline: BigInt(Math.floor(Date.now() / 1000) + 3600), nonce: big(randomBytes(16)) };
+    ({ value, gas } = m); label = `Moved to ${to.name}`;
+  } else return pay;
+  vset('moves', { ...(vget('moves') || {}), [lc(escrowOf(ROUTER, intent))]: label });
+  return { ...pay, to: escrowOf(ROUTER, intent), amount: String(value), call: intentJson(intent), gas };
+}
 function retryHeld(btn, id, via) {
   return act(btn, async (step, c) => {
     if (via === 'self') await walletReady(c, step);
-    const h = await walletOn(c).retry(id, { via: via === 'self' ? 'self' : null, onStep: step, expectFee: via === 'self' ? null : feeOf('send') });
+    const call = walletOn(c).inflight().find((x) => x.id === id)?.pay?.kind === 'call';
+    const h = await walletOn(c).retry(id, { via: via === 'self' ? 'self' : null, onStep: step, expectFee: via === 'self' || call ? null : feeOf('send'), renew: (p) => renewCall(c, p) });
     if (h) done(c, h, 'It landed.'); else mount($('#status'), html`<span class="ok">It is settled: your balance shows whether it landed.</span>`);
   });
 }
@@ -3462,7 +3483,8 @@ function formWithdraw(f) {
 // (token.list.wei) on Ethereum, logos included.
 const ZQUOTER = '0x000000bd2db80567c23e353ca95a251c573cbf9b', Z3H = '0x000000f584434f81fc115b1a59243a4287db08be', ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4';
 const TLIST = '0x0000006013dF75A31678B786061C2B54bf531524';
-const SOURCES = { 0: 'Uniswap v2', 1: 'Sushi', 3: 'Uniswap v3', 4: 'Uniswap v4', 5: 'Curve', 6: 'Lido', 7: 'Wrap', 8: 'Precision' };
+// What a route's source number names, per chain, as zSwap reads it.
+const SOURCES = { 1: ['Uniswap v2', 'Sushi', '', 'Uniswap v3', 'Uniswap v4', 'Curve', 'Lido', 'Wrap', 'Precision'], 8453: ['Uniswap v2', 'Aerodrome', '', 'Uniswap v3', 'Uniswap v4', 'Aerodrome CL', 'Wrap', '', 'Precision'], 4663: ['Uniswap v2', 'Sushi', '', 'Uniswap v3', 'Uniswap v4', 'Curve', 'Lido', 'Wrap', 'Precision'] };
 const logoOk = (u) => (typeof u === 'string' && u.length <= 32_768 && /^data:image\/(svg\+xml|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(u) ? u : '');
 const textOk = (x, n) => String(x ?? '').replace(/\p{C}/gu, '').trim().slice(0, n);
 const units = (v, d) => { const s = v.toString().padStart(d + 1, '0'), i = s.slice(0, s.length - d), f = d ? s.slice(s.length - d, s.length - d + 6).replace(/0+$/, '') : ''; return f ? `${i}.${f}` : i; };
@@ -3618,7 +3640,7 @@ function formSwap(f, seg) {
       $('#f-combine')?.addEventListener('click', () => { $('#bal-note').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); $('#bal-combine')?.click(); });
       return;
     }
-    say(html`${where}${kvRow('Arrives', `about ${units(r.out, t.dec)} ${t.sym}`)}${kvRow('At least', `${units(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
+    say(html`${where}${kvRow('Arrives', `about ${units(r.out, t.dec)} ${t.sym}`)}${kvRow('At least', `${units(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[c.chainId]?.[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
       ${kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}`);
     go.disabled = false;
   };
@@ -3645,7 +3667,7 @@ function formSwap(f, seg) {
       const intent = { calls: [{ target: ZROUTER, value: r.value, token: ZERO_ADDRESS, amount: 0n, push: false, data: r.data }], outTokens: [], minOuts: [], to: ZERO_ADDRESS, refund: dest, deadline: r.deadline, nonce: big(randomBytes(16)) };
       vset('moves', { ...(vget('moves') || {}), [lc(escrowOf(ROUTER, intent))]: `Swapped for ${t.sym}` });
       if (viaOf(tab) === 'self') await walletReady(c, step);
-      const h = await walletOn(c).callOut({ intent, value: r.value, gas: r.gas, via: viaOf(tab), onStep: step, expectFee: was?.fee ?? null, fresh: takeFresh() });
+      const h = await walletOn(c).callOut({ intent, value: r.value, gas: r.gas, via: viaOf(tab), onStep: step, expectFee: was?.fee ?? null, fresh: takeFresh(), why: { swap: { addr: t.addr, sym: t.sym, dec: t.dec }, dest, slip: String(S.slip) } });
       delete DRAFT['f-wamt'];
       done(c, h, `Sent about ${units(r.out, t.dec)} ${t.sym} to ${short(dest)}.`);
     });
@@ -3687,12 +3709,14 @@ function formMove(f, seg) {
     <p class="note">${pal('face')}Through ${to.full}’s own bridge to a new deposit address of yours there, which its relay moves into your private balance for up to 0.25%. It arrives in minutes. The amount and that address show on both chains; which deposit it came from does not.</p>`);
   wireRoute(f, tab);
   const amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
-  const q = (MOVEQ[to.chainId] ||= { at: 0, fee: null, extra: null, err: null, busy: false });
+  const q = (MOVEQ[to.chainId] ||= { at: 0, fee: null, extra: null, min: null, err: null, busy: false });
   const read = () => {
     if (q.busy || Date.now() - q.at < 60_000) return;
     q.busy = true;
-    Promise.all([relayOf(c) ? walletOn(c).quote(gas).then((x) => BigInt(x.fee)) : null, moveCall(to, '0x' + '11'.repeat(20), 10n ** 15n).then((m) => m.value - 10n ** 15n)])
-      .then(([fee, extra]) => Object.assign(q, { at: Date.now(), fee, extra, err: null }), (e) => Object.assign(q, { at: Date.now() - 45_000, err: e }))
+    // The least the rollup's relay moves in by itself, from its own quote.
+    const least = relayOf(to) ? walletOn(to).quote().then((x) => (x.receiveMin ? BigInt(x.receiveMin) : null), () => null) : null;
+    Promise.all([relayOf(c) ? walletOn(c).quote(gas).then((x) => BigInt(x.fee)) : null, moveCall(to, '0x' + '11'.repeat(20), 10n ** 15n).then((m) => m.value - 10n ** 15n), least])
+      .then(([fee, extra, min]) => Object.assign(q, { at: Date.now(), fee, extra, min, err: null }), (e) => Object.assign(q, { at: Date.now() - 45_000, err: e }))
       .finally(() => { q.busy = false; if (!S.busy && S.moveTo === to.chainId) FORM.check?.(); });
   };
   const feeNow = () => (viaOf(tab) === 'self' ? 0n : q.fee);
@@ -3707,6 +3731,8 @@ function formMove(f, seg) {
     if (S.sent?.c === c) { say(sentNote(c)); return sentWire(renderForm); }
     if (!a) { go.textContent = 'Enter an amount'; return badAmt(amt) ? say(badAmt(amt)) : undefined; }
     if (fee == null || q.extra == null) return say(html`<p class="note${q.err ? ' err' : ''}">${q.err ? errText(q.err) : 'Reading what the move costs…'}</p>`);
+    // Under the rollup relay's minimum nothing moves it in by itself, and taking it in there needs gas on that chain.
+    if (q.min != null && a < q.min) return say(html`<p class="note err">Move at least ${fmt(q.min)} ETH. Under that, ${to.full}’s relay does not move it into your private balance, and taking it in yourself needs ETH on ${to.full} for gas.</p>`);
     const p = plan(a + q.extra, fee);
     if (bal != null && !p) {
       const why = whyNot(a + q.extra, fee, bal, cur().notes || []);
@@ -3715,7 +3741,8 @@ function formMove(f, seg) {
       return;
     }
     say(html`${kvRow(`Moves to ${to.full}`, `${fmt(a)} ETH`)}${q.extra ? kvRow(`${to.full}’s bridge`, `about ${fmt(q.extra)} ETH, the unused part arriving too`) : ''}${kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}
-      ${kvRow(`Then on ${to.full}`, 'up to 0.25%, into your private balance')}${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private here', `${fmt(bal - p.total)} ETH`) : ''}`);
+      ${kvRow(`Then on ${to.full}`, 'up to 0.25%, into your private balance')}${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private here', `${fmt(bal - p.total)} ETH`) : ''}
+      <p class="note">If gas on ${to.full} rises before it arrives, it waits at the new address, shown under Shield on ${to.full}, until the relay moves it in or you take it in.</p>`);
     go.disabled = false;
   };
   go.onclick = () => act(go, async (step) => {
@@ -3726,6 +3753,7 @@ function formMove(f, seg) {
     if (need.some((x) => CH[x.chainId].at == null)) { step('Reading your history'); await Promise.all(need.map((x) => syncChain(x, true))); }
     const unread = need.filter((x) => CH[x.chainId].at == null);
     if (unread.length) throw new Error(`Could not read your history on ${unread.map((x) => x.full).join(' and ')}, so nothing was sent. Try again in a moment.`);
+    if (q.min != null && a < q.min) throw new Error(`Move at least ${fmt(q.min)} ETH, so ${to.full}’s relay moves it into your private balance.`);
     const i = nextBoxIndex();
     if (i == null) throw new Error('No new deposit address is free right now: get paid at one you have first.');
     const box = walletOn(to).receiveBox(i), m = await moveCall(to, box, a);
@@ -3736,7 +3764,7 @@ function formMove(f, seg) {
     const intent = { calls: [m.call], outTokens: [], minOuts: [], to: ZERO_ADDRESS, refund: box, deadline: BigInt(Math.floor(Date.now() / 1000) + 3600), nonce: big(randomBytes(16)) };
     vset('moves', { ...(vget('moves') || {}), [lc(escrowOf(ROUTER, intent))]: `Moved to ${to.name}` });
     if (viaOf(tab) === 'self') await walletReady(c, step);
-    const h = await walletOn(c).callOut({ intent, value: m.value, gas: m.gas, via: viaOf(tab), onStep: step, expectFee: shown, fresh: takeFresh() });
+    const h = await walletOn(c).callOut({ intent, value: m.value, gas: m.gas, via: viaOf(tab), onStep: step, expectFee: shown, fresh: takeFresh(), why: { move: to.chainId, index: i, amount: String(a) } });
     delete DRAFT['f-wamt'];
     done(c, h, `Moving ${fmt(a)} ETH to your private balance on ${to.full}. It arrives in minutes.`);
   });

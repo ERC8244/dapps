@@ -127,6 +127,8 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   }
   const nodes = Object.fromEntries(Object.values(forks).map((f) => [f.c.chainId, f.c.rpc[0]]));
   const realSet = new Set(realCalls.map((a) => a.toLowerCase()));
+  // Reads at a recent block, which a node with no archive serves; Base's own endpoint limits bursts more tightly.
+  const REAL_CALLS = {ethereum: 'https://ethereum-rpc.publicnode.com', base: 'https://base-rpc.publicnode.com', robinhood: REAL.robinhood};
   async function newContext() {
     const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
     await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -137,7 +139,7 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         try {
           const req = JSON.parse(body || '{}');
           const real = !Array.isArray(req) && req.method === 'eth_call' && realSet.has(String(req.params?.[0]?.to || '').toLowerCase());
-          t = req.method === 'eth_getLogs' ? await logs(f, req) : await (await fetch(real ? REAL[f.c.key] : f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
+          t = req.method === 'eth_getLogs' ? await logs(f, req) : await (await fetch(real ? REAL_CALLS[f.c.key] : f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
         }
         catch (e) { t = JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}); }
         return route.fulfill({status: 200, contentType: 'application/json', headers: cors, body: t}).catch(() => {});

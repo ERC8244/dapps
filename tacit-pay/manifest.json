@@ -3,8 +3,8 @@
   "title": "anon.wei — private ETH payments",
   "description": "Onchain front end for private ETH payments on Ethereum, Base and Robinhood Chain: shield from any wallet into anyone’s private balance, pay privately, withdraw any part. Proved in the reader’s browser, recovered from the reader’s key.",
   "page": "dapp/page.html",
-  "bytes": 348263,
-  "sha256": "2cf9e870874d3b7e2a0269150d5ec3469acd14695a8c992df8aef5b6a553359d",
+  "bytes": 351627,
+  "sha256": "9e1bb7e02234271bf903f1c40f48fc8641ab60a152c2ace6cf7cd5e16aa01609",
   "chunks": {
     "artifact": "TacitPay8244",
     "maxPayload": 24575,

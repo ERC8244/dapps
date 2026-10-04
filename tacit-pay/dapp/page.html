@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-B0qkTxWsLbbMllBAVrUGdI4yGNRHpyemhYaPGecKEOU=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pjZlz6WPzVMLoImuT0k0pVE2e8vo97JNhTZTqYEZaDY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -1989,6 +1989,14 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       const t = { start }; x.tries.push(t); persist();
       return () => { x.tries = x.tries.filter((y) => y !== t); if (!x.tries.length) saved.inflight = saved.inflight.filter((y) => y !== x); persist(); };
     };
+    // Seen to land: its hold ends now, not once it is confirmed, and the same payment pressed again is asked about first.
+    const settled = () => {
+      const x = saved.inflight.find((y) => y.id === id);
+      if (!x) return;
+      saved.inflight = saved.inflight.filter((y) => y !== x);
+      if (x.pay) saved.landed = [...(saved.landed || []), { pay: x.pay, at: Date.now() }].slice(-20);
+      persist();
+    };
     let queued = false;
     for (let round = 0; round < 8; round++) {
       if (round) {
@@ -2045,7 +2053,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         h = /^0x[0-9a-f]{64}$/i.test(String(r.body.txHash)) ? r.body.txHash : null;
         onStep('waiting for the block');
         const res = await followed(nfs, start);
-        if (res === 'yes') return h;
+        if (res === 'yes') { settled(); return h; }
         if (res === 'pending') throw inFlight(id, 'The network has not shown this payment yet.');
         continue;
       }
@@ -2060,6 +2068,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         logsAt = 0;   // a spend with no new leaf moves no count: read the logs next time
         const used = new Set(nfs);
         await waitFor(() => !state().notes.some((n) => used.has(String(n.nf))), 60_000).then(() => { for (const n of ins) pending.delete(String(n.nf)); }, () => {});
+        settled();
         return h;
       }
       for (const n of ins) pending.delete(String(n.nf));
@@ -3574,7 +3583,7 @@ function routeOf(h, slip, u, v, S, mv) {
 // through ETH and three hops as multicalls, and split routes, each with the share of slippage `slip` (basis points) it
 // needs; the most out wins. The nodes asked see a random stand-in for `to`, written into the route afterwards, and two
 // of them must return the same route at the same block, since the route says where the tokens go.
-async function swapRoute(c, t, amount, slip, to) {
+async function swapRoute(c, t, amount, slip, to = null) {
   const stand = hex(randomBytes(20)), A = (a) => hex(addrWord(a)), U = (v) => hex(word(v)), deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
   const tk = (sl) => U(0n) + A(ZERO_ADDRESS) + A(t.addr) + U(amount) + U(sl) + U(deadline), me = '0'.repeat(24) + stand;
   const s2 = slip / 2n || 1n, s3 = slip / 3n || 1n, w = slip * 3n, ss = w < 150n ? 150n : w > 500n ? 500n : w;
@@ -3582,16 +3591,48 @@ async function swapRoute(c, t, amount, slip, to) {
   const jobs = [[ZQUOTER, 'e7798987' + me + tk(slip), slip, 0, 4, 0, 6], [ZQUOTER, 'e453166e' + me + me + tk(s2), s2, 4, 9, 0],
     ...(c.chainId === 1 ? [] : [[Z3H, '4c464f59' + me + tk(s3), s3, 8, 13, 0]]), split('892af013', slip), split('85f86a90', ss)];
   const block = '0x' + Math.max(0, (await headOf(nodesOf(c))) - 2).toString(16);
-  const got = await Promise.all(jobs.map(([q, d, sl, ...r]) => quorum(q, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => routeOf(h, sl, ...r)).catch(() => null)));
-  const best = got.filter((r) => r && r.value === amount && r.data.includes(stand)).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0))[0];
+  // Two agreeing nodes, or else one node's answer marked to be checked: some routes take more gas to find than most
+  // nodes allow a call.
+  const ask = (q, d) => quorum(q, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => ({ h }), () => anyNode(c, q, '0x' + d, block).then((h) => ({ h, lone: true })));
+  const got = await Promise.all(jobs.map(([q, d, sl, ...r]) => ask(q, d).then(({ h, lone }) => ({ ...routeOf(h, sl, ...r), lone })).catch(() => null)));
+  const ok = got.filter((r) => r?.out && r.value === amount && r.data.includes(stand)).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
+  let best = null;
+  for (const r of ok) if (!r.lone || await routePays(c, t, r, stand, block)) { best = r; break; }
   if (!best) return null;
   // The relay is paid for the gas it buys: the withdrawal and its escrow (about 470k) and the route itself, estimated
   // as sent from the pool (which holds the ETH) with the stand-in still in it, so the node never sees where it goes.
   const multi = best.data.startsWith('0xac9650d8');
   const routeGas = await rpcOn(c)('eth_estimateGas', [{ from: POOL, to: ZROUTER, value: '0x' + best.value.toString(16), data: best.data }]).then((x) => BigInt(x), () => (multi ? 700_000n : 400_000n));
-  const data = best.data.split(stand).join(lc(to).slice(2));
-  return { ...best, data, deadline, gas: Number(520_000n + routeGas * 3n / 2n) };
+  const r = { ...best, stand, deadline, gas: Number(520_000n + routeGas * 3n / 2n) };
+  return to ? withDest(r, to) : r;
 }
+// The first answer any of the chain's nodes gives to a call (for a call only one may have the gas for).
+async function anyNode(c, to, data, tag) {
+  for (const u of ownNodes(c)) {
+    const j = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, tag] }), signal: timeoutSignal(30_000) }).then((x) => x.json()).catch(() => null);
+    if (/^0x[0-9a-f]{130,}$/i.test(j?.result || '')) return j.result;
+  }
+  throw new Error('no node answered');
+}
+// A route one node gave, checked by two others: each runs it (eth_simulateV1, a light call) from a funded stand-in sender
+// at the same block, and both must find it pays the token to the stand-in recipient, at least the minimum. A node that
+// finds it pays less rejects it outright.
+const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+async function routePays(c, t, r, stand, block) {
+  const from = '0x' + hex(randomBytes(20)), to = '0x' + '0'.repeat(24) + stand;
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_simulateV1', params: [{ blockStateCalls: [{ stateOverrides: { [from]: { balance: '0x' + (r.value + 10n ** 18n).toString(16) } }, calls: [{ from, to: ZROUTER, value: '0x' + r.value.toString(16), data: r.data }] }], validation: false }, block] });
+  let agree = 0;
+  for (const u of [...ownNodes(c)].sort(() => Math.random() - 0.5)) {
+    const call = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: timeoutSignal(15_000) }).then((x) => x.json()).then((j) => j.result?.[0]?.calls?.[0], () => null);
+    if (!call) continue;
+    const paid = call.status !== '0x1' ? 0n : (call.logs || []).filter((l) => lc(l.address) === lc(t.addr) && l.topics?.[0] === T_TRANSFER && lc(l.topics[2] || '') === to).reduce((n, l) => n + BigInt(l.data), 0n);
+    if (paid < r.limit) return false;
+    if (++agree >= 2) return true;
+  }
+  return false;
+}
+// The route with the recipient written in for its stand-in.
+const withDest = (r, to) => ({ ...r, data: r.data.split(r.stand).join(lc(to).slice(2)), stand: null });
 const SWAPQ = { key: '', r: null, fee: null, err: null, busy: false, at: 0 };
 function formSwap(f, seg) {
   const c = S.chain, tab = 'withdraw', t = S.outTok[c.chainId];
@@ -3619,7 +3660,7 @@ function formSwap(f, seg) {
     clearTimeout(timer);
     timer = setTimeout(() => {
       Object.assign(SWAPQ, { key, busy: true, r: null, fee: null, err: null });
-      swapRoute(c, t, a, S.slip, ZERO_ADDRESS.replace(/0$/, '1'))
+      swapRoute(c, t, a, S.slip)
         .then(async (r) => { SWAPQ.r = r; SWAPQ.fee = r && relayOf(c) && viaOf(tab) !== 'self' ? BigInt((await walletOn(c).quote(r.gas)).fee) : 0n; })
         .catch((e) => { SWAPQ.err = e; })
         .finally(() => { SWAPQ.busy = false; SWAPQ.at = Date.now(); if (!S.busy && S.outTok?.[c.chainId] === t) FORM.check?.(); });
@@ -3673,9 +3714,11 @@ function formSwap(f, seg) {
       if (!payable(dest)) throw new Error('That address cannot receive a withdrawal.');
       const refuse = destNote(c, dest, () => {}).refuse;
       if (refuse) throw new Error(refuse);
-      // The route is found again, for this address, and held to the minimum that was shown.
-      step('Finding the best route');
-      const r = await swapRoute(c, t, a, S.slip, dest);
+      // The route shown, when under a minute old, with this address written in; an older one is found again, held to the
+      // minimum that was shown. zRouter holds the swap to its minimum either way.
+      const key = `${c.chainId}|${t.addr}|${a}|${S.slip}|${viaOf(tab)}`, fresh = SWAPQ.key === key && SWAPQ.r?.stand && Date.now() - SWAPQ.at < 60_000 && Number(SWAPQ.r.deadline) * 1000 > Date.now() + 900_000;
+      if (!fresh) step('Finding the best route');
+      const r = fresh ? withDest(SWAPQ.r, dest) : await swapRoute(c, t, a, S.slip, dest);
       if (!r) throw new Error(`No route into ${t.sym} for this amount right now. Nothing was sent.`);
       if (was?.r && r.out < was.r.limit) { SWAPQ.at = 0; throw new Error(`The rate moved past your slippage, so nothing was sent. Check the new rate and press again.`); }
       const intent = { calls: [{ target: ZROUTER, value: r.value, token: ZERO_ADDRESS, amount: 0n, push: false, data: r.data }], outTokens: [], minOuts: [], to: ZERO_ADDRESS, refund: dest, deadline: r.deadline, nonce: big(randomBytes(16)) };

@@ -92,11 +92,14 @@ const swap = async (sym, token, dest) => {
     await p.click('#f-tok');
     await p.waitForSelector(`[data-tk="${token}"]`, {timeout: 120e3});
     await p.click(`[data-tk="${token}"]`);
+    // On a rollup the token's decimals are read before it is taken: wait for the form to name it.
+    await p.waitForFunction((x) => new RegExp(x).test(document.querySelector('#f-tok')?.textContent || ''), sym, {timeout: 60e3});
   }
   await p.fill('#f-wto', dest);
   await p.fill('#f-wamt', SWAP);
-  await p.waitForFunction(() => /At least/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3});
+  const ready = await p.waitForFunction(() => /At least/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3}).then(() => true, () => false);
   const r = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' ');
+  if (!ready) { ok(false, `the form was ready to send`, `receipt: ${r.slice(0, 240)} | button: ${await p.textContent('#f-go')} | route line: ${(await p.textContent('#form .route').catch(() => '')).slice(0, 120)}`); return; }
   log(r.slice(0, 220));
   const least = new RegExp(`At least\\s*([\\d.]+)\\s*${sym}`).exec(r)?.[1], before = await bal(token, dest);
   await p.click('#f-go');

@@ -49,7 +49,7 @@ ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c
 
 // Each chain a hundred blocks past the pool's deployment with nothing in the pool: enough for the page to read, and
 // a router that names BOX0 as the deposit address.
-const seen = new Set(), DOWN = new Set();
+const seen = new Set(), DOWN = new Set(), CALLS = [], NOLOGS = new Set();
 const TIP = {base: 51864114, robinhood: 73991761, ethereum: 26069345};
 // A tacit1 record with the Bitcoin and pool lanes and no Ethereum-side key (flags 0x05), as a name may publish.
 const POOLONLY = b32m('tacit', [0, 0x05, ...unb32(DEV_TACIT1).slice(2)]);
@@ -66,6 +66,8 @@ const RECORDS = {
   [namehash('friend.wei')]: () => DEV_TACIT1,           // someone else's
   [namehash('blank.wei')]: () => '',                    // registered, nothing published
   [namehash('old.wei')]: () => 'tacit1qqpsxr8grjvk4asyvl',
+  [namehash('mine.wei')]: () => DEV_TACIT1,             // read only after the reader sets their own node
+  [namehash('later.wei')]: () => DEV_TACIT1,
   [namehash('split.wei')]: (host) => ({'ethereum-rpc.publicnode.com': TACIT1, 'mainnet.gateway.tenderly.co': DEV_TACIT1, 'eth.drpc.org': BP1}[host] ?? 'tacit1qq'),
 };
 const coder = AbiCoder.defaultAbiCoder();
@@ -92,7 +94,7 @@ const answer = (host, {method, params}) => {
   }
   if (to === R_OFF) throw {rpcError: {code: 3, message: 'execution reverted', data: '0x556f1830' + '00'.repeat(32)}};
   if (method === 'eth_blockNumber') return '0x' + TIP[/base/.test(host) ? 'base' : /robinhood/.test(host) ? 'robinhood' : 'ethereum'].toString(16);
-  if (method === 'eth_getLogs') return [];
+  if (method === 'eth_getLogs') { if (NOLOGS.has(host)) throw {rpcError: {code: -32005, message: 'logs are not served on this plan'}}; return []; }
   if (method === 'eth_call' && params[0].data.startsWith(id('nextIndex()').slice(0, 10))) return '0x' + '00'.repeat(32);
   if (method === 'eth_getBalance') return params[0].toLowerCase() === '0x000000c2a20657ce25f2ba99737933d031afbee9' ? '0x' + (1234n * 10n ** 18n).toString(16) : '0x0';
   if (method === 'eth_getCode') return '0x6080';
@@ -105,6 +107,7 @@ const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard
 await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   const req = route.request(), url = new URL(req.url());
   seen.add(url.host);
+  if (req.method() === 'POST') try { for (const x of [].concat(JSON.parse(req.postData() || '{}'))) CALLS.push([url.host, x.method, x.params?.[0]?.data || '']); } catch {}
   if (DOWN.has(url.host)) return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"down"}'});
   if (req.method() === 'POST' && !/onrender\.com$/.test(url.host)) {
     const body = JSON.parse(req.postData() || '{}');
@@ -346,13 +349,39 @@ DOWN.clear();
 console.log('endpoints');
 await p.click('#settings-open');
 await p.fill('#e-rpc-8453', 'https://example.org/rpc');
+await p.fill('#e-rpc-1', 'https://own-eth.example/rpc');
 await p.click('#e-save');
-ok(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1'))).rpc[8453][0] === 'https://example.org/rpc', 'a reader’s own node is saved');
+const saved = JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')));
+ok(saved.rpc[8453][0] === 'https://example.org/rpc' && saved.rpc[1][0] === 'https://own-eth.example/rpc', 'a reader’s own node is saved, one field per chain');
+const isName = ([, m, d]) => m === 'eth_call' && d.startsWith('0x59d1d43c');
+let mark = CALLS.length;
+t = await card('pay=mine.wei&amount=0.01');
+let asked = CALLS.slice(mark).filter(isName).map(([h]) => h);
+ok(t.includes('mine.wei') && t.includes(SHORT) && asked.length && asked.every((h) => h === 'own-eth.example'), 'with your own Ethereum node set, a name is read only through it', [...new Set(asked)].join(' '));
+const closeCard = async () => { if (await p.$('#req-x')) await p.click('#req-x'); await p.waitForSelector('#req', {state: 'hidden', timeout: 10e3}).catch(() => {}); };
+await closeCard();
+NOLOGS.add('own-eth.example');
+mark = CALLS.length;
+await p.evaluate(() => document.querySelector('#rebuild')?.closest('details')?.setAttribute('open', ''));
+await p.click('#rebuild');
+await p.waitForFunction(() => !/Rebuilding|Reading/.test(document.querySelector('#activity')?.textContent || ''), null, {timeout: 60e3}).catch(() => {});
+await p.waitForTimeout(1500);
+const ETH_PUBLIC = /^(ethereum-rpc\.publicnode\.com|mainnet\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|registry-eth\.example|registry-logs\.example)$/;
+const later = CALLS.slice(mark), pub = later.filter(([h]) => ETH_PUBLIC.test(h));
+ok(pub.length && pub.every(([, m]) => m === 'eth_getLogs') && later.some(([h, m]) => h === 'own-eth.example' && m === 'eth_call'), 'when your node does not serve the pool’s logs, only those are read through Ethereum’s public nodes; your deposit addresses and the rest stay with your node', [...new Set(pub.map(([h, m]) => `${h}:${m}`))].join(' '));
+NOLOGS.clear();
+DOWN.add('own-eth.example');
+mark = CALLS.length;
+t = await card('pay=later.wei&amount=0.01');
+asked = CALLS.slice(mark).filter(isName).map(([h]) => h);
+ok(!t.includes(SHORT) && /Your own node did not answer/.test(t) && asked.every((h) => h === 'own-eth.example'), 'but a name is never read through them: the page says your node did not answer', [...new Set(asked)].join(' ') + ' | ' + t.slice(0, 120));
+DOWN.clear();
+await closeCard();
 await p.click('#settings-open');
 await p.click('#e-reset');
 ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')))) === '{}', 'and the defaults come back');
 
-const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
+const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
 ok(!hosts.length, 'it talks only to its listed nodes, relays, proving-key mirrors and the nodes of the key’s onchain copy', hosts.join(' '));
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();

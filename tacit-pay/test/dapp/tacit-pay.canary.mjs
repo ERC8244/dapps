@@ -24,11 +24,14 @@ const SHIELD = (process.env.SHIELD || '0.0028').split(','), SWAP = process.env.S
 const RPC = {1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com'};
 const PROV = Object.fromEntries(Object.entries(RPC).map(([k, u]) => [k, new JsonRpcProvider(u, Number(k), {staticNetwork: true})]));
 const eth = PROV[CFG.id], base = PROV[8453];
+const READS = {8453: new JsonRpcProvider('https://base-rpc.publicnode.com', 8453, {staticNetwork: true})};
 // WALLET: which of the canary's wallets signs (funder by default; destUSDC holds the swapped USDC).
 const funder = new Wallet(K[process.env.WALLET || 'funder'].key, eth);
 const {getAddress} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 const TOKENS = CFG.tokens.map(([sym, a, d]) => [sym, getAddress(a), d]);
-const bal = async (t, a) => BigInt(await eth.call({to: t, data: '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0')}));
+// Token balances through the chain's publicnode endpoint (Base's own endpoint rate-limits bursts).
+const reads = new JsonRpcProvider(CFG.rpc, CFG.id, {staticNetwork: true});
+const bal = async (t, a) => BigInt(await reads.call({to: t, data: '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0')}));
 const units = (v, d) => { const s = v.toString().padStart(d + 1, '0'); return `${s.slice(0, s.length - d)}.${s.slice(s.length - d)}`.replace(/\.?0+$/, ''); };
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
@@ -59,7 +62,11 @@ await ctx.exposeFunction('__rpc', async (method, params) => {
     return tx.hash;
   }
   if (method === 'personal_sign') throw Object.assign(new Error('not in this canary'), {code: 4200});
-  return p.send(method, params || []);
+  // Approvals by signature (EIP-2612, Permit2); this wallet sends no batches.
+  if (method === 'eth_signTypedData_v4') { const td = JSON.parse(params[1]), {EIP712Domain, ...types} = td.types; return funder.signTypedData(td.domain, types, td.message); }
+  if (method === 'wallet_getCapabilities' || method === 'wallet_sendCalls') throw Object.assign(new Error('not in this canary'), {code: 4200});
+  // Reads go to the chain's publicnode endpoint first: Base's own endpoint rate-limits bursts.
+  return (READS[chain] || p).send(method, params || []).catch(() => p.send(method, params || []));
 });
 await ctx.addInitScript(`window.ethereum = { on() {}, removeListener() {}, request: ({ method, params }) => window.__rpc(method, params) };`);
 const p = await ctx.newPage();

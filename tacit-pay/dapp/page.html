@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-rSoGIvWZhiwHBla8+E00bb2ex3LeDbiDMeszBk2+0ZY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-864FrjtJQ95x3SBSVKPInhnnUArZOo1sJKT0p9UgGdQ=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -1408,23 +1408,27 @@ async function headOf(urls) {
   return Math.min(...hs);
 }
 // `src`: the node list, or a function giving it, read afresh on every call so a list that grows reaches wallets made earlier.
-function jsonRpc(src) {
+// `lead`: how many nodes at the head of the list are always asked first, in order (the reader's own); the node last found
+// working is preferred among the rest, which are asked only for a method `spare` allows.
+function jsonRpc(src, lead = () => 0, spare = () => true) {
   const list = typeof src === 'function' ? src : () => src;
   let id = 0, pref = 0;
   const noBatch = new Set();
+  const order = (urls, ok = true) => { const n = Math.min(lead(), urls.length), m = ok ? urls.length - n : 0; return [...Array(n).keys(), ...Array.from({ length: m }, (_, k) => n + (pref + k) % m)]; };
+  const took = (i) => { const n = lead(); if (i >= n) pref = i - n; };
   // Several reads in one request: [[method, params], …] → [{ result } | { error }, …]. A node that will not take a batch
   // is asked one read at a time, and a read a node answered with an error is asked again of the others.
   const batch = async (calls) => {
     const urls = list();
-    for (let k = 0; k < urls.length; k++) {
-      const i = (pref + k) % urls.length, base = id;
-      if (noBatch.has(i)) continue;
+    for (const i of order(urls, calls.every(([m]) => spare(m)))) {
+      const base = id;
+      if (noBatch.has(urls[i])) continue;
       try {
         const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(calls.map(([method, params], n) => ({ jsonrpc: '2.0', id: base + n + 1, method, params }))), signal: timeoutSignal(20_000) });
         const j = await r.json(), by = new Map((Array.isArray(j) ? j : []).map((x) => [x.id, x]));
         id += calls.length;
-        if (calls.some((_, n) => !by.has(base + n + 1))) { noBatch.add(i); throw new Error('batch refused'); }
-        pref = i;
+        if (calls.some((_, n) => !by.has(base + n + 1))) { noBatch.add(urls[i]); throw new Error('batch refused'); }
+        took(i);
         return Promise.all(calls.map(async ([m, p], n) => { const x = by.get(base + n + 1); return x.error || !('result' in x) ? one(m, p).then((result) => ({ result }), (error) => ({ error })) : { result: x.result }; }));
       } catch {}
     }
@@ -1432,14 +1436,13 @@ function jsonRpc(src) {
   };
   const one = async (method, params = []) => {
     const urls = list(), errs = [];
-    for (let k = 0; k < urls.length; k++) {
-      const i = (pref + k) % urls.length;
+    for (const i of order(urls, spare(method))) {
       try {
         const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: timeoutSignal(method === 'eth_getLogs' ? 30_000 : 12_000) });
         const j = await r.json();
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
         if (!('result' in j)) throw new Error('the node sent no result');
-        pref = i;
+        took(i);
         return j.result;
       } catch (e) {
         if (e.rpc && /revert/i.test(e.message) && (method === 'eth_call' || method === 'eth_estimateGas')) throw e;
@@ -1860,13 +1863,30 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // From the user's wallet, after checking the call on chain. → tx hash, or null when another transaction got in first.
   // `handOut` is called as the transaction goes to the wallet and returns a function that takes that back, used only
   // when the wallet refuses to send it.
-  async function sendSelf(to, data, value, onStep, handOut = () => () => {}) {
+  // `before`: calls (approvals) the wallet sends ahead of this one in a single atomic batch.
+  async function sendSelf(to, data, value, onStep, handOut = () => () => {}, before = []) {
     if (!signer) throw new Error('Connect a wallet to send this yourself.');
     await signer.ready();
+    if (before.length) {
+      // A batch is checked by the wallet's own node where it runs one (eth_simulateV1), as every read naming this account
+      // is; the wallet checks it again before it signs.
+      const calls = [...before, { to, data, value }].map((x) => ({ from: signer.address, to: x.to, data: x.data, value: '0x' + BigInt(x.value ?? 0n).toString(16) }));
+      const sim = await own()('eth_simulateV1', [{ blockStateCalls: [{ calls }], validation: false }, 'latest']).then((r) => r?.[0]?.calls, () => null);
+      const bad = Array.isArray(sim) && sim.find((x) => x.status !== '0x1');
+      if (bad) {
+        const d = String(bad.error?.data || bad.returnData || '');
+        if (RACED.has(d.slice(0, 10))) return null;
+        throw Object.assign(new Error(`This would fail on chain${bad.error?.message ? ` (${String(bad.error.message).slice(0, 120)})` : ''}, so nothing was sent.`), { rpc: { data: d } });
+      }
+      onStep('confirm in your wallet');
+      const undo = handOut();
+      try { return await signer.batch(calls, () => onStep('waiting for the block')); }
+      catch (e) { if (e?.code === 4001 || /reject|denied|cancel/i.test(e?.message || '')) undo(); throw e; }
+    }
     try { await own()('eth_call', [{ from: signer.address, to, data, value: '0x' + value.toString(16) }, 'latest']); }
     catch (e) { if (RACED.has(revertData(e).slice(0, 10))) return null; throw e; }
     // A wallet without the ETH for the gas is told so here, not by a failed estimate that names some other reason.
-    const [gas, price, held] = await Promise.all([own()('eth_estimateGas', [{ from: signer.address, to, data, value: '0x' + value.toString(16) }]), own()('eth_gasPrice', []), own()('eth_getBalance', [signer.address, 'latest'])].map((x) => x.then(BigInt, () => null)));
+    const [gas, price, held] = await Promise.all([own()('eth_estimateGas', [{ from: signer.address, to, data, value: '0x' + value.toString(16) }]), own()('eth_gasPrice', []), own()('eth_getBalance', [signer.address, 'latest'])].map((x) => x.then(BigInt).catch(() => null)));
     if (gas != null && price != null && held != null && held < value + gas * price) throw new Error(`Your wallet holds ${fmt(held, 8)} ETH here, short of the ${fmt(value + gas * price, 8)} ETH this needs with its gas. Add a little ETH${value ? '' : ', or let the relay send it'}.`);
     onStep('confirm in your wallet');
     const undo = handOut();
@@ -1973,7 +1993,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // the signer does. Proves again when another transaction lands first. `pay` says what a spend is for, so it can be
   // tried again from the same notes. → tx hash.
   // `call`: a call intent the withdrawal pays into, sent as router.withdrawAndCall.
-  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep, guard = null, pay = null, call = null }) {
+  // `through`: a deposit the wallet sends through a contract that funds it in the same transaction ({ to, data(txValues),
+  // before }), as the zap does from a token, rather than with the wallet's own ETH.
+  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep, guard = null, pay = null, call = null, through = null }) {
     const attempt = ins.length ? nextAttempt(ins[0].nf) : 0, eOf = (k) => (ins.length ? paymentKey(keys, chain.chainId, ins[0].nf, k, attempt) : undefined);
     // Both outputs are always filled; an unused one is a zero-value note under a key no one holds. Every proof then
     // inserts, so it is bound to the pool's head (one held back past the next insertion can never land), and a
@@ -2060,8 +2082,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         if (res === 'pending') throw inFlight(id, 'The network has not shown this payment yet.');
         continue;
       }
-      const data = call ? calldata(`withdrawAndCall(${TX_SIG},${INTENT_SIG})`, [{ tuple: TX_TYPES }, INTENT_T], [txValues(tx), intentValues(call)]) : calldata(`transact${TX_SIG}`, TX_TYPES, txValues(tx));
-      try { h = await sendSelf(call ? chain.router : chain.pool, data, ext > 0n ? ext : 0n, onStep, () => handOut(start)); }
+      const how = through ? { to: through.to, data: through.data(txValues(tx)), value: 0n, before: through.before || [] }
+        : { to: call ? chain.router : chain.pool, data: call ? calldata(`withdrawAndCall(${TX_SIG},${INTENT_SIG})`, [{ tuple: TX_TYPES }, INTENT_T], [txValues(tx), intentValues(call)]) : calldata(`transact${TX_SIG}`, TX_TYPES, txValues(tx)), value: ext > 0n ? ext : 0n, before: [] };
+      try { h = await sendSelf(how.to, how.data, how.value, onStep, () => handOut(start), how.before); }
       catch (e) { if (revertData(e).slice(0, 10) === SPENT) await rescan().catch(() => {}); throw e; }
       if (!h) continue;
       for (const n of ins) pending.add(String(n.nf));
@@ -2224,13 +2247,14 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (BigInt(intent.deadline) * 1000n < BigInt(Date.now() + 600_000)) throw new Error('That has expired. Start it again.');
       return spend({ to: escrowOf(chain.router, intent), amount: BigInt(value), via, out: true, onStep, expectFee, fresh, call: intent, gas, why });
     },
-    // Shields `amount` wei from the signer into a note for `to` ({ V, A, N }), this wallet by default. → tx hash.
-    async deposit({ amount, to = keys, onStep = () => {}, guard = null }) {
+    // Shields `amount` wei from the signer into a note for `to` ({ V, A, N }), this wallet by default; `through` sends it
+    // by a contract that funds it (see transact). → tx hash.
+    async deposit({ amount, to = keys, onStep = () => {}, guard = null, through = null }) {
       const a = BigInt(amount);
       if (a <= 0n) throw new Error('Enter an amount.');
       if (a >= 1n << 120n) throw new Error('That amount is out of range.');
       const before = (await sync()).balance;
-      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep, guard });
+      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep, guard, through });
       if (to === keys) await waitFor(() => summary().balance >= before + a, 60_000).catch(() => {});
       return h;
     },
@@ -2429,14 +2453,21 @@ const relayTrouble = (e) => /relay|failed to fetch|\b5\d\d\b|timed? ?out/i.test(
 // The reader's own choices come first: nodes per chain, a relay per chain (or none), and a mirror for the key.
 const ENDPOINTS = 'tacit-pay-endpoints-v1';
 let ends = readJson(ENDPOINTS) || {};
-// The reader's own nodes, or the page's: what names and the pool's root checks are read through.
+// The reader's own nodes, or the page's: what the reads that say what the reader is doing go through (the names they pay,
+// swap routes, their deposit addresses, the pool's root checks). With their own node set, only it.
 const ownNodes = (c) => (ends.rpc?.[c.chainId]?.length ? ends.rpc[c.chainId] : c.rpc);
-// For everything else, the public nodes an onchain registry lists come after them as fallbacks (none when the reader set
-// their own). Those lists are read through the page's own nodes, two agreeing, and hold only what they say: an entry can
-// serve a wrong answer like any node, which the checks above the reads already allow for; it cannot sign or spend.
+const mineOf = (c) => ends.rpc?.[c.chainId] || [];
+// Every other read goes to the reader's own nodes when they set any. Behind them, and alone otherwise, come the page's
+// nodes and those an onchain registry lists; with the reader's own set, those are asked only for the pool's logs, the same
+// for every reader (`spareOf`). The registry's lists are read through the page's own nodes, two agreeing, and hold only
+// what they say: an entry can serve a wrong answer like any node, which the checks above the reads already allow for; it
+// cannot sign or spend.
 const REGISTRY = 'tacit-pay-registry-v1', ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12', ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288';
 let REG = readJson(REGISTRY) || { at: 0, rpc: {} };
-const nodesOf = (c) => (ends.rpc?.[c.chainId]?.length ? ends.rpc[c.chainId] : [...c.rpc, ...(REG.rpc[c.chainId] || []).filter((u) => !c.rpc.includes(u))]);
+const nodesOf = (c) => [...new Set([...mineOf(c), ...c.rpc, ...(REG.rpc[c.chainId] || [])])];
+const spareOf = (c) => (method) => !mineOf(c).length || method === 'eth_getLogs';
+// The chain's head, as the reader's own nodes see it when they set any.
+const headNodes = (c) => (mineOf(c).length ? mineOf(c) : nodesOf(c));
 // ABI string[] and string[][] at byte `at` of a reply.
 const abiStrings = (b, at) => { const n = Number(big(b.subarray(at, at + 32))), out = []; if (n > 64) throw new Error('too many'); for (let i = 0; i < n; i++) { const o = at + 32 + Number(big(b.subarray(at + 32 + 32 * i, at + 64 + 32 * i))), len = Number(big(b.subarray(o, o + 32))); if (o + 32 + len > b.length) throw new Error('short'); out.push(new TextDecoder().decode(b.subarray(o + 32, o + 32 + len))); } return out; };
 const abiStringLists = (b, at) => { const n = Number(big(b.subarray(at, at + 32))), out = []; if (n > 16) throw new Error('too many'); for (let i = 0; i < n; i++) out.push(abiStrings(b, at + 32 + Number(big(b.subarray(at + 32 + 32 * i, at + 64 + 32 * i))))); return out; };
@@ -2457,7 +2488,7 @@ async function readRegistry() {
 const relayOf = (c) => (ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || null : c.relay);
 const mirrors = () => [...(ends.mirror ? [ends.mirror.replace(/\/?$/, '/')] : []), ...MIRRORS];
 const RPC = {};
-const rpcOn = (c) => (RPC[c.chainId] ||= jsonRpc(() => nodesOf(c)));
+const rpcOn = (c) => (RPC[c.chainId] ||= jsonRpc(() => nodesOf(c), () => mineOf(c).length, spareOf(c)));
 
 // ── the prover: workers made from the script above, holding the ceremony's key between them ──
 const PROVER = { state: 'idle', got: 0, total: CEREMONY.wasm.bytes + CEREMONY.zkey.bytes, err: null, ms: null, saved: false };
@@ -2771,12 +2802,48 @@ const signerFor = (c) => ({
   ready: async () => { if (!S.account) await connect(); await onChain(c.chainId); },
   // A wallet that never answers can be stopped waiting for; the payment then stays held as possibly sent.
   send: ({ to, data, value }) => ask(S.provider, 'eth_sendTransaction', [{ from: S.account, to, ...(data ? { data } : {}), value: '0x' + BigInt(value).toString(16), chainId: '0x' + c.chainId.toString(16) }], (m) => mount($('#status'), m)),
+  batch: (calls, sent) => sendCalls(c, calls, sent),
   // The wallet's own node, for reads about what this account sends: its errors carry revert data where the engine looks.
   rpc: async (method, params) => {
     try { return await S.provider.request({ method, params }); }
     catch (e) { const d = [e?.data?.originalError?.data, e?.data?.data, e?.data].find((x) => typeof x === 'string' && x.startsWith('0x')); throw Object.assign(new Error(String(e?.message || e)), { rpc: { data: d }, code: e?.code }); }
   },
 });
+
+// Atomic batches (EIP-5792): an approval and the call that uses it, sent together where the wallet can.
+// The codes a wallet answers with when it does not take batches, which it then is not asked for again.
+const BATCH_NO = [4200, -32601, -32602, 5700, 5710, 5740, 5750, 5760], noBatch = new Set();
+async function canBatch(c) {
+  if (noBatch.has(`${c.chainId}|${S.account}`)) return false;
+  const caps = await Promise.race([S.provider.request({ method: 'wallet_getCapabilities', params: [S.account] }), sleep(4000).then(() => null)]).catch(() => null);
+  if (!caps || typeof caps !== 'object') return false;
+  const at = (id) => Object.keys(caps).find((k) => { try { return BigInt(k) === BigInt(id); } catch { return false; } });
+  return ['supported', 'ready'].includes(caps[at(c.chainId) ?? at(0)]?.atomic?.status);
+}
+// → the hash of the transaction that carried `calls`, once it is in a block. A wallet that turns out not to take batches
+// throws { noBatch }, so its caller can send the calls one by one instead.
+async function sendCalls(c, calls, sent = () => {}) {
+  let id;
+  try {
+    const r = await ask(S.provider, 'wallet_sendCalls', [{ version: '2.0.0', chainId: '0x' + c.chainId.toString(16), from: S.account, atomicRequired: true, calls: calls.map(({ to, data, value }) => ({ to, data, value })) }], (m) => mount($('#status'), m));
+    id = typeof r === 'string' ? r : r?.id;
+  } catch (e) {
+    if (!BATCH_NO.includes(codeOf(e))) throw e;
+    noBatch.add(`${c.chainId}|${S.account}`);
+    throw Object.assign(new Error('Your wallet does not send these together.'), { noBatch: true });
+  }
+  if (!id) throw new Error('Your wallet did not say what it sent. Check its activity before trying again.');
+  sent();
+  for (let i = 0, quiet = 0; i < 600; i++) {
+    const st = await Promise.race([S.provider.request({ method: 'wallet_getCallsStatus', params: [id] }), sleep(9000).then(() => { throw new Error('slow'); })]).then((x) => { quiet = 0; return x; }, () => { if (++quiet > 9) throw new Error('Your wallet sent it but cannot say how it went. Check its activity before trying again.'); return null; });
+    const rs = st?.receipts || [], q = String(st?.status ?? '');
+    if (rs.some((r) => r?.status === '0x0') || /^(400|500|600)$/.test(q) || /fail|revert|reject/i.test(q)) throw new Error('The wallet’s transaction failed on chain, so nothing was shielded.');
+    const h = rs.length && (q === '200' || /CONFIRMED|SUCCESS/i.test(q) || rs.length >= calls.length) ? rs[rs.length - 1].transactionHash || rs[rs.length - 1].hash : null;
+    if (h) return h;
+    await sleep(1000);
+  }
+  throw new Error('Your wallet has not confirmed it yet. Check its activity before trying again.');
+}
 
 // The Tacit key is a hash of the wallet's signature over one fixed message, the same in every Tacit app, so the same
 // account opens the same key wherever it signs. A first signature is taken only when a second one is the same.
@@ -2836,7 +2903,7 @@ function lock() {
 
 // ── per chain ──
 // A relay the reader set is held to the fee ceiling but not to the default relay's address.
-const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), head: () => headOf(nodesOf(c)), vote: (to, data) => quorum(to, data, ownNodes(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
+const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), head: () => headOf(headNodes(c)), vote: (to, data) => quorum(to, data, ownNodes(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
 function walletOn(c) {
   const st = CH[c.chainId];
   return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c), proofMs: () => PROVER.ms || 0 }));
@@ -3000,7 +3067,7 @@ function checkBoxes(c, all = false) {
     for (const i of idx) {
       if (S.key !== key) return;
       const nodes = ownNodes(c), u = nodes[Math.floor(Math.random() * nodes.length)];
-      const v = await rpcAt(u)('eth_getBalance', [W.receiveBox(i), 'latest']).then(BigInt, () => null);
+      const v = await rpcAt(u)('eth_getBalance', [W.receiveBox(i), 'latest']).then(BigInt).catch(() => null);
       if (v == null) ok = false; else if (v !== (st.boxW?.[i] ?? 0n)) { st.boxW = { ...st.boxW, [i]: v }; paint(); }
       await sleep(q.fast ? 100 + Math.random() * 300 : 800 + Math.random() * 2_500);
     }
@@ -3637,7 +3704,7 @@ async function swapRoute(c, t, amount, slip, to = null) {
   const split = (sel, sl) => [ZQUOTER, sel + me + A(ZERO_ADDRESS) + A(t.addr) + U(amount) + U(sl) + U(deadline), sl, 4, 8, amount];
   const jobs = [[ZQUOTER, 'e7798987' + me + tk(slip), slip, 0, 4, 0, 6], [ZQUOTER, 'e453166e' + me + me + tk(s2), s2, 4, 9, 0],
     ...(c.chainId === 1 ? [] : [[Z3H, '4c464f59' + me + tk(s3), s3, 8, 13, 0]]), split('892af013', slip), split('85f86a90', ss)];
-  const block = '0x' + Math.max(0, (await headOf(nodesOf(c))) - 2).toString(16);
+  const block = '0x' + Math.max(0, (await headOf(headNodes(c))) - 2).toString(16);
   // Two agreeing nodes, or else one node's answer marked to be checked: some routes take more gas to find than most
   // nodes allow a call.
   const ask = (q, d) => quorum(q, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => ({ h }), () => anyNode(c, q, '0x' + d, block).then((h) => ({ h, lone: true })));
@@ -3678,8 +3745,8 @@ async function routePays(c, t, r, stand, block) {
   }
   return false;
 }
-// The route with the recipient written in for its stand-in.
-const withDest = (r, to) => ({ ...r, data: r.data.split(r.stand).join(lc(to).slice(2)), stand: null });
+// The route with the recipient written in for its stand-in, and where a route's leftovers go (`refund`) for theirs.
+const withDest = (r, to, refund = to) => { let data = r.data.split(r.stand).join(lc(to).slice(2)); if (r.back) data = data.split(r.back).join(lc(refund).slice(2)); return { ...r, data, stand: null, back: null }; };
 const SWAPQ = { key: '', r: null, fee: null, err: null, busy: false, at: 0 };
 function formSwap(f, seg) {
   const c = S.chain, tab = 'withdraw', t = S.outTok[c.chainId];
@@ -3779,20 +3846,23 @@ function formSwap(f, seg) {
 }
 
 // ── shielding from a token ──
-// The wallet swaps a listed token through zRouter for an exact, round amount of ETH, paid to a new deposit address of
-// this key (never used or shown, and registered with the relay first), which then moves into the private balance: by
-// the relay, or under its minimum by this wallet right after the swap. Exact out, so the amount entering the pool is
-// the round one asked for. The wallet, the token and the amount show on chain; whose balance it lands in does not.
-async function shieldRoute(c, t, amount, slip, to = null) {
-  const stand = hex(randomBytes(20)), A = (a) => hex(addrWord(a)), U = (v) => hex(word(v)), deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
-  const me = '0'.repeat(24) + stand, tk = (sl) => U(1n) + A(t.addr) + A(ZERO_ADDRESS) + U(amount) + U(sl) + U(deadline);
-  const jobs = [['e7798987' + me + tk(slip), slip, 0, 4, 0, 6], ['e453166e' + me + me + tk(slip / 2n || 1n), slip / 2n || 1n, 4, 9, 0]];
-  const block = '0x' + Math.max(0, (await headOf(nodesOf(c))) - 2).toString(16);
+// The wallet swaps a listed token through zRouter for an exact, round amount of ETH and shields it: in one transaction
+// through the zap where it has code; elsewhere paid to a new deposit address of this key (never used or shown, and
+// registered with the relay first), which then moves into the private balance, by the relay or, under its minimum, by
+// this wallet right after the swap. Exact out, so the amount entering the pool is the round one asked for. The wallet,
+// the token and the amount show on chain; whose balance it lands in does not.
+// A route through ETH buys a little more of the middle token than it needs and returns the rest to `refund`: the wallet,
+// never the zap or a deposit address, which pass on only ETH and the token paid in. Each has its own stand-in.
+async function shieldRoute(c, t, amount, slip, to = null, refund = to) {
+  const stand = hex(randomBytes(20)), back = hex(randomBytes(20)), A = (a) => hex(addrWord(a)), U = (v) => hex(word(v)), deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
+  const me = '0'.repeat(24) + stand, you = '0'.repeat(24) + back, tk = (sl) => U(1n) + A(t.addr) + A(ZERO_ADDRESS) + U(amount) + U(sl) + U(deadline);
+  const jobs = [['e7798987' + me + tk(slip), slip, 0, 4, 0, 6], ['e453166e' + me + you + tk(slip / 2n || 1n), slip / 2n || 1n, 4, 9, 0]];
+  const block = '0x' + Math.max(0, (await headOf(headNodes(c))) - 2).toString(16);
   const got = await Promise.all(jobs.map(([d, sl, ...r]) => quorum(ZQUOTER, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => routeOf(h, sl, ...r, true)).catch(() => null)));
   const best = got.filter((r) => r?.out >= amount && r.value === 0n && r.inp > 0n && r.data.includes(stand)).sort((a, b) => (a.limit < b.limit ? -1 : a.limit > b.limit ? 1 : 0))[0];
   if (!best) return null;
-  const multi = best.data.startsWith('0xac9650d8'), r = { ...best, stand, deadline, gas: multi ? 900_000 : 450_000 };
-  return to ? withDest(r, to) : r;
+  const multi = best.data.startsWith('0xac9650d8'), r = { ...best, stand, back, deadline, gas: multi ? 900_000 : 450_000 };
+  return to ? withDest(r, to, refund) : r;
 }
 // A transaction the wallet sent, until its receipt: the receipt, or an error when it failed.
 async function walletMined(c, h, what) {
@@ -3803,6 +3873,89 @@ async function walletMined(c, h, what) {
   }
   throw Object.assign(new Error(`The network has not confirmed the ${what} yet.`), { unconfirmed: h });
 }
+// The zap (TacitEvmPoolZap, the same address on every chain): one transaction from the wallet takes the token, swaps it
+// through zRouter for exactly the deposit's ETH and deposits it with this page's proof; what the swap leaves comes back.
+// It holds nothing between transactions and can take a token only from whoever calls it.
+const ZAP = '0x0000008EbBF2323f95c4fBc18254f3D65C53998c', PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+const ZAPS = {};
+const zapOn = (c) => (ZAPS[c.chainId] ||= rpcOn(c)('eth_getCode', [ZAP, 'latest']).then((x) => /^0x[0-9a-f]{2,}$/i.test(x), () => { delete ZAPS[c.chainId]; return false; }));
+function zapData(pull, txv, token, amountIn, swap) {
+  const T = { tuple: TX_TYPES };
+  if (pull.kind === 'permit') return calldata(`zapTokenWithPermit(${TX_SIG},address,uint256,uint256,uint8,bytes32,bytes32,bytes)`, [T, 'address', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'bytes'], [txv, token, amountIn, pull.deadline, pull.v, pull.r, pull.s, swap]);
+  if (pull.kind === 'permit2') return calldata(`zapTokenWithPermit2(${TX_SIG},address,uint256,uint256,uint256,bytes,bytes)`, [T, 'address', 'uint256', 'uint256', 'uint256', 'bytes', 'bytes'], [txv, token, amountIn, pull.nonce, pull.deadline, pull.sig, swap]);
+  return calldata(`zapToken(${TX_SIG},address,uint256,bytes)`, [T, 'address', 'uint256', 'bytes'], [txv, token, amountIn, swap]);
+}
+const TH_2612 = '0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9';
+const EIP712_DOMAIN = [{ name: 'name', type: 'string' }, { name: 'version', type: 'string' }, { name: 'chainId', type: 'uint256' }, { name: 'verifyingContract', type: 'address' }];
+const rawString = (h) => { const b = unhex(h), o = Number(big(b.subarray(0, 32))), n = Number(big(b.subarray(o, o + 32))); return new TextDecoder().decode(b.subarray(o + 32, o + 32 + n)); };
+const sigParts = (h) => { const s = String(h).replace(/^0x/, ''); if (s.length !== 130) throw new Error('The wallet returned an odd signature.'); const v = parseInt(s.slice(128), 16); return { r: '0x' + s.slice(0, 64), s: '0x' + s.slice(64, 128), v: v < 27 ? v + 27 : v }; };
+// What an EIP-2612 permit of token `t` needs from `owner` (its EIP-712 name and version, the owner's nonce), or null when
+// it has none this page can match or the owner is a contract, which cannot sign one (an account delegated under EIP-7702
+// still can).
+async function permitInfo(c, t, owner) {
+  try {
+    const read = (d) => walletRead(c, 'eth_call', [{ to: t, data: d }, 'latest']).catch(() => '0x');
+    const [code, ds, th, nc, nm] = await Promise.all([walletRead(c, 'eth_getCode', [owner, 'latest']).catch(() => null), read('0x3644e515'), read('0x30adf81f'), read('0x7ecebe00' + hex(addrWord(owner))), read('0x06fdde03')]);
+    if (!/^0x(ef0100[0-9a-f]{40})?$/i.test(code || '') || !/^0x[0-9a-f]{64}$/i.test(ds) || !/^0x[0-9a-f]{64}/i.test(nc) || nm.length < 130) return null;
+    if (/^0x[0-9a-f]{64}/i.test(th) && lc(th.slice(0, 66)) !== TH_2612) return null;
+    const name = rawString(nm);
+    for (const version of ['1', '2', '1.0', 'V1', '']) {
+      const sep = keccak(cat(keccak(utf8('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)')), keccak(utf8(name)), keccak(utf8(version)), word(c.chainId), addrWord(t)));
+      if ('0x' + hex(sep) === lc(ds)) return { name, version, nonce: BigInt(nc.slice(0, 66)) };
+    }
+  } catch {}
+  return null;
+}
+const signTyped = (typed) => ask(S.provider, 'eth_signTypedData_v4', [S.account, JSON.stringify(typed)], (m) => mount($('#status'), m));
+const rejected = (e) => codeOf(e) === 4001 || e instanceof Quiet || /reject|denied|cancel/i.test(e?.message || '');
+// How `spender` (the zap, or zRouter) takes `need` of token `t` from the wallet, asking the least of it (the order zSwap
+// uses): an allowance it already has; an EIP-2612 permit signature; for the zap, a Permit2 signature once the token is
+// approved to Permit2; the approval in one atomic batch with the call; and only for a wallet that batches nothing, an
+// approval transaction first (the caller sends it). A signature is checked on chain before it is used, and one that does
+// not check out falls through to the next way.
+// → { kind: 'allowance' | 'permit' | 'permit2', …, before: [approvals to send ahead of the call] }.
+async function pullFor(c, t, need, spender, step) {
+  const me = S.account, pad = (x) => hex(addrWord(x)), num = (to, data) => walletRead(c, 'eth_call', [{ to, data }, 'latest']).then(BigInt, () => 0n);
+  const allowed = await num(t.addr, '0xdd62ed3e' + pad(me) + pad(spender));
+  if (allowed >= need) return { kind: 'allowance', before: [] };
+  // A signature names this account, so it is checked through the wallet's own node like every such read.
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 1800), check = (to, data, from = undefined) => walletRead(c, 'eth_call', [{ ...(from ? { from } : {}), to, data }, 'latest']);
+  const info = await permitInfo(c, t.addr, me);
+  if (info) {
+    try {
+      step('sign the approval in your wallet (a signature, not a transaction)');
+      const p = sigParts(await signTyped({ types: { EIP712Domain: EIP712_DOMAIN, Permit: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }, { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'uint256' }, { name: 'deadline', type: 'uint256' }] }, primaryType: 'Permit', domain: { name: info.name, version: info.version, chainId: c.chainId, verifyingContract: t.addr }, message: { owner: me, spender, value: String(need), nonce: String(info.nonce), deadline: String(deadline) } }));
+      await check(t.addr, calldata('permit(address,address,uint256,uint256,uint8,bytes32,bytes32)', ['address', 'address', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'], [me, spender, need, deadline, p.v, p.r, p.s]));
+      return { kind: 'permit', value: need, deadline, ...p, before: [] };
+    } catch (e) { if (rejected(e)) throw e; }
+  }
+  const [toPermit2, held, code] = spender !== ZAP ? [0n] : await Promise.all([num(t.addr, '0xdd62ed3e' + pad(me) + pad(PERMIT2)), num(t.addr, '0x70a08231' + pad(me)), walletRead(c, 'eth_getCode', [me, 'latest']).catch(() => null)]);
+  if (toPermit2 >= need && held >= need && /^0x(ef0100[0-9a-f]{40})?$/i.test(code || '')) {
+    try {
+      step('sign the approval in your wallet (a signature, not a transaction)');
+      const nonce = big(randomBytes(31));
+      const sig = '0x' + (({ r, s, v }) => r.slice(2) + s.slice(2) + v.toString(16).padStart(2, '0'))(sigParts(await signTyped({ types: { EIP712Domain: EIP712_DOMAIN.filter((x) => x.name !== 'version'), TokenPermissions: [{ name: 'token', type: 'address' }, { name: 'amount', type: 'uint256' }], PermitTransferFrom: [{ name: 'permitted', type: 'TokenPermissions' }, { name: 'spender', type: 'address' }, { name: 'nonce', type: 'uint256' }, { name: 'deadline', type: 'uint256' }] }, primaryType: 'PermitTransferFrom', domain: { name: 'Permit2', chainId: c.chainId, verifyingContract: PERMIT2 }, message: { permitted: { token: t.addr, amount: String(need) }, spender: ZAP, nonce: String(nonce), deadline: String(deadline) } })));
+      // As the zap would call it: Permit2 pays the zap, from the zap.
+      await check(PERMIT2, calldata('permitTransferFrom(((address,uint256),uint256,uint256),(address,uint256),address,bytes)', [{ tuple: [{ tuple: ['address', 'uint256'] }, 'uint256', 'uint256'] }, { tuple: ['address', 'uint256'] }, 'address', 'bytes'], [[[t.addr, need], nonce, deadline], [ZAP, need], me, sig]), ZAP);
+      return { kind: 'permit2', nonce, deadline, sig, before: [] };
+    } catch (e) { if (rejected(e)) throw e; }
+  }
+  // An approval of exactly what the route may take, set to zero first where the token will not change one that is not.
+  const approve = (v) => ({ to: t.addr, data: '0x095ea7b3' + pad(spender) + hex(word(v)), value: 0n });
+  const reset = allowed > 0n && !(await walletRead(c, 'eth_call', [{ from: me, to: t.addr, data: approve(need).data }, 'latest']).then((x) => !/^0x0{64}$/.test(x), () => false));
+  return { kind: 'allowance', before: [...(reset ? [approve(0n)] : []), approve(need)] };
+}
+// A route sent straight to zRouter with its EIP-2612 permit: zRouter's own permit(), then the route's calls, in one
+// multicall, so the token allows zRouter and zRouter takes it within the same transaction.
+function routerWithPermit(pull, token, route) {
+  let calls = [route];
+  if (route.startsWith('0xac9650d8')) {
+    const b = unhex(route).subarray(4), at = (i) => Number(big(b.subarray(i, i + 32))), head = at(0), n = at(head);
+    calls = Array.from({ length: n }, (_, k) => { const o = head + 32 + at(head + 32 + 32 * k); return '0x' + hex(b.subarray(o + 32, o + 32 + at(o))); });
+  }
+  const permit = calldata('permit(address,uint256,uint256,uint8,bytes32,bytes32)', ['address', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'], [token, pull.value, pull.deadline, pull.v, pull.r, pull.s]);
+  return calldata('multicall(bytes[])', [{ array: 'bytes' }], [[permit, ...calls]]);
+}
 const SHQ = { key: '', r: null, err: null, busy: false, at: 0 };
 function formShieldToken(f, seg) {
   const c = S.chain, t = S.inTok[c.chainId];
@@ -3811,10 +3964,29 @@ function formShieldToken(f, seg) {
     ${amountField('f-samt', 'ETH to shield', html`<span class="num" id="f-tb">…</span>`)}
     ${tokRow(c, 'inTok', 'Pay with')}
     <div class="lbl"><span>Slippage</span><span class="seg sub" role="tablist" aria-label="Slippage">${[10n, 50n, 100n].map((v) => html`<button type="button" role="tab" data-sl="${v}" aria-selected="${String(S.slip === v)}">${Number(v) / 100}%</button>`)}</span></div>
+    <div id="f-via"></div>
     <div class="rcpt" id="f-rcpt" hidden></div>
     <button class="btn" type="button" id="f-go" disabled>${S.key ? `Swap ${t.sym} and shield` : 'Sign in to shield to yourself'}</button>
-    <p class="note">${pal('face')}Your wallet swaps ${t.sym} through zRouter for exactly this much ETH, sent to a new deposit address of yours, and it moves into your private balance: by the relay (up to 0.25%), or by your wallet right after when it is under the relay’s minimum. Your wallet, the token and the ETH amount show on chain; whose balance it lands in does not. A round amount blends in best.</p>`);
+    <p class="note" id="f-snote"></p>`);
   wireTok(f, 'inTok');
+  // Two ways in. Where the zap has code: one transaction from the wallet swaps and shields, with no fee (the default).
+  // Or the swap pays a new deposit address of this key and the relay moves it in for up to 0.25%, the wallet paying only
+  // the swap's gas; with no zap on the chain and under the relay's minimum, the wallet moves it in right after.
+  // The choice is per visit, never remembered.
+  let zap = null;
+  const byRelay = () => zap === false || S.shieldVia === 'relay';
+  const note = () => {
+    const e = $('#f-snote'), v = $('#f-via');
+    if (e) mount(e, html`${pal('face')}${byRelay()
+      ? `Your wallet swaps ${t.sym} through zRouter for exactly this much ETH, sent to a new deposit address of yours, and it moves into your private balance: by the relay (up to 0.25%)${zap ? '' : ', or by your wallet right after when it is under the relay’s minimum'}.`
+      : `Your wallet swaps ${t.sym} through zRouter for exactly this much ETH and shields it in the same transaction, through the zap contract; whatever ${t.sym} the swap does not use comes back.`} The approval is a signature where the token and wallet allow it. Your wallet, the token and the ETH amount show on chain; whose balance it lands in does not. A round amount blends in best.`);
+    if (v) mount(v, !zap || !relayOf(c) ? '' : byRelay()
+      ? html`<p class="route">The relay moves it in, up to 0.25%; your wallet pays only the swap’s gas · <button class="link" type="button" data-via="zap">shield in one transaction instead</button></p>`
+      : html`<p class="route">Swapped and shielded in one transaction from your wallet, no fee · <button class="link" type="button" data-via="relay">let the relay move it in</button></p>`);
+    $$('[data-via]', f).forEach((b) => b.onclick = () => { S.shieldVia = b.dataset.via; note(); FORM.check?.(); });
+  };
+  note();
+  zapOn(c).then((v) => { zap = v; note(); FORM.check?.(); });
   $$('[data-sl]', f).forEach((b) => b.onclick = () => { S.slip = BigInt(b.dataset.sl); renderForm(); });
   const amt = $('#f-samt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
   let tb = null;
@@ -3845,10 +4017,12 @@ function formShieldToken(f, seg) {
     if (SHQ.key !== key || SHQ.busy) return say(html`<p class="note">Finding the best route…</p>`);
     if (SHQ.err || !SHQ.r) return say(html`<p class="note err">${SHQ.err ? errText(SHQ.err) : `No route from ${t.sym} for this amount on ${c.full} right now.`}</p>`);
     const r = SHQ.r;
-    if (least === undefined) return say(html`<p class="note">Reading the relay’s minimum…</p>`);
+    if (zap == null || (byRelay() && least === undefined)) return say(html`<p class="note">Reading ${c.full}…</p>`);
     if (tb != null && r.limit > tb) return say(html`${kvRow('Costs at most', `${units(r.limit, t.dec)} ${t.sym}`)}<p class="note err">More ${t.sym} than your wallet holds on ${c.full}.</p>`);
+    // With the zap there, the relay is only for amounts it moves in itself.
+    if (zap && byRelay() && (least == null || a < least)) return say(html`<p class="note err">${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmt(least)} ETH.`} Shield it in one transaction instead.</p>`);
     say(html`${kvRow('Into your private balance', `${fmt(a)} ETH`)}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${units(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[c.chainId]?.[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
-      ${least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}`);
+      ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}`);
     go.disabled = false;
   };
   go.onclick = () => {
@@ -3857,33 +4031,53 @@ function formShieldToken(f, seg) {
       const a = parseEth(amt.value);
       if (!a) throw new Error('Enter an amount.');
       await walletReady(c, step);
-      // The new address must be unused on this chain: its history is read first.
-      if (CH[c.chainId].at == null) { step('Reading your history'); await syncChain(c, true); }
-      if (CH[c.chainId].at == null) throw new Error(`Could not read your history on ${c.full}, so nothing was sent. Try again in a moment.`);
-      const i = nextBoxIndex();
-      if (i == null) throw new Error('No new deposit address is free right now: take in what waits at the ones you have first.');
-      const W = walletOn(c), box = W.receiveBox(i);
-      const key = `${c.chainId}|${t.addr}|${a}|${S.slip}`, fresh = SHQ.key === key && SHQ.r?.stand && Date.now() - SHQ.at < 60_000;
-      if (!fresh) step('Finding the best route');
-      const r = fresh ? withDest(SHQ.r, box) : await shieldRoute(c, t, a, S.slip, box);
-      if (!r) throw new Error(`No route from ${t.sym} for this amount right now. Nothing was sent.`);
-      const pad = (x) => hex(addrWord(x)), send = async (to, data, what) => {
+      const W = walletOn(c), key = `${c.chainId}|${t.addr}|${a}|${S.slip}`, fresh = SHQ.key === key && SHQ.r?.stand && Date.now() - SHQ.at < 60_000;
+      const send = async (to, data, what) => {
         step('confirm in your wallet');
         const h = await signerFor(c).send({ to, data, value: 0n });
         step('waiting for the block');
         await walletMined(c, h, what);
         return h;
       };
-      // zRouter takes the token from the wallet: allowed up to the most the route may take (set to zero first where
-      // something else is allowed, which some tokens require).
-      const allowed = BigInt(await walletRead(c, 'eth_call', [{ to: t.addr, data: '0xdd62ed3e' + pad(S.account) + pad(ZROUTER) }, 'latest']));
-      if (allowed < r.limit) {
-        if (allowed > 0n) await send(t.addr, '0x095ea7b3' + pad(ZROUTER) + hex(word(0n)), 'approval');
-        await send(t.addr, '0x095ea7b3' + pad(ZROUTER) + hex(word(r.limit)), 'approval');
+      const approveEach = async (before) => { for (const x of before) await send(x.to, x.data, 'approval'); };
+      const route = async (to) => {
+        if (!fresh) step('Finding the best route');
+        const r = fresh ? withDest(SHQ.r, to, S.account) : await shieldRoute(c, t, a, S.slip, to, S.account);
+        if (!r) throw new Error(`No route from ${t.sym} for this amount right now. Nothing was sent.`);
+        return r;
+      };
+      if (!byRelay() && await zapOn(c)) {
+        const r = await route(ZAP), pull = await pullFor(c, t, r.limit, ZAP, step);
+        // Approvals go in one batch with the zap where the wallet takes batches; otherwise each is mined first.
+        if (pull.before.length && !(await canBatch(c))) { await approveEach(pull.before); pull.before = []; }
+        const via = (p) => ({ to: ZAP, data: (txv) => zapData(p, txv, t.addr, r.limit, r.data), before: p.before });
+        let h;
+        try { h = await W.deposit({ amount: a, onStep: step, through: via(pull) }); }
+        catch (e) {
+          if (!e?.noBatch) throw e;
+          await approveEach(pull.before);
+          h = await W.deposit({ amount: a, onStep: step, through: via({ kind: 'allowance', before: [] }) });
+        }
+        delete DRAFT['f-samt']; SHQ.at = 0; balOf();
+        return done(c, h, `Shielded ${fmt(a)} ETH from ${t.sym}.`);
       }
+      // The new address must be unused on this chain: its history is read first.
+      if (CH[c.chainId].at == null) { step('Reading your history'); await syncChain(c, true); }
+      if (CH[c.chainId].at == null) throw new Error(`Could not read your history on ${c.full}, so nothing was sent. Try again in a moment.`);
+      const i = nextBoxIndex();
+      if (i == null) throw new Error('No new deposit address is free right now: take in what waits at the ones you have first.');
+      const box = W.receiveBox(i), r = await route(box);
+      // zRouter takes the token from the wallet, up to the most the route may take: by zRouter's own permit in the same
+      // multicall, or an approval batched with the swap, or (a wallet that batches nothing) mined first.
+      const pull = await pullFor(c, t, r.limit, ZROUTER, step), swap = pull.kind === 'permit' ? routerWithPermit(pull, t.addr, r.data) : r.data;
       const bx = boxes(); bx.issued.push({ i, label: `From ${t.sym}`, at: Date.now() }); vset('boxes', bx);
       await watchBox(i, [c], true);
-      const h = await send(ZROUTER, r.data, 'swap');
+      let h = null;
+      if (pull.before.length && await canBatch(c)) {
+        step('confirm in your wallet');
+        h = await sendCalls(c, [...pull.before, { to: ZROUTER, data: swap, value: 0n }].map((x) => ({ to: x.to, data: x.data, value: '0x0' })), () => step('waiting for the block')).catch((e) => { if (e?.noBatch) return null; throw e; });
+      }
+      if (!h) { await approveEach(pull.before); h = await send(ZROUTER, swap, 'swap'); }
       delete DRAFT['f-samt']; SHQ.at = 0; balOf();
       // The relay's minimum now; with no relay answering, or under it, this wallet takes it in itself.
       const min = relayOf(c) ? await W.quote().then((q) => BigInt(q.receiveMin ?? 0), () => null) : null;
@@ -4358,6 +4552,8 @@ function quorum(to, data, urls = ownNodes(CHAINS[0]), lone = false, tag = 'lates
     if (won != null) return won;
     const seen = Object.keys(tally);
     if (lone && seen.length === 1) return seen[0];
+    // The reader's own nodes are the only ones asked, so when none answered, that is what to say.
+    if (!seen.length && Object.values(ends.rpc || {}).includes(urls)) throw new Error('Your own node did not answer. Check it under Endpoints, or try again.');
     throw new Error('Could not confirm that just now. Try again in a moment.');
   })();
 }
@@ -4672,12 +4868,13 @@ function renderWalletSheet() {
 }
 function renderSettings() {
   const el = $('#settings-body');
-  mount(el, html`<p class="lede">Public nodes read each chain and see your IP address; a relay sends payments for you and sees your IP address and what it sends. It cannot change where they go. To use your own, enter one URL per line. Saved in this browser.</p>
-    ${CHAINS.map((c) => html`<div class="lbl"><span>${c.full} nodes</span></div><textarea id="e-rpc-${c.chainId}" spellcheck="false">${(ends.rpc?.[c.chainId] || []).join('\n')}</textarea>
+  mount(el, html`<p class="lede">This page reads each chain through public nodes, which see your IP address. Add your own node, or a private RPC URL, and the reads that say what you are doing go only to it: the names you pay (read on Ethereum), swap routes, your deposit addresses and the pool’s checks. The pool’s history, the same for every reader, is read through it first, with the public nodes as backup.</p>
+    <p class="note">A relay sends payments for you and sees your IP address and what it sends; it cannot change where they go. Saved in this browser.</p>
+    ${CHAINS.map((c) => html`<div class="lbl"><span>${c.full} · your own node</span></div><input id="e-rpc-${c.chainId}" type="url" inputmode="url" spellcheck="false" autocomplete="off" placeholder="https://… (optional)" value="${(ends.rpc?.[c.chainId] || []).join(' ')}">
       <div class="lbl"><span>${c.full} relay</span></div><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
     <div class="lbl"><span>Another mirror for the proving key</span></div><textarea id="e-mirror" spellcheck="false" style="min-height:38px" placeholder="https://…/ serving transact.wasm and transact_final.zkey">${ends.mirror || ''}</textarea>
     <div class="row2"><button class="btn" type="button" id="e-save">Save</button><button class="btn ghost" type="button" id="e-reset">Use the defaults</button></div>`);
-  $$('textarea', el).forEach((t) => { t.setAttribute('autocapitalize', 'off'); t.setAttribute('autocorrect', 'off'); if (t.placeholder === '' && !t.value) t.placeholder = CHAINS.find((c) => t.id === `e-rpc-${c.chainId}`)?.rpc.join('\n') || ''; });
+  $$('textarea, input', el).forEach((t) => { t.setAttribute('autocapitalize', 'off'); t.setAttribute('autocorrect', 'off'); });
   // Only https (or a node on this machine) can be reached from this page; a trailing slash would double the one a path adds.
   const good = (u) => /^https:\/\/[^\s/]+/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(u);
   const urls = (t) => [...new Set(t.split(/\s+/).filter(Boolean).map((u) => u.replace(/\/+$/, '')))];

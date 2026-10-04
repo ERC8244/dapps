@@ -40,7 +40,7 @@ export const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)
  *  relays that are down: { mode, fee, relayer, quote, events, calls }. */
 // `realCalls`: contracts whose eth_call reads are answered by the chain itself rather than the fork (read-only contracts
 // whose state a fork would fetch slot by slot, such as a token list or a quoter); everything else is the fork's.
-export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = [], realCalls = []} = {}) {
+export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = [], realCalls = [], batch = false} = {}) {
   const forks = {};
   for (const name of names) {
     const c = CHAINS.find((x) => x.key === name);
@@ -166,6 +166,25 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         if (method === 'eth_chainId') return chain;
         if (method === 'wallet_switchEthereumChain') { if (!NODES[Number(params[0].chainId)]) throw Object.assign(new Error('Unrecognized chain ID'), { code: 4902 }); chain = params[0].chainId; return null; }
         if (method === 'eth_sendTransaction') return call('eth_sendTransaction', [{ ...params[0], from: ACCT }]);
+        // EIP-5792, when the test says the wallet batches: the calls are sent in order and each must land.
+        if (method === 'wallet_getCapabilities') { if (!${JSON.stringify(batch)}) throw Object.assign(new Error('Method not found'), { code: -32601 }); return { [chain]: { atomic: { status: 'supported' } } }; }
+        if (method === 'wallet_sendCalls') {
+          if (!${JSON.stringify(batch)}) throw Object.assign(new Error('Method not found'), { code: -32601 });
+          const hashes = [];
+          for (const c of params[0].calls) {
+            const h = await call('eth_sendTransaction', [{ from: ACCT, to: c.to, data: c.data, value: c.value || '0x0' }]);
+            hashes.push(h);
+            let r = null; for (let i = 0; i < 60 && !r; i++) { r = await call('eth_getTransactionReceipt', [h]); if (!r) await new Promise((ok) => setTimeout(ok, 250)); }
+            if (r?.status !== '0x1') break;
+          }
+          const id = '0x' + hashes.at(-1).slice(2, 34);
+          (window.__batches ||= {})[id] = hashes;
+          return { id };
+        }
+        if (method === 'wallet_getCallsStatus') {
+          const receipts = await Promise.all(window.__batches[params[0]].map((h) => call('eth_getTransactionReceipt', [h])));
+          return { status: receipts.every((r) => r?.status === '0x1') ? 200 : 500, receipts };
+        }
         return call(method, params || []);
       } };
       if (!sessionStorage.getItem('seeded')) {

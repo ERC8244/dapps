@@ -27,8 +27,14 @@ const read = async (name, {width, height, colorScheme}) => {
   const ctx = await browser.newContext({javaScriptEnabled: false, viewport: {width, height}, colorScheme, deviceScaleFactor: 1});
   const p = await ctx.newPage();
   await p.goto(base + name);
-  // Measured once the fonts have resolved, which a busy machine does later; reading the boxes lays the page out at once.
-  await p.evaluate(() => document.fonts.ready.then(() => document.fonts.status));
+  // Measured in the same state however long each page took: once the fonts have resolved (which a busy machine does later;
+  // reading the boxes lays the page out at once), with each animation that ends at its end (the notice shown to a browser
+  // without the page's scripts appears after 3 s) and each that runs on at its start.
+  await p.evaluate(async () => {
+    document.body.getBoundingClientRect();
+    await document.fonts.ready;
+    for (const a of document.getAnimations()) { if (Number.isFinite(a.effect?.getComputedTiming().endTime)) a.finish(); else { a.pause(); a.currentTime = 0; } }
+  });
   const seen = await p.evaluate(() => ({
     rules: [...document.styleSheets].flatMap((s) => [...s.cssRules].map((r) => r.cssText)),
     els: [...document.querySelectorAll('*')].map((e) => {

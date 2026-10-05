@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Y6lYI/eJ1pJWOj33cKxi1vtEqX6jFjH/Fd1aKfbUFl0=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+J/mfZQ4E3CSHqSZPRoxetZ0efUwb6/jZ/2dGs2umcY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -3330,16 +3330,20 @@ function paintBal() {
   // A payment whose outcome the chain has not shown yet: its notes are held, and it can only be tried again as itself.
   const flying = S.key && st.W ? st.W.inflight() : [], pl = S.key ? plans().filter((p) => p.chainId === c.chainId) : [];
   const flyLine = (x) => html`<div class="callout held"><span>${x.pay.kind === 'withdraw' ? 'A withdrawal' : 'A payment'} of ${fmt(BigInt(x.pay.amount))} ETH to ${short(x.pay.to, 8)} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
-  mount($('#bal-note'), html`${flying.map(flyLine)}${pl.map(planLine)}${total > 0n && CHAINS.filter((x) => CH[x.chainId].bal > 0n).length > 1 ? html`<p class="note">Your total across chains: <b class="num">${fmt(total)} ETH</b></p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 10 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>` : ''}${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : ''}`);
+  mount($('#bal-note'), html`${flying.map(flyLine)}${pl.map(planLine)}${total > 0n && CHAINS.filter((x) => CH[x.chainId].bal > 0n).length > 1 ? html`<p class="note">Your total across chains: <b class="num">${fmt(total)} ETH</b></p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 10 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : ''}`);
   wireHeld($('#bal-note'));
   $$('[data-plan]', $('#bal-note')).forEach((b) => b.onclick = () => swapOut(c, b.dataset.plan));
   $$('[data-unplan]', $('#bal-note')).forEach((b) => b.onclick = () => { dropPlan(b.dataset.unplan); paintBal(); });
-  $('#bal-combine')?.addEventListener('click', (e) => act(e.currentTarget, async (step) => {
-    if (viaOf('send') === 'self') await walletReady(c, step);
-    const n = await walletOn(c).consolidate({ via: viaOf('send'), onStep: step, expectFee: fee });
+  // From the relay or, as its own choice, from the wallet: no fee, the wallet pays the gas. A relayed step that may still
+  // land is held, and offers the wallet as well.
+  const combine = (btn, via) => act(btn, async (step) => {
+    if (via === 'self') await walletReady(c, step);
+    const n = await walletOn(c).consolidate({ via, onStep: step, expectFee: via === 'self' ? null : fee });
     if (!n) throw new Error('Nothing to combine.');
     mount($('#status'), html`${pal('ninja')}<span class="ok">Combined ${n + 1} parts into one.</span>`);
-  }));
+  });
+  $('#bal-combine')?.addEventListener('click', (e) => combine(e.currentTarget, viaOf('send')));
+  $('#bal-combine-self')?.addEventListener('click', (e) => combine(e.currentTarget, 'self'));
   $('#bal-take')?.addEventListener('click', () => { if (S.busy) return; S.tab = 'shield'; S.from = 'exchange'; render(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   refreshPool(c);
   const pool = POOLETH[c.chainId]?.v, poolLine = pool != null ? html`<div class="u">The pool holds <b class="num">${poolStr(pool)} ETH</b></div>` : '';

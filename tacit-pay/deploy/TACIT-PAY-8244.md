@@ -15,7 +15,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | deployed page | `dapp/page.min.html`: the source with its comments and spacing taken out by `../scripts/strip.mjs` (run by `deploy/repin.sh`), the file the manifest pins and the chunks hold |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs`, `.strip.mjs`, `.scan.mjs` (below) |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs`, `.strip.mjs`, `.scan.mjs`, `.privateswap.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -235,6 +235,7 @@ node test/dapp/tacit-pay.links.mjs             # a real .wei name, a link, a pay
 node test/dapp/tacit-pay.relay.mjs             # a faithful relay, then relays that lie, stall, overcharge or leave events out
 node test/dapp/tacit-pay.index.mjs             # an event index that says "no events" is caught against the pool
 node test/dapp/tacit-pay.boxes.mjs             # one-time deposit addresses: issued, funded as by an exchange, found from the key, taken in
+node test/dapp/tacit-pay.privateswap.mjs       # a private swap: USDC in, a token added by address out, through the card; what is remembered; a lost plan
 KEEPER=… node test/dapp/tacit-pay.keeper.mjs   # the real relay server, from the repo's worker-relay, on a fork
 node test/dapp/tacit-pay.chains.mjs            # read-only: every node and relay the page ships, asked what the page asks
 node test/dapp/tacit-pay.live.mjs              # read-only against mainnet: nodes, relays, routers, the proving key
@@ -258,7 +259,7 @@ Never run `forge build --force` or `forge clean` between `repin.sh` and the depl
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 286,961-byte page: about 66M gas, 0.066 ETH at 1 gwei, 0.0066 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 298,139-byte page: about 69M gas, 0.069 ETH at 1 gwei, 0.0069 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press

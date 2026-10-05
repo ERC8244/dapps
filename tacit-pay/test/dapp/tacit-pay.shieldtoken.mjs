@@ -91,7 +91,7 @@ await p.waitForFunction(() => /At most/.test(document.querySelector('#f-rcpt')?.
 const r = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' ');
 if (MODE === 'box') ok(/your wallet takes it in/.test(r), 'with no zap and under the relay’s minimum, the wallet will take it in', r.slice(0, 200));
 else if (RELAY) ok(/the relay moves it in/.test(r) && /data-via="zap"/.test(await p.innerHTML('#f-via')), 'the relay will move it in, and the zap is offered instead', r.slice(0, 200));
-else ok(/shielded in the same transaction/.test(r) && /same transaction, through the zap/.test(await p.textContent('#f-snote')), 'the zap shields it in the same transaction', r.slice(0, 200));
+else ok(/shielded in the same transaction/.test(r) && /shielded in one transaction/.test(await p.textContent('#f-snote')), 'the zap shields it in the same transaction', r.slice(0, 200));
 const most = BigInt(Math.ceil(Number(new RegExp(`At most\\s*([\\d.]+)\\s*${SYM}`).exec(r)?.[1]) * 10 ** Math.min(DEC, 15))) * 10n ** BigInt(Math.max(0, DEC - 15));
 const before = await bal(), seen = (await p.wallet()).length;
 await p.click('#f-go');

@@ -27,6 +27,8 @@ const read = async (name, {width, height, colorScheme}) => {
   const ctx = await browser.newContext({javaScriptEnabled: false, viewport: {width, height}, colorScheme, deviceScaleFactor: 1});
   const p = await ctx.newPage();
   await p.goto(base + name);
+  // Measured once the fonts have resolved, which a busy machine does later; reading the boxes lays the page out at once.
+  await p.evaluate(() => document.fonts.ready.then(() => document.fonts.status));
   const seen = await p.evaluate(() => ({
     rules: [...document.styleSheets].flatMap((s) => [...s.cssRules].map((r) => r.cssText)),
     els: [...document.querySelectorAll('*')].map((e) => {

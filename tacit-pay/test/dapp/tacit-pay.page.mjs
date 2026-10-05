@@ -116,9 +116,11 @@ await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"offline"}'});
 });
 await ctx.exposeFunction('__sign', (hex) => DEV.signMessage(Buffer.from(hex.slice(2), 'hex')));
-await ctx.addInitScript(`window.ethereum = { on() {}, request: async ({ method, params }) => {
+await ctx.addInitScript(`let chain = '0x1'; window.ethereum = { on() {}, request: async ({ method, params }) => {
   if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [${JSON.stringify(DEV.address.toLowerCase())}];
-  if (method === 'eth_chainId') return '0x1';
+  if (method === 'eth_chainId') return chain;
+  if (method === 'wallet_switchEthereumChain') { chain = params[0].chainId; return null; }
+  if (method === 'eth_getBalance') return '0x' + (123n * 10n ** 15n).toString(16);
   if (method === 'eth_getCode') return '0x';
   if (method === 'personal_sign') return window.__sign(params[0]);
   throw new Error('not in this test: ' + method);
@@ -379,6 +381,19 @@ await closeCard();
 await p.click('#settings-open');
 await p.click('#e-reset');
 ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')))) === '{}', 'and the defaults come back');
+
+console.log('a wallet that is connected but has not signed in');
+{
+  const q = await ctx.newPage();
+  q.on('pageerror', (e) => errors.push(String(e)));
+  await q.goto(`http://127.0.0.1:${server.address().port}/`);
+  await q.waitForFunction(() => /^Sign in · 0x/.test(document.querySelector('#wallet-label')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'the header reads as an action with the wallet’s address: Sign in · 0x…'), () => ok(false, 'the header reads as an action with the wallet’s address', document.querySelector ? '' : ''));
+  await q.click('#chains [data-chain="8453"]');
+  await q.waitForFunction(() => /Switch wallet to Base/.test(document.querySelector('#f-max')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'with the wallet on another chain, its balance is a button that says to switch'), () => ok(false, 'with the wallet on another chain, its balance is a button that says to switch'));
+  await q.click('#f-max');
+  await q.waitForFunction(() => /Wallet\s+0\.123\s+ETH/.test(document.querySelector('#f-max')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'pressing it moves the wallet to Base and the balance shows'), () => ok(false, 'pressing it moves the wallet to Base and the balance shows'));
+  await q.close();
+}
 
 const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
 ok(!hosts.length, 'it talks only to its listed nodes, relays, proving-key mirrors and the nodes of the key’s onchain copy', hosts.join(' '));

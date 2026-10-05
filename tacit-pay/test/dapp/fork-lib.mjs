@@ -114,20 +114,42 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   // a fork's upstream is; logs after it come from anvil. A range that crosses the fork is asked of both.
   const REAL = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https://mainnet.base.org', robinhood: 'https://rpc.mainnet.chain.robinhood.com'};
   const post = async (url, req) => (await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req)})).json();
+  // Base's public nodes serve short ranges (Tenderly 1,000 blocks, Base's own 500): before Base's fork the lab serves up to
+  // 10,000 a request, read as 1,000-block parts from Tenderly a few at a time, and a part Tenderly refuses from Base's own
+  // node in halves.
+  async function baseLogs(req, q, from, to) {
+    const ask = (url, a, b) => post(url, {...req, params: [{...q, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16)}]}).catch((e) => ({error: {code: -32000, message: e.message}}));
+    const bad = (x) => x.error || !Array.isArray(x.result), spans = [], out = [];
+    if (to - from >= 10_000) return {error: {code: -32005, message: 'the fork lab serves at most 10000 blocks a request'}};
+    for (let a = from; a <= to; a += 1000) spans.push([a, Math.min(to, a + 999)]);
+    for (let i = 0; i < spans.length; i += 5) {
+      const got = await Promise.all(spans.slice(i, i + 5).map(async ([a, b]) => {
+        const t = await ask('https://base.gateway.tenderly.co', a, b), m = Math.min(b, a + 499);
+        if (!bad(t)) return t;
+        const h = await Promise.all([ask(REAL.base, a, m), m < b ? ask(REAL.base, m + 1, b) : {result: []}]);
+        return h.find(bad) || {result: h.flatMap((x) => x.result)};
+      }));
+      if (got.some(bad)) return got.find(bad);
+      out.push(...got.flatMap((x) => x.result));
+    }
+    return {result: out};
+  }
   async function logs(f, req) {
     const q = req.params[0], tip = Number(BigInt(await f.rpc('eth_blockNumber')));
     const num = (x, d) => (x == null || x === 'latest' || x === 'pending' ? d : x === 'earliest' ? 0 : Number(BigInt(x)));
     const from = num(q.fromBlock, tip), to = num(q.toBlock, tip), hex = (n) => '0x' + n.toString(16);
     const parts = [];
-    if (from <= f.forkBlock) parts.push(post(REAL[f.c.key], {...req, params: [{...q, fromBlock: hex(from), toBlock: hex(Math.min(to, f.forkBlock))}]}));
+    if (from <= f.forkBlock) parts.push(f.c.key === 'base' ? baseLogs(req, q, from, Math.min(to, f.forkBlock)) : post(REAL[f.c.key], {...req, params: [{...q, fromBlock: hex(from), toBlock: hex(Math.min(to, f.forkBlock))}]}));
     if (to > f.forkBlock) parts.push(post(f.url, {...req, params: [{...q, fromBlock: hex(Math.max(from, f.forkBlock + 1)), toBlock: hex(to)}]}));
     const out = await Promise.all(parts), bad = out.find((x) => x.error || !Array.isArray(x.result));
     return JSON.stringify(bad ? {jsonrpc: '2.0', id: req.id, error: bad.error || {code: -32000, message: 'not a log list'}} : {jsonrpc: '2.0', id: req.id, result: out.flatMap((x) => x.result)});
   }
   const nodes = Object.fromEntries(Object.values(forks).map((f) => [f.c.chainId, f.c.rpc[0]]));
   const realSet = new Set(realCalls.map((a) => a.toLowerCase()));
-  // Reads at a recent block, which a node with no archive serves; Base's own endpoint limits bursts more tightly.
-  const REAL_CALLS = {ethereum: 'https://ethereum-rpc.publicnode.com', base: 'https://base-rpc.publicnode.com', robinhood: REAL.robinhood};
+  // Reads at a recent block, which a node with no archive serves; Base's own endpoint limits bursts more tightly. A quote
+  // heavier than the first node allows a call (a token with many pools) is asked of the next.
+  const REAL_CALLS = {ethereum: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co'], base: ['https://base-rpc.publicnode.com', 'https://base.gateway.tenderly.co'], robinhood: [REAL.robinhood]};
+  const realCall = async (key, body) => { let t; for (const u of REAL_CALLS[key]) { t = await (await fetch(u, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text(); if (!/"error"\s*:/.test(t)) break; } return t; };
   async function newContext() {
     const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
     await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -138,7 +160,7 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         try {
           const req = JSON.parse(body || '{}');
           const real = !Array.isArray(req) && req.method === 'eth_call' && realSet.has(String(req.params?.[0]?.to || '').toLowerCase());
-          t = req.method === 'eth_getLogs' ? await logs(f, req) : await (await fetch(real ? REAL_CALLS[f.c.key] : f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
+          t = req.method === 'eth_getLogs' ? await logs(f, req) : real ? await realCall(f.c.key, body) : await (await fetch(f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
         }
         catch (e) { t = JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}); }
         return route.fulfill({status: 200, contentType: 'application/json', headers: cors, body: t}).catch(() => {});

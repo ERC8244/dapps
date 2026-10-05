@@ -211,7 +211,7 @@ relay.events = null;
 const parts = toK1.length, steps = BigInt(parts - 1), after = total - steps * 5n * E12;
 await q.waitForFunction((n) => new RegExp(`in ${n} parts`).test(document.querySelector('#bal-note')?.textContent || ''), parts, {timeout: 60e3}).catch(() => {});
 const say = (await q.textContent('#bal-note')).replace(/\s+/g, ' ');
-ok(new RegExp(`Your balance here is in ${parts} parts, and one payment can use two\\. Combine them into one: ${steps} steps, fee ${eth(steps * 5n * E12).replace('.', '\\.')} ETH in all\\.`).test(say), 'the balance says how many parts it is in, and what combining them costs', say.slice(0, 160));
+ok(new RegExp(`Your balance here is in ${parts} parts; a payment combines the ones it needs\\. Combine them now: ${steps} steps, fee ${eth(steps * 5n * E12).replace('.', '\\.')} ETH in all\\.`).test(say), 'the balance says how many parts it is in, and what combining them costs', say.slice(0, 160));
 await q.click('#bal-combine');
 s = await q.status(/Combined|err/, 900e3);
 ok(new RegExp(`Combined ${parts} parts into one`).test(s), `${steps} relayed steps later, it is one part`, s);

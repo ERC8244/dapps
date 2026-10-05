@@ -1,5 +1,5 @@
 /* The proving key and the witness program are the two large files the page does not carry. They are fetched from mirrors, or
-   loaded from disk, and used only when their SHA-256 equals the pin inside the page. This runs the real dapp/page.html in
+   loaded from disk, and used only when their SHA-256 equals the pin inside the page. This runs the deployed page in
    Chromium and serves it files that are wrong in each way a mirror could get them wrong: one byte changed, one byte more,
    cut short, and a mirror the reader added that serves bad bytes ahead of the good ones. In every case no prover worker may
    start, nothing may be saved in the browser, and the card must say so; with the right bytes the prover starts.
@@ -10,10 +10,10 @@ import fs from 'node:fs';
 import http from 'node:http';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(process.env.PAGE || new URL('../../dapp/page.html', import.meta.url));
 const DIR = process.env.ARTIFACTS || '/Users/z/tacit/dapp/evm-pool';
 const real = {'transact.wasm': fs.readFileSync(DIR + '/transact.wasm'), 'transact_final.zkey': fs.readFileSync(DIR + '/transact_final.zkey')};
 const PIN = {'transact.wasm': '02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1', 'transact_final.zkey': '40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b'};
@@ -55,17 +55,21 @@ const browser = await chromium.launch();
 /* A page whose every mirror is served by `serve(host, name)` → bytes | null (null: not found). Nodes and relays are offline. */
 async function open(serve, {ends} = {}) {
   const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
-  const asked = [];
+  const asked = [], hosts = new Set();
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = new URL(route.request().url()), name = /\/(transact\.wasm|transact_final\.zkey)$/.exec(url.pathname)?.[1];
     const cors = {'access-control-allow-origin': '*'};
-    if (/base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org/.test(url.host) && CHAIN.on) {
-      const req = JSON.parse(route.request().postData() || '[]'), one = (x) => {
+    if (/base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org|base-sepolia\.drpc\.org/.test(url.host) && CHAIN.on) {
+      const req = JSON.parse(route.request().postData() || '[]'), limit = CHAIN.limits?.[url.host], one = (x) => {
         const c = CHAIN.code.get(String(x.params?.[0]).toLowerCase());
         const out = c && CHAIN.bad === String(x.params[0]).toLowerCase() ? (() => { const d = Buffer.from(c); d[d.length >> 1] ^= 1; return d; })() : c;
         return {jsonrpc: '2.0', id: x.id, result: '0x' + (out ? out.toString('hex') : '')};
       };
       asked.push(`chain:${(Array.isArray(req) ? req : [req]).length}`);
+      // A node that answers every read with a rate-limit error, or caps a batch at three items (as free plans do).
+      if (limit === 'rate') return route.fulfill({status: 200, headers: {...cors, 'content-type': 'application/json'}, body: JSON.stringify(req.map((x) => ({jsonrpc: '2.0', id: x.id, error: {code: -32007, message: '25/second request limit reached - reduce calls per sec'}})))});
+      if (limit === 'cap3' && req.length > 3) { hosts.add(url.host); return route.fulfill({status: 200, headers: {...cors, 'content-type': 'application/json'}, body: JSON.stringify(req.map((x) => ({jsonrpc: '2.0', id: x.id, error: {code: -32000, message: 'Batch of more than 3 requests are not allowed on free plan'}})))}); }
+      hosts.add(url.host);
       return route.fulfill({status: 200, headers: {...cors, 'content-type': 'application/json'}, body: JSON.stringify(Array.isArray(req) ? req.map(one) : one(req))});
     }
     if (name) {
@@ -83,7 +87,7 @@ async function open(serve, {ends} = {}) {
   if (ends) await ctx.addInitScript((e) => localStorage.setItem('tacit-pay-endpoints-v1', JSON.stringify(e)), ends);
   const p = await ctx.newPage();
   p.errors = [];
-  p.asked = asked;
+  p.asked = asked; p.served = hosts;
   p.on('pageerror', (e) => p.errors.push(String(e)));
   await p.goto(origin);
   await p.waitForSelector('#device-load', {state: 'attached', timeout: 30e3});
@@ -117,6 +121,18 @@ console.log('\na mirror the reader added, serving bad bytes ahead of the good on
   ok(await workers(p) > 0, 'the prover started on the good bytes');
   ok(!p.errors.length, 'no page errors', p.errors.join(' '));
   await p.context().close();
+}
+
+console.log('\nevery mirror down, and the first nodes of the onchain copy limit reads');
+{
+  CHAIN.on = true; CHAIN.limits = {'base-sepolia-rpc.publicnode.com': 'rate', 'sepolia.base.org': 'cap3'};
+  const p = await open(() => null);
+  await press(p);
+  const r = await outcome(p, 600e3);
+  ok(r.ready, 'a rate-limited node and a node that caps its batches are passed over: the files are read from the third and pass their SHA-256', r.err.slice(0, 90));
+  ok(!p.served.has('base-sepolia-rpc.publicnode.com') && p.asked.includes('chain:3') && !p.errors.length, 'the rate-limited node served nothing, the capped node was asked in batches of three, and the page raised no errors', [...p.served].join(' '));
+  await p.context().close();
+  CHAIN.on = false; CHAIN.limits = null;
 }
 
 console.log('\nevery mirror down: the onchain copy on Base Sepolia');

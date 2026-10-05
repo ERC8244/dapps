@@ -27,7 +27,7 @@ contract ReentrantSuccessor {
 
 contract TacitPay8244Test is Test {
     /// @dev The page's length, as manifest.json pins it.
-    uint256 constant PAGE_BYTES = 383473;
+    uint256 constant PAGE_BYTES = 288954;
 
     TacitPay8244 page;
     bytes html;
@@ -38,7 +38,7 @@ contract TacitPay8244Test is Test {
     address heir = address(0xCAFE);
 
     function setUp() public {
-        html = bytes(vm.readFile("dapp/page.html"));
+        html = bytes(vm.readFile("dapp/page.min.html"));
         pageHash = keccak256(html);
         // However many the chunker wrote, not a number declared here: the page
         // decides the count, which is the reason the list is dynamic.

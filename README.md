@@ -22,6 +22,7 @@ later: the manifests already are the catalogue.
 <dapp>/
   manifest.json   identity, the page's pinned size and hash, chunking, deployment
   dapp/page.html  the full readable page — one file, no build step
+  dapp/page.min.html  optional: the same page with its comments and spacing taken out, deployed in its place
   dapp/page.html.gz  optional exact compressed artifact returned by html()
   src/            the wrapper contract that serves it
   test/           the page the repo has == the page html() returns
@@ -35,11 +36,20 @@ nothing to bundle and nothing to pin except the file itself. When `html()`
 returns compressed bytes, the exact compressed artifact is kept beside the full
 HTML and is the file pinned by the manifest.
 
+A manifest may also name a `source` beside its `page`. The page is then built
+from the source by `scripts/strip.mjs`: comments go, and so does the whitespace
+between tokens, which leaves every name, string and number as written. Each
+script must parse to the same syntax tree as the source's before the page is
+written. The built page is what the manifest pins and the chunks hold; the
+source stays the file people read and edit. tacit-pay's 404 KB source is
+deployed as 289 KB, 12 chunks instead of 17.
+
 ## The commands
 
 One set, at the root, driven by the manifest — not a copy per dapp.
 
 ```sh
+node scripts/strip.mjs  <dapp>          # <source> -> <page>, for a manifest that names a source
 node scripts/chunk.mjs  <dapp>          # -> <dapp>/out/*.creation.txt
 node scripts/serve.mjs  <dapp> [port]   # localhost, real wallet, real transactions
 node scripts/verify.mjs <dapp>          # the deployment, against the chain

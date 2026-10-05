@@ -1,15 +1,15 @@
-/* A payment from the wallet that the network does not confirm in the three minutes the page waits is not sent a second time
+/* A payment from the wallet that the network does not confirm in the three minutes the page waits, or that the payer stopped
+   waiting for while the wallet still had it, is not sent a second time
    by the next press: the payer is told, shown the transaction, and the button waits until they say it was dropped.
    No network: the nodes are scripted, the payee's page makes a signed link, and the payer's clock is moved on by hand.
 
    Usage: node test/dapp/tacit-pay.unconfirmed.mjs                  (PLAYWRIGHT=<path to playwright-core> if not installed here) */
-import fs from 'node:fs';
 import http from 'node:http';
 import {createRequire} from 'node:module';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(process.env.PAGE || new URL('../../dapp/page.html', import.meta.url));
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
 
@@ -90,6 +90,42 @@ await B.click('#req-pay', {force: true, timeout: 2e3}).catch(() => {});
 ok(await B.evaluate(() => window.__sent) === 1, 'pressing it anyway sends nothing');
 await B.click('#sent-again');
 ok(!(await B.isDisabled('#req-pay')), 'once the payer says it was dropped, they can pay again');
+
+console.log('\nthe payer stops waiting for a wallet that never answers');
+const ctx2 = await browser.newContext();
+await routes(ctx2);
+await ctx2.exposeFunction('__read', (method, params) => answer('mainnet.base.org', {method, params}));
+await ctx2.addInitScript(`window.__sent = 0; window.ethereum = { on() {}, removeListener() {}, request: async ({ method, params }) => {
+  if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [${JSON.stringify(PAYER)}];
+  if (['eth_call', 'eth_getBalance', 'eth_getTransactionReceipt', 'eth_blockNumber', 'eth_getCode'].includes(method)) return window.__read(method, params);
+  if (method === 'eth_chainId') return '0x2105';
+  if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') return null;
+  if (method === 'eth_sendTransaction') { window.__sent++; return new Promise(() => {}); }
+  throw new Error('not in this test: ' + method);
+} };`);
+const C = await ctx2.newPage();
+C.on('pageerror', (e) => errors.push(String(e)));
+await C.clock.install();
+await C.goto(link.replace(/^[^#]*/, origin));
+await C.waitForSelector('#req-pay', {timeout: 30e3});
+await C.click('#req-pay');                                           // connect
+await C.waitForFunction(() => /^Pay 0\.002 ETH on/.test(document.querySelector('#req-pay')?.textContent || ''), null, {timeout: 30e3});
+await C.click('#req-pay');
+for (let i = 0; i < 60 && !(await C.$('#req-status [data-unstick]')); i++) { await C.clock.fastForward(1_000); await C.waitForTimeout(30); }
+ok(!!(await C.$('#req-status [data-unstick]')) && !(await C.$('#status [data-unstick]')), 'the nudge to check the wallet is in the card’s own status line');
+await C.click('#req-status [data-unstick]');
+await C.waitForFunction(() => /may still send/.test(document.querySelector('#req-note')?.textContent || ''), null, {timeout: 10e3}).catch(() => {});
+ok(/may still send/.test(await C.textContent('#req-note')), 'stopping the wait says the wallet may still send it', (await C.textContent('#req-note')).trim().slice(0, 100));
+ok(await C.isDisabled('#req-pay'), 'and the button waits');
+await C.click('#req-pay', {force: true, timeout: 2e3}).catch(() => {});
+ok(await C.evaluate(() => window.__sent) === 1, 'pressing it anyway asks the wallet nothing more');
+await C.reload();
+await C.waitForSelector('#req-pay', {timeout: 30e3});
+await C.click('#req-pay').catch(() => {});
+await C.waitForFunction(() => /may still send/.test(document.querySelector('#req-note')?.textContent || ''), null, {timeout: 30e3}).catch(() => {});
+ok(await C.isDisabled('#req-pay'), 'the hold outlasts a reload');
+await C.click('#sent-again');
+ok(!(await C.isDisabled('#req-pay')), 'once the payer says it was not sent, they can pay again');
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');

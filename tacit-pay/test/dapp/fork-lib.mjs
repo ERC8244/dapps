@@ -1,4 +1,4 @@
-/* Shared by the fork tests: the real dapp/page.html in Chromium over anvil forks of the chains' real pools, with a
+/* Shared by the fork tests: the deployed page in Chromium over anvil forks of the chains' real pools, with a
    wallet that sends from a development account, and relays that are down or are a mock whose behaviour a test sets.
    Every proof is made in the page by its own prover and accepted by the deployed pool.
 
@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {config, text as PAGE_TEXT} from './page-config.mjs';
+import {config, html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
@@ -71,7 +71,6 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   }
   const byHost = new Map();
   for (const f of Object.values(forks)) for (const u of f.c.rpc) byHost.set(new URL(u).host, f);
-  const HTML = Buffer.from(PAGE_TEXT);
   const server = http.createServer((q, r) => { r.writeHead(200, {'content-type': 'text/html; charset=utf-8'}); r.end(HTML); }).listen(0);
   const browser = await chromium.launch();
   const cors = {'access-control-allow-origin': '*'};
@@ -220,7 +219,8 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
       },
       async lockKey() { await p.click('#wallet'); await p.click('#w-lock'); await p.click('#sheet-wallet [data-close]'); },
       async status(re, ms = 900e3) {
-        await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#status').textContent) || document.querySelector('#status .err'), re.source, {timeout: ms});
+        try { await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#status').textContent) || document.querySelector('#status .err'), re.source, {timeout: ms}); }
+        catch (e) { throw new Error(`${e.message} waiting for ${re}; the status line says: ${(await p.textContent('#status').catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 300)}`); }
         return (await p.textContent('#status')).trim();
       },
       async balance(want, ms = 180e3) {

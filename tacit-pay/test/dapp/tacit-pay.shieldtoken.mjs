@@ -13,6 +13,7 @@
      relaybatch  the same with DAI and a wallet that batches: the approval of zRouter and the swap in one batch
      box      no zap on the chain: the swap (permit multicall) pays a new deposit address of this key, which (the relay's
               minimum being above the amount) the wallet then takes in
+     weth     WETH (no permit, unwrapped one to one), a wallet that batches nothing: an approval transaction, then the zap
 
    Usage: ARTIFACTS=<dir> [CHAIN=ethereum|base|robinhood] [MODE=…] node test/dapp/tacit-pay.shieldtoken.mjs     */
 import fs from 'node:fs';
@@ -23,8 +24,10 @@ const NAME = process.env.CHAIN || 'ethereum', MODE = process.env.MODE || 'permit
 // Buying DAI is a quote heavier than most nodes allow a call; Tenderly's and MEV Blocker's answer it.
 const DAI = ['DAI', '0x6B175474E89094C44Da98b954EedeAC495271d0F', 18, 'https://mainnet.gateway.tenderly.co'];
 const PERMIT = ['permit', 'relay', 'box'].includes(MODE), RELAY = ['relay', 'relaybatch'].includes(MODE);
-if (!PERMIT && NAME !== 'ethereum') throw new Error(`MODE=${MODE} uses DAI on Ethereum`);
-const CFG = PERMIT
+if (!PERMIT && MODE !== 'weth' && NAME !== 'ethereum') throw new Error(`MODE=${MODE} uses DAI on Ethereum`);
+const CFG = MODE === 'weth'
+  ? ['WETH', {ethereum: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', base: '0x4200000000000000000000000000000000000006', robinhood: '0x0bd7d308f8e1639fab988df18a8011f41eacad73'}[NAME], 18, null]
+  : PERMIT
   ? {ethereum: ['USDC', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 6, 'https://ethereum-rpc.publicnode.com'], base: ['USDC', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', 6, 'https://base-rpc.publicnode.com'], robinhood: ['USDG', '0x5fc5360d0400a0fd4f2af552add042d716f1d168', 6, 'https://rpc.mainnet.chain.robinhood.com']}[NAME]
   : DAI;
 const [SYM, TOKEN, DEC, REAL] = [CFG[0], getAddress(CFG[1]), CFG[2], CFG[3]];
@@ -49,8 +52,12 @@ if (MODE === 'box') {
 }
 if (MODE !== 'box') ok((await zapCode()).length > 2, 'the zap is at its address');
 
-console.log(`the wallet buys some ${SYM} through zRouter`);
-{
+if (MODE === 'weth') {
+  console.log('the wallet wraps some ETH');
+  const tx = await f.rpc('eth_sendTransaction', [{from: ACCT, to: TOKEN, value: '0x' + (10n ** 17n).toString(16), data: '0xd0e30db0'}]);
+  ok((await mined(tx))?.status === '0x1' && await bal() > 0n, 'the wallet holds WETH', String(await bal()));
+} else {
+  console.log(`the wallet buys some ${SYM} through zRouter`);
   const block = '0x' + BigInt(await f.rpc('eth_blockNumber')).toString(16);
   const data = '0xe7798987' + W(ACCT) + W(0) + W(0) + W(TOKEN) + W(10n ** 17n) + W(100) + W(Math.floor(Date.now() / 1000) + 900);
   let h;
@@ -101,14 +108,16 @@ if (RELAY) {
 
 const asked = (await p.wallet()).slice(seen).map((x) => x.split('@')[0]), sends = asked.filter((m) => m === 'eth_sendTransaction').length;
 if (MODE === 'box' || RELAY) {
-  ok(await read(TOKEN, '0xdd62ed3e' + W(ACCT) + W(ZROUTER)) <= most, 'and zRouter was allowed no more than that');
+  const left = await read(TOKEN, '0xdd62ed3e' + W(ACCT) + W(ZROUTER));
+  ok(left <= most, 'and zRouter was allowed no more than that');
+  if (MODE === 'relaybatch') ok(left === 0n, 'and the batch ends with zRouter allowed nothing', String(left));
   const want = {box: [1, 2, 0], relay: [1, 1, 0], relaybatch: [0, 0, 1]}[MODE];
   const got = [asked.filter((m) => m === 'eth_signTypedData_v4').length, sends, asked.filter((m) => m === 'wallet_sendCalls').length];
   ok(got.join() === want.join(), `the wallet was asked for ${['signatures', 'transactions', 'batches'].map((k, i) => `${want[i]} ${k}`).join(', ')}`, got.join());
 } else {
   ok(await read(TOKEN, '0xdd62ed3e' + W(ACCT) + W(ZAP.address)) === 0n, 'the zap is left with no allowance from the wallet');
   ok(await read(TOKEN, '0x70a08231' + W(ZAP.address)) === 0n && BigInt(await f.rpc('eth_getBalance', [ZAP.address, 'latest'])) === 0n, 'and holds nothing');
-  const want = {permit: [1, 1, 0], permit2: [1, 1, 0], batch: [0, 0, 1], approve: [0, 2, 0]}[MODE];
+  const want = {permit: [1, 1, 0], permit2: [1, 1, 0], batch: [0, 0, 1], approve: [0, 2, 0], weth: [0, 2, 0]}[MODE];
   const got = [asked.filter((m) => m === 'eth_signTypedData_v4').length, sends, asked.filter((m) => m === 'wallet_sendCalls').length];
   ok(got.join() === want.join(), `the wallet was asked for ${['signatures', 'transactions', 'batches'].map((k, i) => `${want[i]} ${k}`).join(', ')}`, got.join());
 }

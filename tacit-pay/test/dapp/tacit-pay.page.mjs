@@ -1,19 +1,18 @@
-/* Runs the real dapp/page.html in Chromium with the chain unplugged: every JSON-RPC call is answered here by a chain
+/* Runs the deployed page in Chromium with the chain unplugged: every JSON-RPC call is answered here by a chain
    with nothing in its pool, and every relay is down. What it checks is what the page computes and shows on its own:
    the document is self-contained and pins its one module, a Tacit key opens to the addresses the specification's
    vectors give, an Ethereum wallet's signature opens the key every Tacit app derives from it, the deposit address
    is shown only once the router agrees with it, and payment links round-trip.
 
    Usage: node test/dapp/tacit-pay.page.mjs        (PLAYWRIGHT=<path to playwright-core> if not installed here) */
-import fs from 'node:fs';
 import http from 'node:http';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {Wallet, AbiCoder, namehash, id} from 'ethers';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 const text = HTML.toString('utf8');
 
 let failures = 0;
@@ -44,7 +43,7 @@ const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(text)?
 ok(csp.includes(`'sha256-${createHash('sha256').update(module).digest('base64')}'`), 'the CSP pins the one module by its hash');
 const style = /<style>([\s\S]*?)<\/style>/.exec(text)?.[1] ?? '', tags = text.replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
 ok(!/<script[^>]+src=|<link[^>]+href="(?!data:)|<img[^>]+src="(?!data:)/i.test(tags) && !/@import|url\((?!["']?data:)/i.test(style), 'nothing is loaded by URL: no script src, no stylesheet, no remote image or url()');
-ok(/<script type="text\/x-prover" id="prover">/.test(text) && /function makeProver/.test(text), 'the prover is in the document, for its workers');
+ok(/<script type="text\/x-prover" id="prover"[^>]*>/.test(text) && /function makeProver/.test(text), 'the prover is in the document, for its workers');
 ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b') && text.includes('02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1'), 'it pins the ceremony’s proving key and witness program by SHA-256');
 
 // Each chain a hundred blocks past the pool's deployment with nothing in the pool: enough for the page to read, and

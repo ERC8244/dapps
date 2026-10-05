@@ -11,7 +11,10 @@ const {Interface, AbiCoder, id} = await import(new URL('../../../node_modules/et
 
 const a = mod.indexOf('function makePoolWallet('), end = mod.indexOf('\n}\n', a) + 3;
 if (a < 0 || end < 3) throw new Error('page layout changed: makePoolWallet');
-const body = `${mod.slice(0, end)}\nexport { headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
+// The engine's messages write amounts with the page's own formatting, which the page defines further down.
+const f0 = mod.indexOf('const group ='), f1 = mod.indexOf('\nconst ethStr', f0);
+if (f0 < 0 || f1 < 0) throw new Error('page layout changed: fmt');
+const body = `${mod.slice(0, end)}\n${mod.slice(f0, f1)}\nexport { headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, H, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
 const file = path.join(os.tmpdir(), `tacit-pay-engine-${createHash('sha256').update(body).digest('hex').slice(0, 12)}.mjs`);
 fs.writeFileSync(file, body);
 export const lib = await import(file);
@@ -147,11 +150,13 @@ export function mkWorld() {
   const rpc = async (m, p) => (m === 'eth_call' && p[0].to.toLowerCase() === POOL.toLowerCase() && p[0].data.startsWith(TXI.getFunction('transact').selector)) ? '0x' : base(m, p);
   rpc.batch = base.batch;
   const prove = async (input) => ({proof: {pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['5', '6']}, publicSignals: [input.root, input.oldRoot, input.newRoot, input.startIndex, input.publicAmount, input.extDataHash, input.asset, input.nf[0], input.nf[1], input.outLeaf[0], input.outLeaf[1]].map(String)});
-  const wallet = (seed, {send = null} = {}) => {
+  // `keeper`: a relay's base URL, answered by whatever the test puts in globalThis.fetch (`relayed` applies what it sends).
+  const wallet = (seed, {send = null, keeper = null} = {}) => {
     const keys = poolKeys(new Uint8Array(32).fill(seed));
     const signer = {address: '0x' + '22'.repeat(20), ready: async () => {}, send: async ({data, value}) => { const r = apply(data, value); if (r.revert) throw new Error('reverted ' + r.revert); return send ? send(r.h) : r.h; }};
-    const W = makePoolWallet({chain: {chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: 100, confirmations: 3, keeper: null}, keys, prove, store: null, signer, feed: false});
+    const W = makePoolWallet({chain: {chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: 100, confirmations: 3, keeper}, keys, prove, store: null, signer, feed: false});
     return {W, keys};
   };
-  return {node, wallet, apply};
+  const relayed = (t) => apply(TXI.encodeFunctionData('transact', [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, t.extAmount, t.relayer, t.fee, t.memo0, t.memo1]));
+  return {node, wallet, apply, relayed};
 }

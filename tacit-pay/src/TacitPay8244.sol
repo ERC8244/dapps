@@ -22,9 +22,11 @@ pragma solidity ^0.8.30;
 ///      rejected separately, because two identical chunks are always a mistake in the deploy script.
 ///
 /// WHAT THE PAGE TALKS TO
-///   The shielded pool, its router and its Groth16 verifier, deployed at the same addresses on all three chains
-///   (the constants below), by `eth_call`, `eth_getLogs` and transactions the reader's own wallet signs. Chain
-///   state comes from public nodes the reader can replace, or from the reader's wallet.
+///   The shielded pool, its router, its Groth16 verifier and its zap, deployed at the same addresses on all three
+///   chains (the constants below), by `eth_call`, `eth_getLogs` and transactions the reader's own wallet signs. To
+///   shield or withdraw as a token it also uses zRouter (the swap aggregator) with routes found by its onchain
+///   quoter zQuoter, the token list at token.list.wei, and Permit2, all read and called at their public addresses.
+///   Chain state comes from public nodes the reader can replace, or from the reader's wallet.
 ///
 ///   A relay per chain sends spends for a fee, so the spender's account never appears on chain, and serves an
 ///   index of pool events that makes the first read fast. The page never needs it: every spend can be sent from
@@ -33,8 +35,9 @@ pragma solidity ^0.8.30;
 ///
 ///   The proving key of the pool's circuit (28.5 MB, from a 176-contribution ceremony sealed by a Bitcoin block)
 ///   and the circuit's witness program (4.9 MB) are too large to store here. The page fetches them once from
-///   whichever mirror answers (tacit.finance, then IPFS gateways), accepts them only if their SHA-256 equals the
-///   pins below, and keeps them in the browser. A reader can also load the two files from disk.
+///   whichever mirror answers (tacit.finance, then IPFS gateways, then a copy stored as contract code on Base
+///   Sepolia), accepts them only if their SHA-256 equals the pins below, and keeps them in the browser. A reader can
+///   also load the two files from disk.
 ///
 /// WHAT THE PAGE DOES NOT DO
 ///   It never sends a key anywhere: the Tacit key is derived in the tab from the wallet's signature over a fixed
@@ -53,7 +56,7 @@ pragma solidity ^0.8.30;
 ///   - Or a browser with web3:// protocol support.
 contract TacitPay8244 {
     string public constant NAME = "anon.wei";
-    string public constant VERSION = "1";
+    string public constant VERSION = "2";
 
     /// @notice The shielded ETH pool the page pays through, the same address on Ethereum, Base and Robinhood Chain.
     address public constant POOL = 0x000000c2A20657CE25f2Ba99737933D031AFBEE9;
@@ -63,6 +66,11 @@ contract TacitPay8244 {
 
     /// @notice The pool's Groth16 verifier, which the page checks every proof against before sending it.
     address public constant VERIFIER = 0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153;
+
+    /// @notice The zap that shields a token in one transaction: it takes the token from the caller, swaps it through
+    ///         zRouter for exactly the deposit's ETH and deposits it with the caller's proof. Same address on all three
+    ///         chains.
+    address public constant ZAP = 0x0000008EbBF2323f95c4fBc18254f3D65C53998c;
 
     /// @notice SHA-256 of transact_final.zkey, the proving key the page will use.
     bytes32 public constant PROVING_KEY_SHA256 = 0x40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b;

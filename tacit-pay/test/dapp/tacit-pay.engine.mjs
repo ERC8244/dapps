@@ -1,9 +1,11 @@
 /* The page's wallet engine against a chain in memory, no browser: how a spend picks and merges notes, how the state is read
-   when a node lags or a relay's index leaves events out, how deposit-address balances follow the head, and how reads in
-   a batch fall back. The engine is taken out of dapp/page.html as it ships.
+   when a node lags or a relay's index leaves events out, how deposit-address balances follow the head, how reads in
+   a batch fall back, and how a relay that asks more than it quoted is paid. The engine is taken out of dapp/page.html as
+   it ships.
 
    Usage: node test/dapp/tacit-pay.engine.mjs                                                                       */
 import {mkNode, mkWallet, mkWorld, depositTo, sweepTo, fakeSweep, lib, POOL, asset} from './engine-mock.mjs';
+import {config} from './page-config.mjs';
 
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
@@ -210,6 +212,51 @@ console.log('\na made-up sweep into a deposit address, from a lying node');
   depositTo(honest, hk, E / 10n, 101); sweepTo(honest, hk, 5, E, 115); honest.tip = 130;
   const s = await H.sync();
   ok(s.balance === E + E / 10n && H.nextBox() === 6 && H.boxSpan() === 26, 'while a real one does', `balance ${s.balance} nextBox ${H.nextBox()} span ${H.boxSpan()}`);
+}
+
+console.log('\nthe tree, with its wide levels hashed elsewhere');
+{
+  const {incTree, H} = lib, leaves = Array.from({length: 3007}, (_, i) => BigInt(i) * 7919n + 13n), track = [7, 300, 1024, 3006];
+  const a = incTree(), b = incTree(), asked = [];
+  a.append(leaves.slice(0, 7), [3]); b.append(leaves.slice(0, 7), [3]);      // an edge that starts mid-pair and mid-subtree
+  for (let i = 7; i < leaves.length; i += 256) a.append(leaves.slice(i, i + 256), track.filter((x) => x >= i && x < i + 256));
+  await b.appendWith(leaves.slice(7), track, async (xs) => { asked.push(xs.length); const o = []; for (let i = 0; i < xs.length; i += 2) o.push(H([xs[i], xs[i + 1]])); return o; });
+  ok(a.root === b.root && a.size === b.size && JSON.stringify(a.toJSON()) === JSON.stringify(b.toJSON()), 'the same root, edge and tracked paths as appending 256 at a time', `${asked.length} levels handed out, widest ${Math.max(...asked) / 2} pairs`);
+  ok([3, ...track].every((i) => a.path(i).every((x, L) => x === b.path(i)[L])), 'each tracked leaf has the same path');
+}
+
+console.log('\na relay that asks a little more than it quoted, once it sees the proof');
+{
+  const {node, wallet, relayed} = mkWorld();
+  const QUOTE = 10n ** 13n, NEED = 13n * 10n ** 12n, real = globalThis.fetch, log = [];
+  // A relay that quotes QUOTE, reserves slots, and takes a payment only at NEED or more.
+  globalThis.fetch = async (url, init = {}) => {
+    const p = new URL(String(url)).pathname.replace(/^.*\/keeper/, ''), body = init.body ? JSON.parse(init.body) : {};
+    const res = (status, b) => ({status, ok: status === 200, headers: {get: () => null}, json: async () => b});
+    log.push(p);
+    if (p.startsWith('/quote')) return res(200, {chainId: 1, pool: POOL, relayer: config.RELAYERS[1], fee: String(QUOTE)});
+    if (p === '/reserve') return res(200, {id: 'a'.repeat(24), root: String(node.tree.root), oldRoot: String(node.tree.root), start: node.size, pending: [], expires: Math.floor(Date.now() / 1000) + 90});
+    if (p === '/cancel') return res(200, {ok: true});
+    if (p === '/relay') {
+      if (BigInt(body.tx.fee) < NEED) return res(400, {error: 'fee too low', needFee: String(NEED)});
+      const r = relayed(body.tx);
+      return r.revert ? res(400, {error: r.revert}) : res(200, {txHash: r.h});
+    }
+    return res(404, {});
+  };
+  const A = wallet(7, {keeper: 'https://relay.test/evm-pool/keeper'});
+  await A.W.deposit({amount: E});
+  const h = await A.W.withdraw({to: DEST, amount: 3n * E / 10n, via: null}).catch((x) => x);
+  ok(typeof h === 'string', 'the payment is proved again at the fee the relay names and lands', h?.message || h);
+  const s = await A.W.sync();
+  ok(s.balance === E - 3n * E / 10n - NEED, 'the difference came out of the change: the amount paid is the one asked for', `balance ${s.balance}`);
+  ok(log.filter((x) => x === '/cancel').length === 1 && log.filter((x) => x === '/relay').length === 2, 'the first slot was given back, and the relay was asked twice', log.join(' '));
+  log.length = 0;
+  const B = wallet(9, {keeper: 'https://relay.test/evm-pool/keeper'});
+  await B.W.deposit({amount: E / 10n});
+  const e = await B.W.withdraw({to: DEST, amount: 'max', via: null}).catch((x) => x);
+  ok(/asks .* more than it quoted/.test(e?.message || '') && B.W.inflight().length === 1, 'with no change to take it from, it is refused, and the notes stay held', e?.message || e);
+  globalThis.fetch = real;
 }
 
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);

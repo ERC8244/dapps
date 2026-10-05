@@ -1,18 +1,17 @@
-/* External Ethereum wallets against the real dapp/page.html, with the chain unplugged as in the page test: wallets
+/* External Ethereum wallets against the deployed page, with the chain unplugged as in the page test: wallets
    that announce themselves (EIP-6963) and a bare window.ethereum, the picker and the wallet remembered from it, a
    refused or already-open request, the two signatures of a first sign-in and the one of a later visit, wallets that
    cannot hold a key, an account switch and a locked wallet, and a chain the wallet must switch to, or add, before
    anything is proved.
 
    Usage: node test/dapp/tacit-pay.wallets.mjs        (PLAYWRIGHT=<path to playwright-core> if not installed here) */
-import fs from 'node:fs';
 import http from 'node:http';
 import {createRequire} from 'node:module';
 import {Wallet, Signature} from 'ethers';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 
 let failures = 0;
 const ok = (cond, msg, extra) => {

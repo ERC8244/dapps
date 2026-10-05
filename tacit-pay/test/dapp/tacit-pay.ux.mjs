@@ -1,4 +1,4 @@
-/* How the real dapp/page.html answers as it is used, with the chain unplugged: three chains kept in memory (a pool that
+/* How the deployed page answers as it is used, with the chain unplugged: three chains kept in memory (a pool that
    takes deposits and spends, Multicall3, the router's deposit addresses), a relay that quotes and indexes, and a wallet
    in the page that can be slow or never answer. What it checks: a button that cannot be pressed says why, Enter moves
    through a form and presses its button from the last field, a new relay fee or a read that changed nothing does not
@@ -13,10 +13,10 @@ import http from 'node:http';
 import {createRequire} from 'node:module';
 import {Wallet, Interface, AbiCoder, id} from 'ethers';
 import {lib} from './engine-mock.mjs';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 const {poolKeys, sealNote, poolAsset, incTree, hex, T_TRANSACT, receiveBoxAddress} = lib;
 
 let failures = 0;

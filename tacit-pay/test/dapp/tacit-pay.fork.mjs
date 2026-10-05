@@ -1,4 +1,4 @@
-/* Runs the real dapp/page.html against anvil forks of the chains' real pools, with every proof made in the page by its
+/* Runs the deployed page against anvil forks of the chains' real pools, with every proof made in the page by its
    own prover and accepted by the deployed pool, and the relays down throughout, so every spend is sent from the wallet:
    on each chain, shield from a wallet into your own balance, send privately to a tacit1 address, withdraw part, shield
    into someone else's balance, pay a payment link with no Tacit key open, take in what was sent to a deposit address,

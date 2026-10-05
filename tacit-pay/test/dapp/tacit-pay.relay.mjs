@@ -2,7 +2,8 @@
    from the relayer's own account, the payer's wallet is not asked and does not appear on chain), and relays that are
    not: a quote from another relayer, chain or pool or above the page's fee ceiling is refused before anything is
    proved; a fee that moved between the form and the spend is shown before it is paid; a relay that names some other
-   transaction, or one that never sends, is not taken for a payment; a relay that errors hands the spend to the wallet;
+   transaction, or one that never sends, is not taken for a payment and its notes stay held until it is tried again; a
+   relay that errors is reported in the page’s words and the held payment can be sent from the wallet;
    an event index that leaves events out is caught against the pool and the state is read from the chain instead.
 
    Usage: node test/dapp/tacit-pay.relay.mjs                     (anvil on PATH; CHAIN=base|ethereum|robinhood)
@@ -120,70 +121,77 @@ bal -= 1n * 10n ** 15n + 100n * E12;
 ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
 relay.fee = 5n * E12;
 
+// Each later payment to K1 is a different amount: the page asks before paying the same one twice within the hour.
+const toK1 = [4n * 10n ** 15n, 10n ** 15n];
+const held = async (re) => { await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#bal-note')?.textContent || ''), re.source, {timeout: 30e3}).catch(() => {}); return (await p.textContent('#bal-note')).replace(/\s+/g, ' ').trim(); };
+
 console.log('\na relay that names some other transaction');
 relay.mode = 'other'; relay.other = goodHash;
 await refresh();
-await fillSend(K1addr, '0.001');
+await fillSend(K1addr, '0.0011');
 await route(/Sent by the relay/);
 await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
 await p.click('#f-go');
-s = await p.status(/not this payment|Sent|err/);
-ok(/not this payment, so nothing was sent/.test(s), 'is not taken for the payment', s);
-ok(await p.balance(eth(bal)) === eth(bal), 'the balance is unchanged and the notes can be spent again');
+s = await p.status(/not shown this payment|Sent|err/);   // a read under way, the proof, then three minutes of following
+ok(/not shown this payment yet/.test(s) && !/Sent 0/.test(s), 'is not taken for the payment', s);
+ok(/held for it/.test(await held(/held for it/)), 'the notes it spends are held, and the balance says so', (await p.textContent('#bal-note')).replace(/\s+/g, ' ').trim().slice(0, 160));
 relay.mode = 'send';
-await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
-await p.click('#f-go');
-s = await p.status(/Sent|err/);
-ok(/Sent 0\.001 ETH privately/.test(s), 'and a faithful relay then sends it', s);
-bal -= 1n * 10n ** 15n + 5n * E12;
+await p.click('#status [data-retry="relay"]');
+s = await p.status(/It landed|It is settled|err/);
+ok(/It landed/.test(s), 'tried again from the same notes, a faithful relay then sends it', s);
+toK1.push(11n * 10n ** 14n); bal -= 11n * 10n ** 14n + 5n * E12;
 ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
 
 if (!process.env.FAST) {
   console.log('\na relay that takes the proof and never sends it');
   relay.mode = 'nowhere';
-  await fillSend(K1addr, '0.001');
+  await fillSend(K1addr, '0.0012');
   await route(/Sent by the relay/);
   await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
   await p.click('#f-go');
-  s = await p.status(/not confirmed it yet|Sent|err/, 400e3);
-  ok(/has not confirmed it yet/.test(s) && !/Sent 0/.test(s), 'is not reported as a payment', s);
-  ok(await p.$('#status a') !== null, 'and its hash is shown');
-  ok(await p.balance(eth(bal)) === eth(bal), 'the balance is unchanged and shown in full');
+  s = await p.status(/not shown this payment|Sent|err/);   // a read under way, the proof, then three minutes of following
+  ok(/not shown this payment yet/.test(s) && !/Sent 0/.test(s), 'is not reported as a payment', s);
+  await fillSend(K1addr, '0.0013');
+  const told = await p.waitForFunction(() => /held for a payment that may still land/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 30e3}).then(() => true, () => false);
+  ok(told && await p.isDisabled('#f-go'), 'a new payment from the same balance is told it is held, and waits', (await p.textContent('#f-rcpt')).trim().slice(0, 140));
   relay.mode = 'send';
+  await p.click('#bal-note [data-retry="relay"]');
+  s = await p.status(/It landed|It is settled|err/);
+  ok(/It landed/.test(s), 'until it is tried again and lands', s);
+  toK1.push(12n * 10n ** 14n); bal -= 12n * 10n ** 14n + 5n * E12;
+  ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
 }
 
 console.log('\na relay that has paused reservations for this connection');
 relay.reserve = 'tail';
-await fillSend(K1addr, '0.001');
+await fillSend(K1addr, '0.0014');
 await route(/Sent by the relay/);
 await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
 const heads0 = calls('/head'), reserves0 = calls('/reserve');
 await p.click('#f-go');
 s = await p.status(/Sent|err/);
-ok(/Sent 0\.001 ETH privately/.test(s), 'the spend is proved against the queue’s head and sent without a slot', s);
+ok(/Sent 0\.0014 ETH privately/.test(s), 'the spend is proved against the queue’s head and sent without a slot', s);
 ok(calls('/reserve') > reserves0 && calls('/head') > heads0, 'after the reservation was refused, the head was asked for');
-bal -= 1n * 10n ** 15n + 5n * E12;
+toK1.push(14n * 10n ** 14n); bal -= 14n * 10n ** 14n + 5n * E12;
 ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
 relay.reserve = null;
 
 console.log('\na relay that errors');
 relay.mode = 'error';
-await fillSend(K1addr, '0.001');
+await fillSend(K1addr, '0.0015');
 await route(/Sent by the relay/);
 await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
 await p.click('#f-go');
-s = await p.status(/relay busy|Sent|err/);
-ok(/The relay could not do that just now/.test(s) && !/relay busy/.test(s), 'it is told in the page’s words, not the relay’s', s);
-ok(await p.$('#use-wallet') !== null, 'with the wallet offered');
-await p.click('#use-wallet');
-await p.waitForFunction(() => !document.querySelector('#f-go')?.disabled, null, {timeout: 30e3});
+s = await p.status(/did not take|Sent|err/);
+ok(/did not take this payment/.test(s) && !/relay busy/.test(s), 'it is told in the page’s words, not the relay’s', s);
+ok(await p.$('#status [data-retry="self"]') !== null, 'with the wallet offered');
 const sends1 = await walletSends();
-await p.click('#f-go');
-s = await p.status(/Sent|err/);
-ok(/Sent 0\.001 ETH privately/.test(s), 'the wallet sends it', s);
+await p.click('#status [data-retry="self"]');
+s = await p.status(/It landed|It is settled|err/);
+ok(/It landed/.test(s), 'the wallet sends it, from the same notes', s);
 tx = await f.rpc('eth_getTransactionByHash', [await txOf()]);
 ok(tx.from.toLowerCase() === ACCT && await walletSends() === sends1 + 1, 'from the payer’s own account, no fee to the relay');
-bal -= 1n * 10n ** 15n;
+toK1.push(15n * 10n ** 14n); bal -= 15n * 10n ** 14n;
 ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
 relay.mode = 'send';
 
@@ -193,18 +201,21 @@ relay.events = () => ({chainId: c.chainId, pool: POOL, through: tip + 1000, even
 const q = await lab.page();
 await q.openKey(K1);
 await q.chain(name);
-const got = await q.balance('0.008', 240e3);
-ok(got === '0.008', 'a wallet opened on it still finds what it was paid, read from the chain instead', `${got} (4 + 1 + 1 + 1 + 1 of the sends above)`);
+// Once the index is caught out, the whole history is read from the chain: through a fork of Base, minutes.
+const total = toK1.reduce((x, y) => x + y, 0n), got = await q.balance(eth(total), 900e3);
+ok(got === eth(total), 'a wallet opened on it still finds what it was paid, read from the chain instead', `${got} (${toK1.map(eth).join(' + ')})`);
 ok(calls('/events') > 0, 'the index was asked first');
 
 console.log('\none press combines a balance held in parts');
 relay.events = null;
-await q.waitForFunction(() => /in 5 parts/.test(document.querySelector('#bal-note')?.textContent || ''), null, {timeout: 60e3}).catch(() => {});
-ok(/Your balance here is in 5 parts, and one payment can use two\. Combine them into one: 4 steps, fee 0\.00002 ETH in all\./.test((await q.textContent('#bal-note')).replace(/\s+/g, ' ')), 'the balance says it is in five parts, and what combining them costs', (await q.textContent('#bal-note')).replace(/\s+/g, ' ').slice(0, 160));
+const parts = toK1.length, steps = BigInt(parts - 1), after = total - steps * 5n * E12;
+await q.waitForFunction((n) => new RegExp(`in ${n} parts`).test(document.querySelector('#bal-note')?.textContent || ''), parts, {timeout: 60e3}).catch(() => {});
+const say = (await q.textContent('#bal-note')).replace(/\s+/g, ' ');
+ok(new RegExp(`Your balance here is in ${parts} parts, and one payment can use two\\. Combine them into one: ${steps} steps, fee ${eth(steps * 5n * E12).replace('.', '\\.')} ETH in all\\.`).test(say), 'the balance says how many parts it is in, and what combining them costs', say.slice(0, 160));
 await q.click('#bal-combine');
 s = await q.status(/Combined|err/, 900e3);
-ok(/Combined 5 parts into one/.test(s), 'four relayed steps later, it is one part', s);
-ok(await q.balance('0.00798', 120e3) === '0.00798', 'the balance is the sum less four fees: 0.00798');
+ok(new RegExp(`Combined ${parts} parts into one`).test(s), `${steps} relayed steps later, it is one part`, s);
+ok(await q.balance(eth(after), 120e3) === eth(after), `the balance is the sum less ${steps} fees: ${eth(after)}`);
 await q.waitForFunction(() => !/parts/.test(document.querySelector('#bal-note')?.textContent || ''), null, {timeout: 60e3}).catch(() => {});
 ok(!/parts/.test(await q.textContent('#bal-note')), 'and the offer is gone');
 ok(!q.errors.length && !p.errors.length, 'no page errors', [...p.errors, ...q.errors].join(' | '));

@@ -1,17 +1,16 @@
-/* Runs the real dapp/page.html in Chromium against mainnet, read-only: no transaction is sent. Over the public nodes
+/* Runs the deployed page in Chromium against mainnet, read-only: no transaction is sent. Over the public nodes
    and relays the page ships with, it opens the specification's vector key and checks what only the live chains
    can answer: each chain's pool is read from its first block, each relay's quote passes the page's checks (chain,
    pool, relay address, fee ceiling), each chain's router confirms the deposit address the page computes, and the
    ceremony's proving key is fetched from a mirror, matches its pinned hash and loads into the page's prover.
 
    Usage: node test/dapp/tacit-pay.live.mjs                                                                     */
-import fs from 'node:fs';
 import http from 'node:http';
 import {createRequire} from 'node:module';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 let failures = 0;
 const ok = (cond, msg, extra) => {
   console.log((cond ? '  PASS  ' : '  FAIL  ') + msg + (extra !== undefined ? '  ' + extra : ''));

@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import {createRequire} from 'node:module';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
@@ -37,7 +38,6 @@ let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
 const log = (m) => console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`);
 
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 const server = http.createServer((q, r) => { r.writeHead(200, {'content-type': 'text/html; charset=utf-8'}); r.end(HTML); }).listen(0);
 const browser = await chromium.launch();
 const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});

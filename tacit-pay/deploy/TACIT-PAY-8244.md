@@ -12,9 +12,10 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | piece | path |
 | --- | --- |
 | page source | `dapp/page.html` |
+| deployed page | `dapp/page.min.html`: the source with its comments and spacing taken out by `../scripts/strip.mjs` (run by `deploy/repin.sh`), the file the manifest pins and the chunks hold |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs`, `.strip.mjs`, `.scan.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -213,17 +214,20 @@ money goes. A reader who sets their own nodes under Endpoints uses those alone.
 ## Build
 
 Everything below is run from this directory. `forge` comes from Foundry; the browser tests need `npm i` at the repo
-root and a Chromium for playwright-core (`npx playwright-core install chromium`).
+root and a Chromium for playwright-core (`npx playwright-core install chromium`). The browser tests load the deployed page,
+`dapp/page.min.html`; `PAGE=dapp/page.html` runs them against the source.
 
 ```
 node ../scripts/chunk.mjs tacit-pay            # out/TacitPay8244.chunk1..N.creation.txt
 forge test --match-path test/TacitPay8244.t.sol
+node test/dapp/tacit-pay.strip.mjs             # the deployed page against its source: the same style rules, elements, text and pixels
 node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, names, endpoints, no network
 node test/dapp/tacit-pay.units.mjs             # amount parsing, an address's ID, how a failed log read is judged
 node test/dapp/tacit-pay.sig.mjs               # the page's signatures against an independent implementation
 node test/dapp/tacit-pay.engine.mjs            # the wallet engine on a chain in memory: merges, lagging nodes, an index that lies, batched reads
 node test/dapp/tacit-pay.artifacts.mjs         # the proving key and witness program: a file that is not the pinned one is never used
 node test/dapp/tacit-pay.unconfirmed.mjs       # a wallet payment the network never confirms is not sent a second time
+node test/dapp/tacit-pay.scan.mjs              # a long pool history (N=600 deposits) read in workers made from the page's own code
 node test/dapp/tacit-pay.ens.mjs               # a .eth name's text record, set on a fork of the real registry, read, shown and linked
 node test/dapp/tacit-pay.wallets.mjs           # external wallets: picker, refusals, account and chain changes, no network
 node test/dapp/tacit-pay.fork.mjs              # every flow on anvil forks of all three chains, proofs made in the page
@@ -246,13 +250,15 @@ flow on all three chains and in WebKit, the tampered proofs refused, the proving
 
 ## Deploying
 
-From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the module's hash in the page's CSP, the page
-in `manifest.json` and in the forge test, and re-chunks), then `forge build`, then `forge test --match-path test/TacitPay8244.t.sol`.
+From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the prover block's hash in the module and the
+module's hash in the CSP, builds the deployed page `dapp/page.min.html` from the source and pins it the same way, puts its size
+and hash in `manifest.json` and in the forge test, and re-chunks), then `forge build`, then
+`forge test --match-path test/TacitPay8244.t.sol`.
 Never run `forge build --force` or `forge clean` between `repin.sh` and the deploy: they delete `out/`, where the chunk
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 276,488-byte page: about 64M gas, 0.064 ETH at 1 gwei, 0.0064 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 288,954-byte page: about 67M gas, 0.067 ETH at 1 gwei, 0.0067 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
@@ -264,7 +270,7 @@ creation code and forge's artifact live.
    `deployment` block for the manifest. A closed tab resumes: what the browser remembers is checked against the chain on every
    connect. A transaction the wallet replaces or speeds up is found where it lands, not sent twice. It stops, sending nothing
    more, if the wallet leaves mainnet. Do not use a profile that ran an earlier rehearsal without pressing *Forget progress*.
-3. **Check it, from anywhere.** `node deploy/check-deployment.mjs <rpc> <wrapper> dapp/page.html` reads every chunk's code and
+3. **Check it, from anywhere.** `node deploy/check-deployment.mjs <rpc> <wrapper> dapp/page.min.html` reads every chunk's code and
    `html()` and `PAGE_HASH()` back from the chain and compares them with the page, byte for byte. Then
    `ETH_RPC_URL=<rpc> node ../scripts/verify.mjs tacit-pay` after adding the `deployment` block to `manifest.json`.
    To read the page back by hand (`cast` prints the string JSON-quoted, so unquote it):

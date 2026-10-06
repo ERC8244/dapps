@@ -213,5 +213,30 @@ console.log('\nwhat a failed check says');
   ok(/A node answered with an error/.test(errText(plain)), 'any other node error keeps the usual sentence', errText(plain));
 }
 
+console.log('\nwhat a shortfall and a large fee say');
+{
+  const html = (st, ...v) => st.reduce((o, x, i) => o + x + (v[i] ?? ''), ''), kvRow = (k, v) => `[${k}: ${v}]`;
+  const E18 = 10n ** 18n, eth = (x) => BigInt(Math.round(x * 1e9)) * 10n ** 9n;
+  const FMT = `${cut('function fmt(v, max = 6)', '\nfunction ')}\n${cut('const group =', '\nconst ')}`;
+  const mk = (most) => new Function('html', 'maxSpend', `${FMT}\n${cut('const shortSay', 'const heldHint')}\nreturn {shortSay, feeBig};`)(html, () => most);
+  // The case that was reported: 0.001453 held, 0.000739 asked, a relay fee of 0.0013.
+  const {shortSay, feeBig} = mk(eth(0.00013));
+  const said = shortSay(eth(0.000739), eth(0.0013), eth(0.001453));
+  ok(/This takes 0\.002039 ETH: 0\.000739 for what you asked and 0\.0013 for the relay\./.test(said) && /Your private balance is 0\.001453 ETH\./.test(said), 'a shortfall says what the payment takes, the relay\'s part of it, and the balance', said);
+  ok(/The most it can take now is 0\.00013 ETH: Max fills it in\./.test(said), 'and the most the balance can send', said);
+  ok(!/Max/.test(shortSay(eth(0.000739), eth(0.0013), eth(0.001453), false)), 'a form with no Max does not point at one');
+  ok(!/relay/.test(shortSay(eth(0.002), 0n, eth(0.001))) && /This takes 0\.002 ETH\./.test(shortSay(eth(0.002), 0n, eth(0.001))), 'sent from the wallet there is no relay fee in it');
+  ok(shortSay(eth(0.0005), eth(0.0003), eth(0.0009)) === 'More than your private balance covers with the fee.', 'a balance that covers the amount and the fee, but not the steps between, keeps the plain sentence');
+  ok(feeBig(eth(0.00013), eth(0.0013)).includes('more than the amount, 0.00013 ETH') && feeBig(eth(0.00013), eth(0.0013)).includes('pays no relay fee'), 'a relay fee larger than the amount is said, with the way round it');
+  ok(feeBig(eth(0.01), eth(0.0013)) === '' && feeBig(eth(0.01), 0n) === '', 'and nothing is said when the fee is smaller, or none');
+  // What the Shield card says of taking a deposit out later.
+  const outFee = (up, fee) => new Function('html', 'kvRow', 'relayUp', 'CH', `${FMT}\n${cut('const outFee', 'const planRows')}\nreturn outFee;`)(html, kvRow, () => up, {1: {quote: {fee: String(fee)}}}), c = {chainId: 1};
+  const row = outFee(true, eth(0.0009))(c, eth(0.00091));
+  ok(row.includes('relay fee from 0.0009 ETH, or your wallet’s gas') && row.includes('at least half of it'), 'a small deposit shows the relay fee for taking it out, and that it takes at least half', row);
+  const big = outFee(true, eth(0.0009))(c, eth(0.05));
+  ok(big.includes('relay fee from 0.0009 ETH') && !big.includes('at least half'), 'a larger one shows the fee without the warning', big);
+  ok(outFee(false, eth(0.0009))(c, eth(0.00091)) === '', 'with no relay there is no relay line');
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

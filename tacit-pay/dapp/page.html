@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-G0qxgfSX4gb4r2+62bSVLlmLI3X0vE6ktMc1Ah/GCoM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Fs+AzBvOq7+lPfjMHRsKig3HBzvjp4RTrtGDIhe3hBM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -2962,8 +2962,11 @@ function connect(say) {
       w = list.length > 1 ? await pickWallet(list) : list[0];
       if (!w) throw new Quiet('closed');
     }
-    say?.('Approve the connection in your wallet.');
-    const a = (await ask(w.provider, 'eth_requestAccounts', [], say))?.[0];
+    // A wallet already connected here is asked what it has connected, which opens nothing; a request that opens the wallet's
+    // own prompt is for one not connected yet, or locked.
+    const had = S.wallet ? (await w.provider.request({ method: 'eth_accounts' }).catch(() => null))?.[0] : null;
+    if (!isAddr(had || '')) say?.('Approve the connection in your wallet.');
+    const a = isAddr(had || '') ? had : (await ask(w.provider, 'eth_requestAccounts', [], say))?.[0];
     if (!isAddr(a || '')) throw new Error('Your wallet returned no account. Unlock it and try again.');
     bind(w, a);
     return S.account;
@@ -3236,6 +3239,15 @@ function combinePlan(fee, notes = CH[S.chain.chainId].notes || [], cut = fee) {
 // Why an amount cannot be spent: 'short' when the balance does not cover it with the fee, 'parts' when it would but sits
 // in more parts than one payment can combine by itself, null when it can be spent.
 const whyNot = (a, fee, bal, notes) => (plan(a, fee, notes) ? null : bal >= a + fee && combinePlan(fee, notes) ? 'parts' : 'short');
+// What a shortfall says, in figures: what the payment takes (the amount, and the relay's fee on top) against the private
+// balance, and the most it can send, so a fee larger than the amount is not a surprise. `max`: the form has a Max.
+const shortSay = (a, fee, bal, max = true) => {
+  if (bal >= a + fee) return 'More than your private balance covers with the fee.';
+  const most = max ? maxSpend(fee ? fee * 6n / 5n + 10n ** 12n : fee) : 0n;
+  return `This takes ${fmt(a + fee)} ETH${fee ? `: ${fmt(a)} for what you asked and ${fmt(fee)} for the relay` : ''}. Your private balance is ${fmt(bal)} ETH.${most > 0n && most < a ? ` The most it can take now is ${fmt(most)} ETH: Max fills it in.` : ''}`;
+};
+// Said when the relay's fee is more than the amount it carries.
+const feeBig = (a, fee) => (fee && fee > a ? html`<p class="note warn">The relay’s fee, ${fmt(fee)} ETH, is more than the amount, ${fmt(a)} ETH. Sending from your wallet instead pays no relay fee, only its gas.</p>` : '');
 // Said with a shortfall while a payment that may still land holds part of the balance.
 const heldHint = () => (cur().W?.inflight().length ? ' Part of it is held for a payment that may still land, shown above.' : '');
 // An amount that shows on chain, cut to two significant digits: an exact balance is easier to match to its deposit.
@@ -3735,7 +3747,13 @@ async function planDestNow(raw, c, shown = null) {
 }
 const planTo = (w) => html`<div class="lbl"><span>Then to</span><span>for the ${w.sym}</span></div>
   <div class="amt text"><input id="f-pto" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Then to"></div>`;
-const planRows = (w, d, est = '') => html`${kvRow('Later', `out as ${w.sym} to ${d.name ? `${d.name} · ${short(d.addr)}` : short(d.addr)}, when you choose`)}${est}${w.added ? kvRow(`${w.sym} token`, w.addr) : ''}${lc(d.addr) === lc(S.account || '') ? html`<p class="note warn">This is the wallet paying in; another address keeps the two apart.</p>` : ''}`;
+// What taking a deposit out later costs through the relay: at least its plain fee (a swap uses more gas), so a small deposit
+// shows that the fee would take much of it.
+const outFee = (c, a) => {
+  const fee = relayUp(c) ? BigInt(CH[c.chainId].quote.fee) : 0n;
+  return fee ? html`${kvRow('Taking it out', `relay fee from ${fmt(fee)} ETH, or your wallet’s gas`)}${a < fee * 2n ? html`<p class="note warn">At this amount the relay’s fee would take at least half of it. A larger amount, or taking it out from your wallet, costs less of it.</p>` : ''}` : '';
+};
+const planRows = (w, d, est = '', fee = '') => html`${kvRow('Later', `out as ${w.sym} to ${d.name ? `${d.name} · ${short(d.addr)}` : short(d.addr)}, when you choose`)}${est}${fee}${w.added ? kvRow(`${w.sym} token`, w.addr) : ''}${lc(d.addr) === lc(S.account || '') ? html`<p class="note warn">This is the wallet paying in; another address keeps the two apart.</p>` : ''}`;
 // What a private swap's ETH would buy of its token now, shown as it starts: one quote per amount, read again after a minute.
 // The swap out is quoted afresh when it is made.
 const OUTQ = { key: '', out: null, busy: false, at: 0, timer: 0 };
@@ -3905,7 +3923,7 @@ function formShield(f) {
       if (w && !d?.addr) { go.textContent = 'Enter where it goes'; return planSay(d, say); }
       if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
       if (w) outSoon(c, w, a);
-      say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${kvRow('Fee', 'none · your wallet pays the gas')}${w ? planRows(w, d, outRow(c, w, a)) : ''}`);
+      say(html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a)} ETH`)}${kvRow('Fee', 'none · your wallet pays the gas')}${w ? planRows(w, d, outRow(c, w, a), outFee(c, a)) : ''}`);
       go.disabled = false;
     };
     go.onclick = () => {
@@ -3984,13 +4002,13 @@ function formSend(f) {
     const p = plan(a, fee);
     if (bal != null && !p) {
       const why = whyNot(a, fee, bal, cur().notes || []);
-      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `More than your private balance covers with the fee.${heldHint()}`}</p>`);
+      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `${shortSay(a, fee, bal)}${heldHint()}`}</p>`);
       $('#f-combine')?.addEventListener('click', () => { $('#bal-note').scrollIntoView({ block: 'nearest', behavior: smooth() }); $('#bal-combine')?.click(); });
       return;
     }
     const d = t.addr ? destLines(c, t.addr) : { ok: true, lines: '' };
     say(html`${kvRow(t.addr ? 'Arrives' : 'They receive', `${fmt(a)} ETH`)}${kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}
-      ${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}${d.lines}`);
+      ${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}${d.lines}${feeBig(a, fee)}`);
     wireTakes();
     go.disabled = !d.ok;
   };
@@ -4054,12 +4072,12 @@ function formWithdraw(f) {
     const p = plan(a, fee);
     if (bal != null && !p) {
       const why = whyNot(a, fee, bal, cur().notes || []);
-      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `More than your private balance covers with the fee.${heldHint()}`}</p>`);
+      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `${shortSay(a, fee, bal)}${heldHint()}`}</p>`);
       $('#f-combine')?.addEventListener('click', () => { $('#bal-note').scrollIntoView({ block: 'nearest', behavior: smooth() }); $('#bal-combine')?.click(); });
       return;
     }
     say(html`${where}${kvRow('Arrives', `${fmt(a)} ETH`)}${kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}
-      ${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}${d.lines}`);
+      ${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}${d.lines}${feeBig(a, fee)}`);
     wireTakes();
     go.disabled = !d.ok;
   };
@@ -4478,7 +4496,7 @@ function formSwap(f, seg) {
     }
     if (bal != null && !p) {
       const why = whyNot(a, fee, bal, cur().notes || []);
-      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `More than your private balance covers with the fee.${heldHint()}`}</p>`);
+      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `${shortSay(a, fee, bal)}${heldHint()}`}</p>`);
       $('#f-combine')?.addEventListener('click', () => { $('#bal-note').scrollIntoView({ block: 'nearest', behavior: smooth() }); $('#bal-combine')?.click(); });
       return;
     }
@@ -4488,7 +4506,7 @@ function formSwap(f, seg) {
     // In the token, the minimum is never shown below the amount asked.
     const least = x && parseUnits(units(r.limit, t.dec), t.dec) < x ? unitsAll(r.limit, t.dec) : unitsNz(r.limit, t.dec);
     say(html`${where}${moved}${t.added ? kvRow('Token', t.addr) : ''}${inTok ? kvRow('Swaps', `${fmt(a)} ETH`) : ''}${kvRow('Arrives', `about ${unitsNz(r.out, t.dec)} ${t.sym}`)}${kvRow('At least', `${least} ${t.sym}`)}${kvRow('Route', `${SOURCES[c.chainId]?.[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
-      ${kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${inTok && p ? kvRow('You pay', `${fmt(p.total)} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}${d.lines}${plans().some((x) => lc(x.payer || '') === lc(dest)) ? html`<p class="note warn">This is the wallet that paid in; another address keeps the two apart.</p>` : payer}${S.planMoved && S.planMoved === S.planOut ? exitEth() : ''}`);
+      ${kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${fmt(fee)} ETH` : 'none · your wallet pays the gas')}${p?.merges ? kvRow(`Combining your balance first (${p.merges}×)`, `${fmt(fee * BigInt(p.merges))} ETH`) : ''}${inTok && p ? kvRow('You pay', `${fmt(p.total)} ETH`) : ''}${bal != null && p ? kvRow('Stays private', `${fmt(bal - p.total)} ETH`) : ''}${d.lines}${feeBig(a, fee)}${plans().some((x) => lc(x.payer || '') === lc(dest)) ? html`<p class="note warn">This is the wallet that paid in; another address keeps the two apart.</p>` : payer}${S.planMoved && S.planMoved === S.planOut ? exitEth() : ''}`);
     wireTakes(); wireExit();
     go.disabled = !d.ok;
   };
@@ -4837,7 +4855,7 @@ function formShieldToken(f, seg) {
     // With the zap there, the relay is only for amounts it moves in itself.
     if (zap && byRelay() && (least == null || a < least)) return say(html`<p class="note err">${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
     say(html`${kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[c.chainId]?.[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
-      ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${w ? planRows(w, d, outRow(c, w, a)) : ''}`);
+      ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${w ? planRows(w, d, outRow(c, w, a), outFee(c, a)) : ''}`);
     go.disabled = false;
   };
   go.onclick = () => {
@@ -5031,7 +5049,7 @@ function formMove(f, seg) {
     const p = plan(a + q.extra, fee);
     if (bal != null && !p) {
       const why = whyNot(a + q.extra, fee, bal, cur().notes || []);
-      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `More than your private balance covers with the fees.${heldHint()}`}</p>`);
+      say(html`<p class="note err">${why === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `${shortSay(a + q.extra, fee, bal, false)}${heldHint()}`}</p>`);
       $('#f-combine')?.addEventListener('click', () => { $('#bal-note').scrollIntoView({ block: 'nearest', behavior: smooth() }); $('#bal-combine')?.click(); });
       return;
     }

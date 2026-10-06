@@ -308,6 +308,27 @@ console.log('the chain, before anything is proved');
   await p.context().close();
 }
 
+console.log('\nconnected on Shield, then Receive');
+{
+  const p = await open([ALPHA]);
+  await p.click('#tabs [data-tab="shield"]');
+  await p.click('[data-from="wallet"]').catch(() => {});
+  await p.click('#f-conn');
+  await until(p, () => !document.querySelector('#f-conn'));
+  const before = (await log(p)).join();
+  await p.click('#tabs [data-tab="receive"]');
+  await p.waitForTimeout(500);
+  ok((await log(p)).join() === before, 'opening Receive asks the wallet nothing', (await log(p)).join());
+  ok(/Continue with 0xf39f…2266/.test(await p.textContent('#form [data-in="eth"]')), 'it offers to continue with the account already connected');
+  await p.click('#form [data-in="eth"]');
+  ok(await opened(p), 'which opens the key');
+  const l = await log(p);
+  ok(l.filter((x) => x === '0:eth_requestAccounts').length === 1, 'without asking the wallet to connect again', l.join());
+  ok(l.filter((x) => x === '0:personal_sign').length === 2, 'only the signatures of a first sign-in', l.join());
+  ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
+  await p.context().close();
+}
+
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

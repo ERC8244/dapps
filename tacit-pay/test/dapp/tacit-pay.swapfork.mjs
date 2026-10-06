@@ -6,7 +6,7 @@
    Usage: ARTIFACTS=<dir with transact.wasm and transact_final.zkey> node test/dapp/tacit-pay.swapfork.mjs        */
 import {startFork, ok, finish, hexKey, mockRelay} from './fork-lib.mjs';
 
-const {getAddress} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const {getAddress, parseEther} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 // CHAIN=base or robinhood swaps on that chain instead; the token list is read from Ethereum either way.
 const NAME = process.env.CHAIN || 'ethereum';
 const [SYM, TOKEN] = {ethereum: ['USDC', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'], base: ['USDC', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'], robinhood: ['USDG', '0x5fc5360d0400a0fd4f2af552add042d716f1d168']}[NAME];
@@ -78,5 +78,52 @@ ok(b.least && got2 >= b.least, 'the address holds at least the minimum shown', `
 console.log('\nwhat the page shows');
 const rows = await p.rows(3);
 ok(rows.filter((r) => r.includes(`Swapped for ${SYM}`)).length === 2, `Activity reads "Swapped for ${SYM}" for both`, rows.join(' | '));
+ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
+
+const DEC = Number(BigInt(await f.rpc('eth_call', [{to: USDC, data: '0x313ce567'}, 'latest']))), U = (s) => BigInt(Math.round(Number(s) * 1e6)) * 10n ** BigInt(DEC) / 1000000n;
+console.log(`\nan amount in ${SYM}: at least 10 arrive`);
+const D3 = '0x' + '5c'.repeat(20);
+await p.click('#tabs [data-tab="withdraw"]');
+if (await p.$('[data-route="relay"]')) await p.click('[data-route="relay"]');
+await p.click('#form [data-unit="tok"]');
+await p.fill('#f-wto', D3);
+await p.fill('#f-wamt', '10');
+await p.waitForFunction(() => /You pay/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3});
+const r3 = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' '), swaps = /Swaps\s*([\d.]+)\s*ETH/.exec(r3)?.[1], least3 = new RegExp(`At least\\s*([\\d.,]+)\\s*${SYM}`).exec(r3)?.[1];
+ok(!!swaps && new RegExp(`Swaps ${swaps.replace('.', '\\.')} ETH`).test(await p.textContent('#f-cap')), 'the ETH it takes is found, and shown under the amount and in the receipt', r3.slice(0, 220));
+ok(!!least3 && U(least3.replace(/,/g, '')) >= U('10'), `with at least the 10 ${SYM} asked as its minimum`, least3);
+ok(/You pay\s*[\d.]+\s*ETH/.test(r3), 'and what the private balance pays in all, the fee included');
+await p.click('#f-go');
+const s3 = await p.status(/Sent about|err/);
+ok(new RegExp(`Sent about [\\d.]+ ${SYM}`).test(s3), 'the page says it was sent', s3);
+const sent3 = relay.calls.filter((x) => x.path === '/relay' && x.body?.call).pop();
+ok(!!sent3 && BigInt(sent3.body.call.calls[0].value) === parseEther(swaps), 'the relay was given a swap of exactly the ETH shown', sent3 && String(sent3.body.call.calls[0].value));
+const got3 = await usdcOf(D3);
+ok(got3 >= U('10'), `the address holds at least 10 ${SYM}`, `${got3}`);
+
+console.log(`\na payment link that asks for 7.5 ${SYM}`);
+const D4 = getAddress('0x' + '5d'.repeat(20));
+await p.evaluate((h) => { location.hash = h; }, `pay=${D4}&token=${USDC}&amount=7.5&chain=${NAME}&for=fork`);
+await p.waitForFunction(() => !!document.querySelector('#req-pay') && !/Reading/.test(document.querySelector('#req-body')?.textContent || ''), null, {timeout: 120e3});
+const card4 = (await p.textContent('#req-body')).replace(/\s+/g, ' ');
+ok(new RegExp(`7\\.5 ${SYM}`).test(card4) && card4.includes(D4) && card4.includes(USDC) && !/not on the token list/.test(card4), `the request shows the amount in ${SYM}, the address in full and the listed token by its address`, card4.slice(0, 220));
+await p.click('#req-pay');
+await p.waitForFunction(() => /You pay/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3});
+ok((await p.inputValue('#f-wto')) === D4 && (await p.inputValue('#f-wamt')) === '7.5', 'paying it opens the swap out for that address and amount');
+await p.click('#f-go');
+const s4 = await p.status(/Sent about|err/);
+const got4 = await usdcOf(D4);
+ok(got4 >= U('7.5'), `paid from the private balance, the address holds at least 7.5 ${SYM}`, `${got4} · ${s4}`);
+
+console.log('\nasking for a token by link');
+await p.click('#req-x').catch(() => {});
+await p.click('#tabs [data-tab="receive"]');
+await p.evaluate(() => { const d = document.querySelector('#f-ropts'); if (d) d.open = true; });
+await p.click('#f-tok3');
+await p.waitForSelector(`#f-tokl3 [data-tk="${USDC}"]`, {timeout: 120e3});
+await p.click(`#f-tokl3 [data-tk="${USDC}"]`);
+await p.fill('#f-rto', D4); await p.fill('#f-ramt', '7.5');
+await p.waitForFunction(() => /token=/.test(document.querySelector('#f-rlink')?.textContent || ''), null, {timeout: 30e3}).catch(() => {});
+ok(new RegExp(`#pay=${D4}&token=${USDC}&amount=7\\.5&chain=${NAME}$`).test(await p.textContent('#f-rlink')), `the payee picks ${SYM} from the list, and the link asks for it`, await p.textContent('#f-rlink'));
 ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
 finish(lab.close);

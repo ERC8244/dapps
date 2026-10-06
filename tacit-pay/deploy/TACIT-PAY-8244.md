@@ -36,7 +36,9 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   that need a few parts combined do it by themselves.
 - **Withdraw** any part to an address or to a name: a `.wei`, `.gwei` or `.eth` name is read to the Ethereum address it points
   to (its address record, not its Tacit one), shown in full beside the name, and read again just before the withdrawal, which
-  is not sent if the name has moved.
+  is not sent if the name has moved. A withdrawal that arrives as a token takes its amount in ETH or in the token: in the
+  token it is the least that arrives, and the page finds the ETH whose route pays at least that, shows it, and holds the
+  swap to that minimum; what the route buys above it arrives too.
 - **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`, `.gwei` or `.eth` name, on any chain
   (next section), with a QR code, that anyone with a wallet can pay.
 - **Activity**, rebuilt from the key and the chain: what came in, what went out, with fees.
@@ -68,6 +70,23 @@ the wallet is moved to the chain chosen first (and the chain added when the wall
 amount show on chain; whom they paid does not. The link stays in the address bar until it is dismissed or paid, so a
 reload, or a wallet app handing the page back, keeps the request. A payer who holds a Tacit key can pay from their
 private balance instead, and `chains=` offers the payer only some chains.
+
+**A link that asks for a token** names where it arrives, the token and one chain:
+
+```
+#pay=<0x… or a name>&token=<the token's address>&amount=<in the token>&chain=<ethereum|base|robinhood>&for=<note>
+```
+
+`amount` and `for` are optional. It is paid from the payer's private balance: Withdraw opens set to the token, the
+address and the amount, as the least that arrives, and the route, its minimum and the fee show before anything is sent.
+Nothing on chain ties the payment to the payer; the address and the amount show on chain, as any token payment does.
+The page reads the token from its own contract on that chain (its decimals, symbol and name) and from the token list;
+the link gives only its address, shown in full. A token the list does not hold is paid only once the payer confirms it
+is the one they were asked for (one added by address before needs no second confirmation). A name is read to the address
+it points to on that chain and read again before the payment. Such a link is read whole or not at all: another field, a
+field given twice, a token not given as an address, no chain, a Tacit address, or an amount the token cannot hold (past
+its decimals, nothing, or in another form) refuses it with a plain sentence, so nothing in it is dropped to pay something
+else. *Receive* makes one when a token is chosen under "Get paid in": it uses no deposit address.
 
 **The deposit address in a link.** A link made by *Receive* carries a deposit address of its own, one nobody else has
 been given and kept until it is paid. `n` is the key it derives from and `ns` is the payee's signature over it, made
@@ -117,7 +136,8 @@ sent to ask whether it is spent. An index that leaves a memo out cannot hide a n
 in the check against the pool's verifier just before the spend is sent.)
 
 **Added here:** shielding from a token (swapped for an exact amount of ETH through zRouter, in one transaction through
-the zap or to a deposit address the relay takes in), withdrawals that arrive as a token, private swaps (a token in and
+the zap or to a deposit address the relay takes in), withdrawals that arrive as a token (an amount in ETH, or in the token
+as the least that arrives), payment links that ask for a token, paid from a private balance, private swaps (a token in and
 another out later, with the pool between, followed on a card), and moving a balance from Ethereum to Base or Robinhood
 Chain through their own bridges.
 
@@ -252,7 +272,7 @@ node test/dapp/tacit-pay.boxes.mjs             # one-time deposit addresses: iss
 node test/dapp/tacit-pay.privateswap.mjs       # a private swap: USDC in, a token added by address out, through the card; what is remembered; a lost plan
 node test/dapp/tacit-pay.ux.mjs                # how the page answers as it is used, chains in memory: forms, held payments, copies, Rebuild
 node test/dapp/tacit-pay.shieldtoken.mjs       # shielding from a token on a fork: MODE=permit|permit2|batch|approve|relay|relaybatch|box|weth; Max
-node test/dapp/tacit-pay.swapfork.mjs          # a withdrawal that arrives as a token, on a fork with the real router, zQuoter and zRouter
+node test/dapp/tacit-pay.swapfork.mjs          # a withdrawal that arrives as a token, on a fork with the real router, zQuoter and zRouter; an amount in the token; a link that asks for one
 node test/dapp/tacit-pay.routes.mjs            # every route a token withdrawal can take, on every chain, run as the escrow runs it
 node test/dapp/tacit-pay.move.mjs              # a move to a rollup as the page encodes it, against the live router (one read-only call)
 node test/dapp/tacit-pay.movefork.mjs          # a move to Base on forks: the bridge deposit, then the relay takes it in on Base
@@ -281,7 +301,7 @@ Never run `forge build --force` or `forge clean` between `repin.sh` and the depl
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 317,226-byte page: about 73M gas, 0.073 ETH at 1 gwei, 0.0073 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 330,698-byte page: about 76M gas, 0.076 ETH at 1 gwei, 0.0076 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press

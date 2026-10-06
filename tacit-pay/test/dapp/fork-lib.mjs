@@ -149,7 +149,15 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   // Reads at a recent block, which a node with no archive serves; Base's own endpoint limits bursts more tightly. A quote
   // heavier than the first node allows a call (a token with many pools) is asked of the next.
   const REAL_CALLS = {ethereum: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co'], base: ['https://base-rpc.publicnode.com', 'https://base.gateway.tenderly.co'], robinhood: [REAL.robinhood]};
-  const realCall = async (key, body) => { let t; for (const u of REAL_CALLS[key]) { t = await (await fetch(u, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text(); if (!/"error"\s*:/.test(t)) break; } return t; };
+  // A node that cannot be reached at all is passed over like one that answers with an error.
+  const realCall = async (key, body) => {
+    let t;
+    for (const u of REAL_CALLS[key]) {
+      t = await fetch(u, {method: 'POST', headers: {'content-type': 'application/json'}, body}).then((r) => r.text(), (e) => JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}));
+      if (!/"error"\s*:/.test(t)) break;
+    }
+    return t;
+  };
   async function newContext() {
     const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
     await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {

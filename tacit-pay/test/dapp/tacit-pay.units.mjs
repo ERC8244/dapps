@@ -22,6 +22,13 @@ ok(parseEth('0.123456789012345678') === 123456789012345678n, 'eighteen decimals 
 ok(parseEth('0.1234567890123456789') === null, 'a nineteenth is refused, not rounded');
 ok(parseEth(' 0.5 ') === 5n * 10n ** 17n && parseEth(undefined) === null && parseEth(null) === null, 'spaces are trimmed; nothing is not an amount');
 
+console.log('\namounts in a token');
+const parseUnits = vm.runInNewContext(`${cut('function parseEth(', '\nfor (const ev of')}\n${cut('function parseUnits(', '\n// Arrow keys')}\nparseUnits`, {BigInt, String});
+for (const [t, d, want] of [
+  ['1.5', 6, 1500000n], ['0.000001', 6, 1n], ['1,234.5', 6, 1234500000n], ['0', 6, 0n], ['3', 0, 3n], ['3.0', 0, 3n], ['0.1', 18, 10n ** 17n], ['1', 24, 10n ** 24n],
+  ['0.0000001', 6, null], ['3.5', 0, null], ['1e3', 6, null], ['-1', 6, null], ['', 6, null], ['1', 37, null],
+]) ok(parseUnits(t, d) === want, `${JSON.stringify(t)} with ${d} decimals → ${want == null ? 'not an amount' : want}`, String(parseUnits(t, d)));
+
 console.log('\nthe ID of an address');
 const sha256 = (u) => new Uint8Array(createHash('sha256').update(u).digest());
 const utf8 = (s) => new TextEncoder().encode(s), cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };

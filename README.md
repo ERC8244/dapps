@@ -41,8 +41,8 @@ from the source by `scripts/strip.mjs`: comments go, and so does the whitespace
 between tokens, which leaves every name, string and number as written. Each
 script must parse to the same syntax tree as the source's before the page is
 written. The built page is what the manifest pins and the chunks hold; the
-source stays the file people read and edit. tacit-pay's 450 KB source is
-deployed as 317 KB, 13 chunks instead of 19.
+source stays the file people read and edit. tacit-pay's 469 KB source is
+deployed as 331 KB, 14 chunks instead of 20.
 
 ## The commands
 

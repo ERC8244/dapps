@@ -8,7 +8,7 @@
 import http from 'node:http';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
-import {Wallet, AbiCoder, namehash, id} from 'ethers';
+import {Wallet, AbiCoder, namehash, id, getAddress} from 'ethers';
 import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
@@ -71,6 +71,8 @@ const RECORDS = {
 };
 const coder = AbiCoder.defaultAbiCoder();
 const PAYEE = '0xC1D6F3AC3dFd66bb264f732CB5581DE3E232CC21', PAYEE2 = '0x3e407f4158440F1e5a9E6BA98b0198AEA6d837E3';
+// A token the token list does not hold, with six decimals, as its own contract reports them.
+const TOKEN = '0x' + '7a'.repeat(20);
 const POINTS = {[namehash('bob.wei')]: PAYEE, [namehash('bob.gwei')]: PAYEE2, [namehash('direct.eth')]: PAYEE, [namehash('sub.parent.eth')]: PAYEE2, [namehash('zero.wei')]: '0x' + '00'.repeat(20), [namehash('pool.wei')]: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9'};
 const ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12', ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288';
 const answer = (host, {method, params}) => {
@@ -94,6 +96,9 @@ const answer = (host, {method, params}) => {
   if (to === R_OFF) throw {rpcError: {code: 3, message: 'execution reverted', data: '0x556f1830' + '00'.repeat(32)}};
   if (method === 'eth_blockNumber') return '0x' + TIP[/base/.test(host) ? 'base' : /robinhood/.test(host) ? 'robinhood' : 'ethereum'].toString(16);
   if (method === 'eth_getLogs') { if (NOLOGS.has(host)) throw {rpcError: {code: -32005, message: 'logs are not served on this plan'}}; return []; }
+  if (to === TOKEN && data === '0x313ce567') return coder.encode(['uint8'], [6]);
+  if (to === TOKEN && data === '0x95d89b41') return coder.encode(['string'], ['TUSD']);
+  if (to === TOKEN && data === '0x06fdde03') return coder.encode(['string'], ['Test USD']);
   if (method === 'eth_call' && params[0].data.startsWith(id('nextIndex()').slice(0, 10))) return '0x' + '00'.repeat(32);
   if (method === 'eth_getBalance') return params[0].toLowerCase() === '0x000000c2a20657ce25f2ba99737933d031afbee9' ? '0x' + (1234n * 10n ** 18n).toString(16) : '0x0';
   if (method === 'eth_getCode') return '0x6080';
@@ -326,6 +331,63 @@ await p.click('#f-rchains [data-rs="any"]');
 ok(!/chain=/.test(await p.textContent('#f-rlink')), 'and offers every chain unless one is picked');
 ok(await p.isVisible('#f-qr svg'), 'with a QR code of it');
 await shot('receive');
+
+console.log('links that ask for a token');
+const TOKC = getAddress(TOKEN), BADSUM = PAYEE.replace('C1D6', 'c1D6');
+const closeReq = async () => { if (await p.$('#req-x')) await p.click('#req-x'); await p.waitForSelector('#req', {state: 'hidden', timeout: 10e3}).catch(() => {}); };
+for (const [hash, why, says] of [
+  [`pay=${PAYEE}&token=usdc&chain=base`, /names its token in a way this page does not read/, 'a token named any way but by its address'],
+  [`pay=${PAYEE}&token=${'0x' + '00'.repeat(20)}&chain=base`, /names its token/, 'the zero address as its token'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&n=12`, /has parts this page does not read/, 'a field a token link does not have'],
+  [`pay=${PAYEE}&token=${TOKEN}&token=${TOKEN}&chain=base`, /has parts this page does not read/, 'a field given twice'],
+  [`pay=${PAYEE}&token=${TOKEN}&amount=5`, /does not say which chain/, 'no chain'],
+  [`pay=${TACIT1}&token=${TOKEN}&chain=base`, /Tacit address, which takes only private ETH/, 'a Tacit address as where it arrives'],
+  [`pay=${BADSUM}&token=${TOKEN}&chain=base`, /does not name an address this page reads/, 'an address whose capitals do not match its checksum'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=1e3`, /amount is not one this page reads/, 'an amount with an exponent'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=-1`, /amount is not one this page reads/, 'a negative amount'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=1.1234567`, /not one TUSD can be paid in/, 'more decimals than the token has'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=0`, /not one TUSD can be paid in/, 'an amount of nothing'],
+  [`pay=${PAYEE}&token=${'0x' + '7b'.repeat(20)}&chain=base`, /is not a token on Base/, 'an address that is not a token there'],
+]) { const t = await card(hash); ok(why.test(t) && !(await p.$('#req-pay')), `refused with a plain sentence: ${says}`, t.slice(0, 140)); }
+let tk = await card(`pay=bob.wei&token=${TOKEN}&amount=12.5&chain=base&for=invoice`);
+ok(/bob\.wei/.test(tk) && tk.includes(PAYEE) && /12\.5 TUSD/.test(tk) && /on Base/.test(tk) && /“invoice”/.test(tk), 'a token link shows whom it pays, in full, the amount in the token, the chain and the note', tk.slice(0, 160));
+ok(tk.includes(TOKC) && /TUSD · Test USD/.test(tk), 'and the token by its full address, with the symbol and name its contract reports');
+ok(/not on the token list/.test(tk) && await p.$eval('#req-pay', (b) => b.disabled), 'a token the list does not hold is confirmed before it can be paid');
+await p.click('#req-tokok');
+ok(await p.$eval('#req-pay', (b) => !b.disabled && /Pay from my private balance/.test(b.textContent)), 'then it is paid from the private balance');
+await p.click('#req-pay');
+await p.waitForSelector('#f-wamt');
+ok((await p.inputValue('#f-wto')) === 'bob.wei' && (await p.inputValue('#f-wamt')) === '12.5' && /TUSD/.test(await p.textContent('#f-tok')) && await p.$eval('#form [data-unit="tok"]', (b) => b.getAttribute('aria-selected') === 'true'), 'which opens Withdraw as a swap into the token, to the name, for the amount, in the token');
+ok(/Amount to arrive, at least/.test(await p.textContent('#form')), 'the amount reading as the least that arrives');
+await p.fill('#f-wamt', '1.1234567');
+ok(await p.waitForFunction(() => /TUSD has 6 decimals/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 10e3}).then(() => true, () => false), 'an amount past the token’s decimals is refused there too, not rounded');
+await p.click('#form [data-unit="eth"]');
+ok(/Amount of ETH to swap/.test(await p.textContent('#form')) && !(await p.inputValue('#f-wamt')), 'and the ETH unit takes back an amount in ETH');
+await closeReq();
+await p.click('#tabs [data-tab="receive"]');
+await p.evaluate(() => { const d = document.querySelector('#f-ropts'); if (d) d.open = true; });
+await p.click('#f-tok3');
+await p.fill('#f-toksq3', TOKEN);
+await p.waitForSelector(`#f-tokl3 [data-tk="${TOKC}"]`, {timeout: 20e3});
+await p.click(`#f-tokl3 [data-tk="${TOKC}"]`);
+await p.waitForSelector('#f-rto');
+ok(!(await p.$('#f-rname')) && !(await p.$('#f-rchains')) && /names one chain/.test(await p.textContent('#form')), 'asking for a token, the link names where it arrives, on the chain chosen at the top');
+await p.fill('#f-rto', TACIT1);
+ok(/Tacit address/.test(await p.textContent('#f-rto-note')) && !(await p.textContent('#f-rlink')), 'a Tacit address is not where a token arrives');
+await p.fill('#f-rto', PAYEE); await p.fill('#f-ramt', '1.1234567');
+ok(!(await p.isHidden('#f-rerr')) && /up to 6 decimals/.test(await p.textContent('#f-rerr')) && !(await p.textContent('#f-rlink')), 'nor is an amount past the token’s decimals');
+await p.fill('#f-ramt', '12.5'); await p.fill('#f-rfor', 'invoice');
+await p.waitForFunction(() => /token=/.test(document.querySelector('#f-rlink')?.textContent || ''), null, {timeout: 10e3}).catch(() => {});
+const tlink = await p.textContent('#f-rlink');
+ok(new RegExp(`#pay=${PAYEE}&token=${TOKC}&amount=12\\.5&chain=[a-z]+&for=invoice$`).test(tlink), 'the link carries the address, the token, the amount in the token, one chain and the note', tlink);
+await p.fill('#f-rto', 'bob.wei');
+ok(await p.waitForFunction((a) => document.querySelector('#f-rto-note')?.textContent.includes(a) && /#pay=bob\.wei&token=/.test(document.querySelector('#f-rlink')?.textContent || ''), PAYEE, {timeout: 20e3}).then(() => true, () => false), 'a name is shown with the address it points to, and goes into the link as the name');
+tk = await card((await p.textContent('#f-rlink')).split('#')[1]);
+ok(/bob\.wei/.test(tk) && /12\.5 TUSD/.test(tk) && !/not on the token list/.test(tk) && await p.$eval('#req-pay', (b) => !b.disabled), 'the link opens as the request it was made for; a token added before is not asked about again', tk.slice(0, 160));
+await closeReq();
+await p.click('#f-tok3');
+await p.click('#f-tokl3 [data-tk=""]');
+ok(!!(await p.$('#f-rname')) && /#pay=ross\.wei/.test(await p.textContent('#f-rlink')), 'and Private ETH puts the link back as it was');
 
 console.log('an Ethereum wallet');
 await p.click('#wallet'); await p.click('#w-lock'); await p.click('#sheet-wallet [data-close]');

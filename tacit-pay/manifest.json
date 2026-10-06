@@ -4,8 +4,8 @@
   "description": "Onchain front end for private ETH payments on Ethereum, Base and Robinhood Chain: shield from any wallet into anyone’s private balance, pay privately, withdraw any part. Proved in the reader’s browser, recovered from the reader’s key.",
   "source": "dapp/page.html",
   "page": "dapp/page.min.html",
-  "bytes": 337957,
-  "sha256": "cdd8777e101c35898b234cb97a090b6f7a185c9c79f68a5d6df0e18a2798a3af",
+  "bytes": 338865,
+  "sha256": "f27a5f4888cf14bc20c239801c633853eb73e446e6b1e51d6d363886afd0e76c",
   "chunks": {
     "artifact": "TacitPay8244",
     "maxPayload": 24575,

@@ -27,7 +27,7 @@ contract ReentrantSuccessor {
 
 contract TacitPay8244Test is Test {
     /// @dev The page's length, as manifest.json pins it.
-    uint256 constant PAGE_BYTES = 337957;
+    uint256 constant PAGE_BYTES = 338865;
 
     TacitPay8244 page;
     bytes html;

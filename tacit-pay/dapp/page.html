@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-1PsjbbAA+wb0cNXRjRClt9PBcDI+X2V8nLTMAgCLeDM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2n5v6J4O3FYK6X7UlV6JHJabB9Es8bsTiMyvXgqGlXw=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -184,6 +184,7 @@ input::placeholder { color: var(--mute); opacity: 1; }
 .opt[aria-busy="true"] .opt-t::after { margin-left: auto; }
 .req { padding: 16px; margin: 0 0 16px; background: var(--field); border: 1px solid var(--ink); }
 .req-a { font: 400 44px/1 var(--serif); letter-spacing: -.02em; margin: 4px 0 6px; overflow-wrap: anywhere; }
+.req-a.long { font-size: 22px; }
 .req-a small { font: 500 14px var(--mono); color: var(--mute); letter-spacing: 0; }
 .req-m, .rows .f { overflow-wrap: anywhere; }
 .req-to { font: 400 28px/1.1 var(--serif); letter-spacing: -.01em; margin: 2px 0 4px; overflow-wrap: anywhere; }
@@ -232,7 +233,9 @@ footer #contracts { display: flex; flex-wrap: wrap; gap: 0 14px; }
 .rlink code { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .addr code.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .paying:not(.keyed) #bal, .paying:not(.keyed) #bal-note, .paying:not(.keyed) #tabs, .paying:not(.keyed) #form, .paying:not(.keyed) main > .card:not(.app) { display: none; }
-footer a, footer .link { color: var(--mute); font-size: inherit; display: inline-block; padding: 13px 0; }
+footer a, footer .link { color: var(--mute); font-size: inherit; }
+footer nav a, footer nav .link { display: inline-block; padding: 13px 0; }
+footer .link::after { inset: 0 -8px; }
 footer a:hover { color: var(--ink); }
 dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 40px 90px -40px rgba(0,0,0,.6); }
 dialog.sheet::backdrop { background: var(--scrim); }
@@ -2141,7 +2144,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
             const less = outs.map((o, j) => (j === k ? { ...o, value: BigInt(o.value) - (need - fee) } : o));
             return transact({ ins, outs: less, ext, recipient, q: { ...(await vetGas(vet({ ...q, fee: String(need) }))), refee: true }, onStep, guard, pay, call });
           }
-          throw Object.assign(inFlight(id, `The relay asks ${fmt(need, 8)} ETH for this, more than it quoted (${fmt(fee, 8)} ETH). Nothing was sent.`), { relay: true });
+          throw Object.assign(inFlight(id, `The relay asks ${fmt(need, 8)} ETH for this, more than it quoted (${fmt(fee, 8)} ETH).`), { relay: true });
         }
         if (r.status !== 200 || !r.body.txHash) {
           if (slot) await keeperPost('/cancel', { reservation: slot }).catch(() => {});
@@ -2439,6 +2442,7 @@ const mount = (el, view) => {
 
 // Digits in threes, as 'en-US' writes them, without loading locale data the first time a number is shown.
 const group = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const fmtUp = (v) => fmt(((BigInt(v) + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n);
 function fmt(v, max = 6) {
   v = BigInt(v);
   const neg = v < 0n, a = neg ? -v : v, base = 10n ** 18n;
@@ -3373,7 +3377,7 @@ const txLink = (c, h) => html`<a href="${c.explorer}/tx/${h}" target="_blank" re
 // The two faces of the pool: the ninja for what stays hidden, the plain face for what shows on chain.
 const pal = (k, cls = '') => html`<span class="pal ${k} ${cls}" aria-hidden="true" title="${k === 'ninja' ? 'Stays hidden' : 'Shows on chain'}"></span>`;
 const kvRow = (k, v) => html`<div class="kv"><span>${k}</span><b class="num">${v}</b></div>`;
-const STEPS = { proving: 'Proving here. Nothing is sent until it is done', 'sending through the relay': 'Sending through the relay. Leaving this page does not lose it', 'waiting for the block': 'Waiting for the block. Leaving this page does not lose it', 'confirm in your wallet': 'Confirm in your wallet', 'combining two notes first': 'Combining your balance first', 'another payment landed first, proving again': 'Another payment landed first; proving again' };
+const STEPS = { proving: 'Proving here. This step sends nothing', 'sending through the relay': 'Sending through the relay. If you leave, your balance shows whether it went through', 'waiting for the block': 'Waiting for the block. If you leave, your balance shows whether it landed', 'confirm in your wallet': 'Confirm in your wallet', 'combining two notes first': 'Combining your balance first', 'another payment landed first, proving again': 'Another payment landed first; proving again' };
 let FORM = { check: null };
 const DRAFT = {};
 
@@ -3413,7 +3417,7 @@ function paintBal() {
   // A payment whose outcome the chain has not shown yet: its notes are held, and it can only be tried again as itself.
   planOuts(c);
   const stuck = S.key ? escrowsLeft(c) : [];
-  const stuckLine = (e) => html`<div class="callout held"><span>${e.label}: the pool paid ${fmt(e.v)} ETH into its escrow, but the steps after that did not run, so the ETH is waiting there. ${Date.now() > Number(e.intent.deadline) * 1000 ? `Time is up, so it can be sent on to ${short(e.intent.refund)} as ETH.` : 'Your wallet can run them now.'}</span><span style="display:grid;gap:8px">${S.busy ? '' : html`<button class="btn ghost sm" type="button" data-esc="${e.addr}">${Date.now() > Number(e.intent.deadline) * 1000 ? 'Send the ETH on' : 'Finish it from my wallet'}</button>`}</span></div>`;
+  const stuckLine = (e) => html`<div class="callout held"><span>${e.label}: the pool paid ${fmt(e.v)} ETH into its escrow, but the steps after that did not run, so the ETH is waiting there. ${Date.now() > Number(e.intent.deadline) * 1000 ? (/^Move/.test(e.label) ? `Time is up, so it can go back to your own deposit address ${short(e.intent.refund)} on ${c.full} as ETH, where you take it in.` : `Time is up, so it can be sent on to ${short(e.intent.refund)} as ETH, not as the token.`) : 'Your wallet can run them now.'}</span><span style="display:grid;gap:8px">${S.busy ? '' : html`<button class="btn ghost sm" type="button" data-esc="${e.addr}">${Date.now() > Number(e.intent.deadline) * 1000 ? (/^Move/.test(e.label) ? 'Send the ETH back' : 'Send the ETH on') : 'Finish it from my wallet'}</button>`}</span></div>`;
   const flying = S.key && st.W ? st.W.inflight() : [], pl = S.key ? plans().filter((p) => p.chainId === c.chainId && !p.out) : [];
   const flyTo = (p) => (p.why?.swap ? `as ${p.why.swap.sym} to ${short(p.why.dest, 8)}` : p.why?.move ? `to your private balance on ${chainOf(p.why.move)?.full || 'another chain'}` : `to ${short(p.to, 8)}`);
   const flyLine = (x) => html`<div class="callout held"><span>${x.pay.why?.move ? 'A move' : x.pay.kind === 'send' ? 'A payment' : 'A withdrawal'} of ${fmt(BigInt(x.pay.why?.move ? x.pay.why.amount : x.pay.amount))} ETH ${flyTo(x.pay)} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
@@ -3536,7 +3540,7 @@ let FRESH = false;
 const takeFresh = () => { const f = FRESH; FRESH = false; return f; };
 // Every swap out and move, by its escrow, sealed under the key: the escrow's intent, so one the pool paid without running
 // it (a relay that sent the proof to the pool alone, or a copy of a wallet's transaction) can still be run or returned.
-const keepEscrow = (c, escrow, intent, label) => { vset('escrows', { ...(vget('escrows') || {}), [lc(escrow)]: { c: c.chainId, intent: intentJson(intent), label, at: Date.now() } }); if (!vget('escrows')?.[lc(escrow)]) throw new Error('This browser would not keep the record of this one, so nothing was sent.'); };
+const keepEscrow = (c, escrow, intent, label) => { vset('escrows', { ...(vget('escrows') || {}), [lc(escrow)]: { c: c.chainId, intent: intentJson(intent), label, at: Date.now() } }); if (!vget('escrows')?.[lc(escrow)]) throw new Error('This browser would not keep the record of this swap or move, so nothing was sent.'); };
 const ESCQ = {};
 // The escrows on chain `c` that the pool paid and that still hold ETH; one paid and emptied, or never paid by its deadline
 // and a day, is forgotten. A paid escrow's balance is read at most once a minute.
@@ -3563,9 +3567,9 @@ function runEscrow(btn, c, e) {
     step('confirm in your wallet');
     const h = await signerFor(c).send({ to: ROUTER, data, value: 0n });
     step('waiting for the block');
-    await walletMined(c, h, late ? 'return' : 'call').catch((x) => { throw x?.unconfirmed ? x : new Error(late ? 'The return failed on chain; the escrow still holds it.' : 'Its calls failed on chain (the rate or the bridge may have moved); the escrow still holds it. Try again later, or return it after its deadline.'); });
+    await walletMined(c, h, late ? 'send' : 'call').catch((x) => { throw x?.unconfirmed ? x : new Error(late ? 'Sending the ETH on failed on chain; the escrow still holds it.' : 'Its calls failed on chain (the rate or the bridge may have moved); the escrow still holds it. Try again later, or send the ETH on after its deadline.'); });
     if (ESCQ[e.addr]) ESCQ[e.addr].at = 0;
-    done(c, h, late ? `Returned ${fmt(e.v)} ETH to ${short(e.intent.refund)}.` : `${e.label}: done.`);
+    done(c, h, late ? (/^Move/.test(e.label) ? `Sent ${fmt(e.v)} ETH back to your deposit address ${short(e.intent.refund)}. Take it in under Shield, From an exchange.` : `Sent ${fmt(e.v)} ETH to ${short(e.intent.refund)}.`) : `${e.label}: done.`);
   });
 }
 // Whether a withdrawal into `escrow` has left this device, whatever error `e` it ended with: a held payment goes to that
@@ -3622,10 +3626,10 @@ async function act(btn, fn, target = '#status') {
     // A payment first waits for the chain's history to be read, which on a new device can take a while: it says so, and how far.
     const reading = label === 'Getting ready' && CH[c.chainId].syncing ? readPct(CH[c.chainId]) : '';
     if (loading) since = performance.now();
-    const text = loading ? 'Downloading the proving key (33 MB, once). Nothing is sent yet' : reading ? 'Reading the pool’s history first. Nothing is sent yet' : label, secs = (performance.now() - since) / 1000, key = `${text}|${proving && !loading}`;
+    const text = loading ? 'Downloading the proving key (33 MB, once). This sends nothing' : reading ? 'Reading the pool’s history first. Nothing is sent yet' : label, secs = (performance.now() - since) / 1000, key = `${text}|${proving && !loading}`;
     if (key !== drawn) { drawn = key; mount(status, html`${proving && !loading ? pal('ninja', 'sneak') : html`<span class="spin" aria-hidden="true"></span>`}${text}<span class="mute num" aria-hidden="true" id="act-t"></span>`); }
     const e = $('#act-t');
-    if (e) e.textContent = loading ? ` · ${keyPct()}%` : reading ? ` ·${reading}` : proving || secs >= 3 ? ` ${secs.toFixed(1)} s` : '';
+    if (e) e.textContent = loading ? ` · ${keyPct()}%` : reading ? ` ·${reading}` : proving || secs >= 3 ? ` · ${secs.toFixed(1)} s` : '';
   };
   const step = (m) => { label = STEPS[m] || m; proving = m === 'proving'; since = performance.now(); show(); };
   const tick = setInterval(show, 250);
@@ -3788,7 +3792,7 @@ function swapOut(c, id, eth = false) {
   DRAFT['f-wto'] = p.name || p.to;
   const rounded = coarse(most == null || v <= most ? v : most);
   DRAFT['f-wamt'] = S.planFill = plain(rounded);
-  if (rounded > 0n && rounded < v) toast(`Rounded down to ${plain(rounded)} ETH, so the amount is harder to match to the deposit. The rest stays in your private balance.`);
+  if (rounded > 0n && rounded < v) toast(`Rounded down to ${plain(rounded)} ETH, ${most != null && v > most ? 'to leave room for the fee' : 'so the amount is harder to match to the deposit'}. The rest stays in your private balance.`);
   render();
   $('#form').scrollIntoView({ behavior: smooth(), block: 'start' });
 }
@@ -3816,7 +3820,7 @@ function formShield(f) {
     mount(f, html`${seg}
       <div class="blk"><div class="lbl"><span>Your deposit address</span><span>the same on every chain</span></div>
         <div class="addr"><code>${box}</code><button class="link" type="button" data-copy="${box}">copy</button></div>
-        <p class="note">Send ETH here as a plain transfer from an exchange or a wallet, on Ethereum, Base or Robinhood Chain. Sent on any other network, or as a token, it cannot be collected. ${relayOf(c) ? html`The relay moves it into your private balance on that chain, usually within minutes, for up to 0.25%${min ? html`; on ${c.full}, send at least ${fmt(min)} ETH` : ''}.` : 'Take it in below once it arrives.'}</p></div>
+        <p class="note">Send ETH here as a plain transfer from an exchange or a wallet, on Ethereum, Base or Robinhood Chain. Sent on any other network, or as a token, it cannot be collected. ${relayOf(c) ? html`The relay moves it into your private balance on that chain, usually within minutes, for up to 0.25%${min ? html`; on ${c.full}, send at least ${fmtUp(min)} ETH` : ''}.` : 'Take it in below once it arrives.'}</p></div>
       ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${relayTakes ? 'The relay moves it in shortly, or take it in now from your wallet: no fee, just gas.' : 'Take it in from your wallet: no fee, just gas.'}</span><button class="btn ghost sm" type="button" id="f-sweep">Take it in</button></div>` : ''}
       <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button></p>
       <div class="blk"><div class="lbl"><span>One-time addresses</span><span>one for each person who pays you</span></div>
@@ -4818,7 +4822,7 @@ function formShieldToken(f, seg) {
     if (zap == null || (byRelay() && least === undefined)) return say(html`<p class="note">Reading ${c.full}…</p>`);
     if (tb != null && r.limit > tb) return say(html`${kvRow('Costs at most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}<p class="note err">More ${t.sym} than your wallet holds on ${c.full}.</p>`);
     // With the zap there, the relay is only for amounts it moves in itself.
-    if (zap && byRelay() && (least == null || a < least)) return say(html`<p class="note err">${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmt(least)} ETH.`} Shield it in one transaction instead.</p>`);
+    if (zap && byRelay() && (least == null || a < least)) return say(html`<p class="note err">${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
     say(html`${kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[c.chainId]?.[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
       ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${w ? planRows(w, d, outRow(c, w, a)) : ''}`);
     go.disabled = false;
@@ -5010,7 +5014,7 @@ function formMove(f, seg) {
     if (!relayOf(to)) return say(html`<p class="note err">No relay is set for ${to.full} under Endpoints, so nothing would move this into your private balance there, and taking it in yourself needs ETH on ${to.full} for gas.</p>`);
     if (fee == null || q.extra == null) return say(html`<p class="note${q.err ? ' err' : ''}">${q.err ? errText(q.err) : 'Reading what the move costs…'}</p>`);
     // Under the rollup relay's minimum nothing moves it in by itself, and taking it in there needs gas on that chain.
-    if (q.min != null && a < q.min) return say(html`<p class="note err">Move at least ${fmt(q.min)} ETH. Under that, ${to.full}’s relay does not move it into your private balance, and taking it in yourself needs ETH on ${to.full} for gas.</p>`);
+    if (q.min != null && a < q.min) return say(html`<p class="note err">Move at least ${fmtUp(q.min)} ETH. Under that, ${to.full}’s relay does not move it into your private balance, and taking it in yourself needs ETH on ${to.full} for gas.</p>`);
     const p = plan(a + q.extra, fee);
     if (bal != null && !p) {
       const why = whyNot(a + q.extra, fee, bal, cur().notes || []);
@@ -5031,7 +5035,7 @@ function formMove(f, seg) {
     const unread = need.filter((x) => CH[x.chainId].at == null);
     if (unread.length) throw new Error(`Could not read your history on ${unread.map((x) => x.full).join(' and ')}, so nothing was sent. Try again in a moment.`);
     if (!relayOf(to)) throw new Error(`No relay is set for ${to.full}, so nothing was sent.`);
-    if (q.min != null && a < q.min) throw new Error(`Move at least ${fmt(q.min)} ETH, so ${to.full}’s relay moves it into your private balance.`);
+    if (q.min != null && a < q.min) throw new Error(`Move at least ${fmtUp(q.min)} ETH, so ${to.full}’s relay moves it into your private balance.`);
     const i = nextBoxIndex();
     if (i == null) throw new Error('No new deposit address is free right now: get paid at one you have first.');
     // The address is issued at once, so no other tab takes it, and given back unless the move left this device.
@@ -5377,7 +5381,7 @@ function paintTokReq(r, body, head, wire) {
   // A token added by its address before needs no second confirmation, as in the picker.
   if (!r.tokOk && addedToks(c).some((x) => lc(x.addr) === lc(t.addr))) r.tokOk = true;
   mount(body, html`${head}<div class="req-to">${r.name || 'An address'}<small>${r.dest}</small>${r.fallback ? html`<small>${r.name} lists no address for ${c.full}, so this is the one it gives for Ethereum.</small>` : ''}</div>
-    <div class="req-a num">${r.amount ? html`${exactUnits(r.amount, t.dec)} <small>${t.sym}</small>` : html`Any amount <small>of ${t.sym}</small>`}</div>
+    <div class="req-a num${r.amount && exactUnits(r.amount, t.dec).length > 10 ? ' long' : ''}">${r.amount ? html`${exactUnits(r.amount, t.dec)} <small>${t.sym}</small>` : html`Any amount <small>of ${t.sym}</small>`}</div>
     <div class="req-m">on ${c.full}${r.note ? html` · for “${r.note}”` : ''}</div>
     ${kvRow('Token', html`${tokIcon(t)} ${t.sym}${t.name ? ` · ${t.name}` : ''}`)}
     <div class="addr"><code>${t.addr}</code><button class="link" type="button" data-copy="${t.addr}">copy</button></div>
@@ -5431,9 +5435,9 @@ function paintReq() {
   if (r.token) return paintTokReq(r, body, head, wire);
   const own = S.key && same(r.r.raw, S.key.pool.raw), st = CH[c.chainId], who = r.name || short(r.to, 8);
   const target = html`<div class="req-to">${r.name || 'A Tacit address'}<small>${short(r.to, 8)}</small><small>Address ID <b class="num nw">${addressId(r.to)}</b>, the same one they see on their side</small></div>`;
-  if (own) { mount(body, html`${head}${target}<div class="req-a num">${r.amount ? html`${fmt(r.amount, 18)} <small>ETH</small>` : 'Any amount'}</div><div class="req-m">${chains.length > 1 ? 'on any chain' : `on ${c.full}`}${r.note ? html` · “${r.note}”` : ''}</div><p class="note">This is your own request. Share its link from Receive.</p>`); return wire(); }
+  if (own) { mount(body, html`${head}${target}<div class="req-a num${r.amount && fmt(r.amount, 18).length > 10 ? ' long' : ''}">${r.amount ? html`${fmt(r.amount, 18)} <small>ETH</small>` : 'Any amount'}</div><div class="req-m">${chains.length > 1 ? 'on any chain' : `on ${c.full}`}${r.note ? html` · “${r.note}”` : ''}</div><p class="note">This is your own request. Share its link from Receive.</p>`); return wire(); }
   if (r.paid) {
-    mount(body, html`${head}<div class="req-a num"><span class="ok">✓</span> ${fmt(r.paid.a, 18)} <small>ETH</small></div>
+    mount(body, html`${head}<div class="req-a num${fmt(r.paid.a, 18).length > 10 ? ' long' : ''}"><span class="ok">✓</span> ${fmt(r.paid.a, 18)} <small>ETH</small></div>
       <div class="req-m">paid to <b>${who}</b> on ${r.paid.c.full} · ${txLink(r.paid.c, r.paid.h)}</div>
       <p class="note">${r.paid.box ? 'It waits at their deposit address. The relay moves it into their private balance, usually within minutes, for up to 0.25%, when it is above its minimum; otherwise they take it in themselves. They see it when they sign in, on any device.' : 'It is in their private balance now. They see it when they sign in, on any device. Who you paid is not on chain.'}</p>
       <div class="row2"><button class="btn ghost" type="button" id="req-again">Pay again</button><button class="btn" type="button" id="req-done">Done</button></div>`);
@@ -5445,18 +5449,18 @@ function paintReq() {
   const canPriv = S.key && st.bal != null && (!r.amount || plan(r.amount, feeOf('send') ?? 0n));
   const viaBox = !!r.box && r.mode !== 'prove', min = r.box ? relayMin(c) : null;
   const view = html`${head}${target}
-    <div class="req-a num">${r.amount ? html`${fmt(r.amount, 18)} <small>ETH</small>` : 'Any amount'}</div>
+    <div class="req-a num${r.amount && fmt(r.amount, 18).length > 10 ? ' long' : ''}">${r.amount ? html`${fmt(r.amount, 18)} <small>ETH</small>` : 'Any amount'}</div>
     ${r.note ? html`<div class="req-m">for “${r.note}”</div>` : ''}
     ${r.amount ? '' : html`<div class="amt" style="margin-top:12px"><input id="req-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>`}
     <div class="seg sub" role="tablist" aria-label="Pay on">${chains.map((ch) => html`<button type="button" role="tab" data-rc="${ch.chainId}" aria-selected="${String(ch === c)}">${ch.name}${r.wb?.[ch.chainId] != null ? html`<small>${fmt(r.wb[ch.chainId], 4)} ETH</small>` : ''}</button>`)}</div>
     <button class="btn" type="button" id="req-pay"></button>
     <div id="req-note"></div>
     ${r.boxBad ? html`<p class="note warn">This link’s deposit address could not be verified, so it is not used.</p>` : ''}
-    ${viaBox ? html`<p class="note">${pal('face')}A plain ETH transfer from your wallet, nothing to download. ${min ? `At ${fmt(min)} ETH or more on ${c.full}, the relay moves it into their private balance within minutes for up to 0.25%; less waits for them to take it in.` : 'The relay moves it into their private balance for up to 0.25% when it is above its minimum; less waits for them to take it in.'}</p>
+    ${viaBox ? html`<p class="note">${pal('face')}A plain ETH transfer from your wallet, nothing to download. ${min ? `At ${fmtUp(min)} ETH or more on ${c.full}, the relay moves it into their private balance within minutes for up to 0.25%; less waits for them to take it in.` : 'The relay moves it into their private balance for up to 0.25% when it is above its minimum; less waits for them to take it in.'}</p>
       <details class="adv"><summary>Pay from an exchange or another wallet</summary>
         <div class="qrbox" id="req-qr"></div>
         <div class="addr"><code>${r.box}</code><button class="link" type="button" data-copy="${r.box}">copy</button></div>
-        <p class="note">Send only ETH, as a plain transfer, on Ethereum, Base or Robinhood Chain (the same address on all three). Sent on any other network, or as a token, it cannot be collected${min ? `. On ${c.full}, send at least ${fmt(min)} ETH` : ''}.</p></details>
+        <p class="note">Send only ETH, as a plain transfer, on Ethereum, Base or Robinhood Chain (the same address on all three). Sent on any other network, or as a token, it cannot be collected${min ? `. On ${c.full}, send at least ${fmtUp(min)} ETH` : ''}.</p></details>
       <p class="note"><button class="link" type="button" id="req-prove">No relay fee: prove it here instead (33 MB, once)</button></p>`
     : html`${r.box ? html`<p class="note"><button class="link" type="button" id="req-back">Use their deposit address instead</button></p>` : ''}
       <p class="note">${pal('ninja')}${S.account ? 'Proved here (33 MB, downloaded once), then sent from your wallet straight into their private balance: no fee; your wallet pays the gas.' : 'Connect any wallet: the payment is proved here (33 MB, downloaded once), then sent from your wallet straight into their private balance.'} Your address and the amount are public; who you paid is not.</p>`}
@@ -5484,7 +5488,7 @@ function paintReq() {
     if (S.account && !a) pay.textContent = 'Enter an amount';
     const low = S.account && a && wb != null && a + c.gasReserve > wb, small = viaBox && a && min && a < min, held = S.sent?.c === c;
     mount($('#req-note'), held ? sentNote(c) : low ? html`<p class="note err">Your wallet holds ${fmt(wb, 4)} ETH on ${c.full}, not enough for this and its gas. ${chains.length > 1 ? 'Pick another chain, or add funds.' : 'Add funds to pay this.'}</p>`
-      : small ? html`<p class="note">Under ${fmt(min)} ETH on ${c.full} the relay does not move it in: it waits at their deposit address until they take it in themselves.</p>` : amtIn ? badAmt(amtIn) : '');
+      : small ? html`<p class="note">Under ${fmtUp(min)} ETH on ${c.full} the relay does not move it in: it waits at their deposit address until they take it in themselves.</p>` : amtIn ? badAmt(amtIn) : '');
     pay.disabled = held || (!!S.account && (!a || low));
     if (held) sentWire(paintReq);
   };
@@ -5528,7 +5532,7 @@ const nameOk = (n) => /^[a-z0-9.-]+$/.test(n) && n.split('.').every((l) => l && 
 // A refusal from the address decoder reads as a sentence or it is replaced by one.
 const plainErr = (m) => (/[.…]$/.test(m) ? m : 'That is not a complete address. Check for a missing or changed character.');
 const looksName = (s) => /^\S+$/.test(s) && s.includes('.');
-const nameHint = (n) => (/(^|\.)base\.eth$/.test(n) ? 'Names ending in .base.eth are not supported. Ask for their tacit1… address or another name.' : 'A name ends in .wei, .gwei or .eth, using a–z, 0–9, hyphens and dots.');
+const nameHint = (n) => (/(^|\.)base\.eth$/.test(n) ? 'Names ending in .base.eth are not supported. Ask for their tacit1… address or another name.' : /(^|\.)[^.]{2}--/.test(n) ? 'A name cannot have two hyphens as its third and fourth characters.' : 'A name ends in .wei, .gwei or .eth, using a–z, 0–9, hyphens and dots.');
 const namehash = (n) => n.split('.').reverse().reduce((node, l) => keccak(cat(node, keccak(utf8(l)))), new Uint8Array(32));
 const dnsName = (n) => cat(...n.split('.').map((l) => cat([l.length], utf8(l))), [0]);
 // `lone`: when the nodes that answered all say the same thing, one answer is enough once the rest have failed (a read that

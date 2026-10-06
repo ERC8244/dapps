@@ -169,21 +169,14 @@ async function onMainnet() {
   const id = parseInt(await rpc('eth_chainId'), 16);
   if (id !== 1) throw new Error('Your wallet is on chain ' + id + ', not Ethereum mainnet. Switch it and press the button again: nothing was sent.');
 }
-// Before the wallet is asked: what cannot go through is said here, in words, rather than left as a popup that never
-// completes. Three things: a transaction from this account still pending (the next one queues behind it, and if it is this
-// very chunk it would be deployed twice), an account that cannot pay for it at today's gas, and gas above the ceiling
-// (MAX_GWEI on the server, default 1; ?maxgwei=N on this page changes it, 0 turns it off), which waits for gas to fall.
+// Before the wallet is asked, what cannot go through is said here in words rather than left as a popup that never
+// completes: an account that cannot pay at today's gas, and gas above the ceiling (MAX_GWEI on the server, default 1;
+// ?maxgwei=N on this page changes it, 0 turns it off), which waits for gas to fall.
 async function preflight(label, gas) {
   const q = new URLSearchParams(location.search).get('maxgwei'), ceiling = q === null || q === '' ? MAXGWEI : Number(q);
-  let asked = false;
   for (;;) {
-    const [bal, gp, latest, pending] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice'), rpc('eth_getTransactionCount', [from, 'latest']), rpc('eth_getTransactionCount', [from, 'pending'])]);
+    const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
     const gwei = Number(BigInt(gp)) / 1e9, cost = Number(BigInt(gas) * BigInt(gp)) / 1e18, have = Number(BigInt(bal)) / 1e18;
-    if (!asked && parseInt(pending, 16) > parseInt(latest, 16)) {
-      asked = true;
-      if (!confirm('This account has a transaction still pending (nonce ' + parseInt(latest, 16) + '). ' + label + ' would queue behind it, and if that pending one already is ' + label + ', it would be deployed twice. Check the activity in your wallet first.\\n\\nSend anyway?'))
-        throw new Error('Nothing was sent: a transaction from this account is still pending (nonce ' + parseInt(latest, 16) + '). Let it finish, or speed it up or cancel it in your wallet, then press the button again.');
-    }
     if (have < cost * 1.3) throw new Error('Nothing was sent: ' + label + ' needs about ' + cost.toFixed(4) + ' ETH at ' + gwei.toFixed(3) + ' gwei, and ' + from + ' holds ' + have.toFixed(4) + ' ETH. Add ETH to it and press the button again.');
     if (ceiling > 0 && gwei > ceiling) {
       paint('Gas is ' + gwei.toFixed(3) + ' gwei, above the ' + ceiling + ' gwei ceiling, so ' + label + ' waits for it to fall (checked every 15 s). Add ?maxgwei=N to this page&#39;s address to change the ceiling, or ?maxgwei=0 to turn it off.');
@@ -195,11 +188,17 @@ async function preflight(label, gas) {
 }
 // Sends the creation code and waits for the contract. landed(address) says whether the intended contract is at an
 // address: that is how a replaced or sped-up transaction (same nonce, so the same address) is found.
+// The nonce to send at: the first one not yet confirmed, never the wallet node's "pending" count, which can include a
+// transaction held only in that node's own pool (one sent through a private endpoint): a chunk sent behind it waits for a
+// nonce that never confirms. A pending transaction at that nonce is replaced, and a contract's address is set by the nonce,
+// so a chunk cannot be deployed twice. NONCE_FLOOR stays one step ahead of a node that is a block behind.
+let NONCE_FLOOR = 0;
+const nextNonce = async () => Math.max(parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16), NONCE_FLOOR);
 async function create(data, label, landed) {
   await onMainnet();
-  const nonce = parseInt(await rpc('eth_getTransactionCount', [from, 'pending']), 16);
+  const nonce = await nextNonce();
   const expected = await (await fetch('/addr?from=' + from + '&nonce=' + nonce)).text();
-  if (await landed(expected)) return expected;
+  if (await landed(expected)) { NONCE_FLOOR = nonce + 1; return expected; }
   const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, data }]))) * 1.1).toString(16);
   await preflight(label, gas);
   paint('confirm ' + label + ' in your wallet');
@@ -207,8 +206,8 @@ async function create(data, label, landed) {
   paint(label + ': waiting for <code>' + h + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
-    if (r) { if (r.status !== '0x1' || !r.contractAddress) throw new Error(label + ' reverted in ' + h); return r.contractAddress; }
-    if (await landed(expected)) return expected;
+    if (r) { if (r.status !== '0x1' || !r.contractAddress) throw new Error(label + ' reverted in ' + h); NONCE_FLOOR = nonce + 1; return r.contractAddress; }
+    if (await landed(expected)) { NONCE_FLOOR = nonce + 1; return expected; }
     if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await landed(expected)))
       throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
     await sleep(3000);
@@ -221,14 +220,14 @@ async function viaWrapper(data, expected) {
   if (await nextOk(expected)) return expected;
   if ((await code(expected)).length > 2) throw new Error('Something else is already at ' + expected + '. Nothing was sent.');
   const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, to: OLD_WRAPPER, data }]))) * 1.1).toString(16);
-  const nonce = parseInt(await rpc('eth_getTransactionCount', [from, 'pending']), 16);
+  const nonce = await nextNonce();
   paint('confirm the next generation in your wallet');
   const h = await nudged(rpc('eth_sendTransaction', [{ from, to: OLD_WRAPPER, data, gas, nonce: '0x' + nonce.toString(16) }]), 'the next generation');
   paint('the next generation: waiting for <code>' + h + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
     if (r && r.status !== '0x1') throw new Error('deployNext reverted in ' + h);
-    if (await nextOk(expected)) return expected;
+    if (await nextOk(expected)) { NONCE_FLOOR = nonce + 1; return expected; }
     if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await nextOk(expected)))
       throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
     await sleep(3000);
@@ -236,26 +235,17 @@ async function viaWrapper(data, expected) {
 }
 const nextOk = async (a) => { try { return (await code(a)).length > 4 && (await rpc('eth_call', [{ to: a, data: '0x5b700b59' }, 'latest'])).toLowerCase() === PAGE_HASH.toLowerCase(); } catch { return false; } };
 async function reconcile() {
-  for (let i = 0; i < ALL_RUNTIMES.length; i++) if (st.chunks[i] && (await code(st.chunks[i])) !== ALL_RUNTIMES[i].toLowerCase()) delete st.chunks[i];
+  await Promise.all(ALL_RUNTIMES.map(async (_, i) => { if (st.chunks[i] && (await code(st.chunks[i])) !== ALL_RUNTIMES[i].toLowerCase()) delete st.chunks[i]; }));
   if (st.next && !(await nextOk(st.next))) delete st.next;
   save();
 }
-// Same reasoning as the first deploy's helper: a chunk's address is remembered only once its transaction is seen
-// confirmed, in this browser, in this tab, so a reload a moment too early leaves nothing recorded even though it
-// landed. The window looks only at the most recent nonces.
-async function discover() {
-  // Also when nothing is recorded yet: the first chunk can land without this tab having seen it confirmed. A match is by
-  // the exact runtime code, so a creation that is not one of these chunks is never taken for one.
-  if (allChunksIn()) return;
-  let left = ALL_RUNTIMES.length - st.chunks.filter(Boolean).length;
-  const sent = parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16);
-  const WINDOW = 24, from0 = Math.max(0, sent - WINDOW);
-  for (let n = sent - 1; n >= from0 && left > 0; n--) {
-    const a = await (await fetch('/addr?from=' + from + '&nonce=' + n)).text(), c = await code(a);
-    for (const i of NEEDS) if (!st.chunks[i] && c === ALL_RUNTIMES[i].toLowerCase()) { st.chunks[i] = a; left--; break; }
-  }
-  save();
-}
+// A chunk's address is remembered only once its transaction is seen confirmed in this tab, so a reload a moment too early
+// loses one that landed. What the steward has already created is therefore read by this page's own server (no wallet
+// involved) as the page opens: its last 40 creations, matched by exact runtime code. The Deploy button waits for it.
+const foundP = fetch('/found', { signal: AbortSignal.timeout(20000) }).then((r) => r.json()).then((found) => {
+  for (const [i, a] of Object.entries(found)) if (!st.chunks[i]) st.chunks[i] = a;
+  save(); paint();
+}).catch(() => {});
 $('#connect').onclick = async () => {
   askWallets(); await sleep(150);
   const list = installed();
@@ -266,23 +256,23 @@ $('#connect').onclick = async () => {
   $('#who').textContent = 'connecting to ' + w.info.name + '…';
   const whereNudge = (el) => $('#where').appendChild(el);
   try {
-    [from] = await nudged(rpc('eth_requestAccounts'), 'connecting ' + w.info.name, whereNudge);
+    const accounts = await nudged(rpc('eth_requestAccounts'), 'connecting ' + w.info.name, whereNudge);
+    from = accounts.find((a) => a.toLowerCase() === STEWARD.toLowerCase()) || accounts[0];
     if (parseInt(await rpc('eth_chainId'), 16) !== 1) { try { await nudged(rpc('wallet_switchEthereumChain', [{ chainId: '0x1' }]), 'switching to Ethereum mainnet', whereNudge); } catch {} }
     await onMainnet();
     if (from.toLowerCase() !== STEWARD.toLowerCase()) $('#where').innerHTML = '<span class="err">This wallet is not the steward (' + STEWARD + '). deployNext will revert if sent from here.</span>';
     await reconcile();
-    if (!allChunksIn()) { $('#where').textContent = 'Checking this account’s recent transactions for anything already deployed…'; await discover(); paint(); }
     const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
     $('#who').textContent = w.info.name + ' · ' + from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the rest of the deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
     $('#go').disabled = false;
-    const [nl, np] = (await Promise.all([rpc('eth_getTransactionCount', [from, 'latest']), rpc('eth_getTransactionCount', [from, 'pending'])])).map((x) => parseInt(x, 16));
-    paint(np > nl ? '<span class="err">A transaction from this account is still pending (nonce ' + nl + '). Check your wallet&#39;s activity before sending the next chunk: it queues behind that one.</span>' : '');
+    paint();
   } catch (e) { paint('<span class="err">' + (e.message || e) + '</span>'); }
 };
 $('#reset').onclick = () => { if (confirm('Forget the addresses deployed so far? (They stay on chain.)')) { st = { chunks: Object.assign(new Array(ALL_RUNTIMES.length), REUSED) }; save(); paint(); } };
 $('#go').onclick = async () => {
   $('#go').disabled = true;
   try {
+    await foundP;
     for (const i of NEEDS) {
       if (st.chunks[i]) continue;
       const a = await create(NEW_CREATION[i], 'chunk ' + (i + 1), async (x) => (await code(x)) === ALL_RUNTIMES[i].toLowerCase());
@@ -351,6 +341,22 @@ http.createServer((q, r) => {
       }).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
         (e) => { r.writeHead(500, { 'content-type': 'text/plain' }); r.end(String(e.message || e)); });
     });
+    return;
+  }
+  if (u.pathname === '/found') {                      // which chunks the steward has already created, from its last 40 nonces
+    Promise.resolve().then(async () => {
+      const from = getAddress(STEWARD);
+      const sent = parseInt(await rpcCall('eth_getTransactionCount', [from, 'latest']), 16), nonces = [];
+      for (let n = sent - 1; n >= Math.max(0, sent - 40); n--) nonces.push(n);
+      const res = await fetch(RPC_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(nonces.map((n, k) => ({ jsonrpc: '2.0', id: k, method: 'eth_getCode', params: [getCreateAddress({ from, nonce: n }), 'latest'] }))) });
+      const out = {}, byCode = new Map(runtimes.map((r, i) => [r.toLowerCase(), i]));
+      for (const x of await res.json()) {
+        const i = byCode.get(String(x.result || '').toLowerCase());
+        if (i !== undefined && !(i in out)) out[i] = getCreateAddress({ from, nonce: nonces[x.id] });
+      }
+      return out;
+    }).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
+      (e) => { r.writeHead(500, { 'content-type': 'text/plain' }); r.end(String(e.message || e)); });
     return;
   }
   if (u.pathname === '/addr') {                       // where a contract creation by `from` at `nonce` lands

@@ -40,9 +40,12 @@ slice, that `html()` returns the page byte for byte, and that `anon.wei` resolve
 ## What a reader can check
 
 ```
-ETH_RPC_URL=<rpc> node scripts/verify.mjs tacit-pay
-node tacit-pay/deploy/check-deployment.mjs <rpc> 0x0000005a9E52BD30867872DCb323bc78Eb5cF919 tacit-pay/dapp/page.html
+git show 01b12c0:tacit-pay/dapp/page.html > gen2.html      # this version's page: 276,658 B, sha256 947bc1a7…
+node tacit-pay/deploy/check-deployment.mjs <rpc> 0x0000005a9E52BD30867872DCb323bc78Eb5cF919 gen2.html
 ```
+
+`tacit-pay/dapp/page.html` and `scripts/verify.mjs` follow the newest page, so this version is checked against its own bytes
+as above.
 
 The wrapper also names the two large files the page fetches (`PROVING_KEY_SHA256`, `WITNESS_PROGRAM_SHA256`); they equal the pins
 inside the page, and the page uses a file only when its SHA-256 equals its pin (`node test/dapp/tacit-pay.artifacts.mjs`).

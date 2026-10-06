@@ -25,6 +25,8 @@ pin dapp/page.min.html
 B=$(wc -c < dapp/page.min.html | tr -d ' '); H=$(shasum -a 256 dapp/page.min.html | cut -d' ' -f1)
 sed -i '' -E "s/\"bytes\": [0-9]+,/\"bytes\": $B,/; s/\"sha256\": \"[0-9a-f]{64}\"/\"sha256\": \"$H\"/" manifest.json
 sed -i '' -E "s/PAGE_BYTES = [0-9]+;/PAGE_BYTES = $B;/" test/TacitPay8244.t.sol
+grep -q "\"bytes\": $B," manifest.json && grep -q "\"sha256\": \"$H\"" manifest.json && grep -q "PAGE_BYTES = $B;" test/TacitPay8244.t.sol || { echo 'manifest.json or the contract test did not take the new size and hash' >&2; exit 1; }
 rm -f out/TacitPay8244.chunk*.creation.txt          # a page that needs fewer chunks must not leave an old one behind
-node ../scripts/chunk.mjs tacit-pay | tail -2
+out=$(node ../scripts/chunk.mjs tacit-pay) || { echo "$out"; exit 1; }
+echo "$out" | tail -2
 echo "$B bytes, sha256 $H"

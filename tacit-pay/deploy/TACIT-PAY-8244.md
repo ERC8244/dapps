@@ -116,10 +116,14 @@ the pool has held its root at that size, the head a read goes up to is the lower
 sent to ask whether it is spent. An index that leaves a memo out cannot hide a note from *Rebuild*, which reads the chain's logs alone. (A proof's public values do go to a node once,
 in the check against the pool's verifier just before the spend is sent.)
 
+**Added here:** shielding from a token (swapped for an exact amount of ETH through zRouter, in one transaction through
+the zap or to a deposit address the relay takes in), withdrawals that arrive as a token, private swaps (a token in and
+another out later, with the pool between, followed on a card), and moving a balance from Ethereum to Base or Robinhood
+Chain through their own bridges.
+
 **Left out:** passkey and Bitcoin-wallet sign-in (a passkey is bound to the origin that made it, and the Bitcoin path
 needs the main app), payment links that carry the money (`#gift=`, handed to the main site), payments held until
-they blend in, the privacy check, saved recipients, moving Ethereum balances
-to an L2 through its bridge, TAC points, payment proofs (`#proof=`, handed to the main site) and CSV export. Each has a home on tacit.finance; none is
+they blend in, the privacy check, saved recipients, TAC points, payment proofs (`#proof=`, handed to the main site) and CSV export. Each has a home on tacit.finance; none is
 needed to pay or be paid.
 
 **Rebuilt so nothing is fetched to run:**
@@ -171,7 +175,9 @@ agree that the pool has held its root at that size, a chain that fails to read i
 head a read goes up to is the lower of two nodes' answers.
 
 **What the page keeps.** Besides the wallet's sealed state, a key's last balances, the block times of its activity, the
-one-time addresses it issued and the name it uses are sealed under the same view key: storage shows ciphertext only. The
+one-time addresses it issued, the name it uses, the private swaps it started and the tokens added by address are sealed
+under the same view key: storage shows ciphertext only. The chain last chosen and the wallet last connected are kept as
+they are. The
 page asks the Ethereum nodes to agree before it shows which contract serves it and whether a newer version exists.
 
 | it depends on | for | when it is down |
@@ -198,6 +204,14 @@ archive node of their own can set it under *Endpoints*.
   The reader can point a chain at another relay or none. A relay the reader sets is held to the fee ceiling but not
   to the default relay's address.
 - **Mirrors** for the proving key, as above.
+- **Swaps:** zQuoter (`0x000000bd2db80567c23e353ca95a251c573cbf9b`) finds routes and zRouter
+  (`0x000000000000FB114709235f1ccBFfb925F600e4`) runs them, for shielding from a token and withdrawing as one; the zap
+  (TacitEvmPoolZap, `0x0000008EbBF2323f95c4fBc18254f3D65C53998c`) shields from a token in one transaction; Permit2 takes a
+  signature approval for a token that has no permit of its own; the onchain token list (`0x0000006013dF75A31678B786061C2B54bf531524`)
+  names the tokens offered. Routes are asked of the page's nodes with a stand-in address in place of the reader's; the
+  estimates (Max on a token, what a private swap's ETH would buy now) are asked of the reader's wallet, whose node
+  already sees its payments.
+- **Bridges:** Base's L1StandardBridge and Robinhood Chain's inbox, for moving a balance there from Ethereum.
 
 The document pins its one module by hash in its Content-Security-Policy and allows connections only over HTTPS (and
 to `127.0.0.1` and `localhost`, for a reader's own node). A gateway that injects script, like w3link, is refused by
@@ -236,6 +250,14 @@ node test/dapp/tacit-pay.relay.mjs             # a faithful relay, then relays t
 node test/dapp/tacit-pay.index.mjs             # an event index that says "no events" is caught against the pool
 node test/dapp/tacit-pay.boxes.mjs             # one-time deposit addresses: issued, funded as by an exchange, found from the key, taken in
 node test/dapp/tacit-pay.privateswap.mjs       # a private swap: USDC in, a token added by address out, through the card; what is remembered; a lost plan
+node test/dapp/tacit-pay.ux.mjs                # how the page answers as it is used, chains in memory: forms, held payments, copies, Rebuild
+node test/dapp/tacit-pay.shieldtoken.mjs       # shielding from a token on a fork: MODE=permit|permit2|batch|approve|relay|relaybatch|box|weth; Max
+node test/dapp/tacit-pay.swapfork.mjs          # a withdrawal that arrives as a token, on a fork with the real router, zQuoter and zRouter
+node test/dapp/tacit-pay.routes.mjs            # every route a token withdrawal can take, on every chain, run as the escrow runs it
+node test/dapp/tacit-pay.move.mjs              # a move to a rollup as the page encodes it, against the live router (one read-only call)
+node test/dapp/tacit-pay.movefork.mjs          # a move to Base on forks: the bridge deposit, then the relay takes it in on Base
+node test/dapp/tacit-pay.movefork-rh.mjs       # a move to Robinhood Chain on forks: the retryable ticket, then taken in there
+node test/dapp/tacit-pay.moveretry.mjs         # a refused move tried again near its deadline: built afresh, lands once
 KEEPER=… node test/dapp/tacit-pay.keeper.mjs   # the real relay server, from the repo's worker-relay, on a fork
 node test/dapp/tacit-pay.chains.mjs            # read-only: every node and relay the page ships, asked what the page asks
 node test/dapp/tacit-pay.live.mjs              # read-only against mainnet: nodes, relays, routers, the proving key
@@ -259,7 +281,7 @@ Never run `forge build --force` or `forge clean` between `repin.sh` and the depl
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 298,427-byte page: about 69M gas, 0.069 ETH at 1 gwei, 0.0069 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 317,226-byte page: about 73M gas, 0.073 ETH at 1 gwei, 0.0073 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
@@ -288,10 +310,12 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), and at `https://anon.wei.limo/`. The wrapper answers every `request()` with
 `Cache-Control: public, max-age=300`: a name can be pointed at a successor, so the page is cached for minutes, not a year.
 
-**Releasing a new version.** Edit the page, `sh deploy/repin.sh`, `forge build`. Deploy only the new chunks (the helper deploys a
-first version; for a successor deploy each chunk from `out/` with `cast send --create`). Build the wrapper's creation code
-with `previous` set to the current tip, the same steward and the new page hash, and call `<tip>.deployNext(initcode, salt)`
-from the steward with a gas limit of 2,000,000 (it uses about 1.6M). Run step 3 against the new wrapper, then `setAddr` to it.
+**Releasing a new version.** Edit the page, `sh deploy/repin.sh`, `forge build`, then `node deploy/deploy-next-helper.mjs 8799`
+and open http://127.0.0.1:8799 with the steward's wallet: it finds the live tip through `latest()`, deploys only the chunks
+whose bytes changed (an unchanged chunk is reused at its address, checked against mainnet), and calls
+`<tip>.deployNext(initcode, salt)` with the wrapper's creation code (`previous` the tip, the same steward, the new page hash)
+and a gas limit of 2,000,000 (generation 2's used 1,718,451). Run step 3 against the new wrapper, then `setAddr` to it. To
+verify a successor's source (step 4), its second constructor argument is the previous version's address, not zero.
 To go back, `setAddr` to the old one: every version serves its own bytes forever. Only the newest version can append.
 
 ## Stewardship and the name

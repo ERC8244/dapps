@@ -1,9 +1,11 @@
 /* A private swap, token to token through the pool, against an anvil fork of Ethereum with the real pool, router, zap,
    zQuoter, zRouter and token list. The wallet holds USDC; under Shield it pays with USDC and picks, under "You get", a
    token that is not on the list, added by pasting its address. Starting the swap shields exactly 0.005 ETH and leaves a
-   plan, shown as a card with the time and the pool's transactions since; the card takes it out as that token, to the
+   plan, shown as a card with the time and the pool's transactions since (the form estimates what the ETH would buy of
+   the token at today's price); the card takes it out as that token, to the
    address given, through Withdraw. Also: the line shown when the address is the wallet paying in, what the browser
-   remembers on the next visit, and that a plan lost with the browser's storage leaves the ETH in the private balance.
+   remembers on the next visit, a plan taken out as ETH instead from its card, and that a plan lost with the browser's
+   storage leaves the ETH in the private balance.
 
    Usage: ARTIFACTS=<dir with transact.wasm and transact_final.zkey> node test/dapp/tacit-pay.privateswap.mjs      */
 import fs from 'node:fs';
@@ -63,6 +65,8 @@ ok(/This is the wallet paying in/.test(await text('#f-rcpt')), 'one plain line w
 await p.fill('#f-pto', D);
 await p.waitForFunction((d) => new RegExp(`out as PEPE to ${d.slice(0, 6)}`, 'i').test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, D, {timeout: 300e3});
 ok(!/This is the wallet paying in/.test(await text('#f-rcpt')), 'and none for another address', (await text('#f-rcpt')).slice(0, 220));
+await p.waitForFunction(() => /PEPE, estimated/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 120e3}).catch(() => {});
+ok(/At today’s price\s*about [\d,.]+ PEPE, estimated/.test(await text('#f-rcpt')), 'it estimates the PEPE the ETH would buy now', (await text('#f-rcpt')).slice(-160));
 await p.click('#f-go');
 const said = await p.status(/Shielded|err/);
 ok(/Shielded 0\.005 ETH from USDC\. Swap it out as PEPE/.test(said), 'the first step shields exactly 0.005 ETH from USDC', said);
@@ -101,6 +105,37 @@ ok(least && got >= BigInt(Math.floor(Number(least))) * 10n ** 18n, 'the address 
 await p.waitForFunction(() => !document.querySelector('#bal-note .callout.plan'), null, {timeout: 60e3}).catch(() => {});
 ok(!(await p.$('#bal-note .callout.plan')), 'and the card is gone');
 
+console.log('\ntaken out as ETH instead');
+const D3 = '0x' + '6c'.repeat(20), ethAt = async (a) => BigInt(await f.rpc('eth_getBalance', [a, 'latest']));
+const wei = (s) => { const [i, d = ''] = String(s).split('.'); return BigInt(i + (d + '0'.repeat(18)).slice(0, 18)); };
+await p.click('#tabs [data-tab="shield"]');
+await p.click('[data-from="wallet"]');
+await p.waitForSelector('#f-tok', {timeout: 60e3});
+await p.click('#f-tok');
+await p.waitForSelector('#f-tokl [data-tk=""]', {timeout: 120e3});
+await p.click('#f-tokl [data-tk=""]');
+await p.waitForSelector('#f-tok2', {timeout: 60e3});
+await p.click('#f-tok2');
+await p.waitForSelector(`#f-tokl2 [data-tk="${PEPE}"]`, {timeout: 120e3});
+await p.click(`#f-tokl2 [data-tk="${PEPE}"]`);
+await p.waitForSelector('#f-pto', {timeout: 30e3});
+await p.fill('#f-samt', '0.003');
+await p.fill('#f-pto', D3);
+await p.waitForFunction(() => /Later/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 120e3});
+await p.click('#f-go');
+ok(/Shielded 0\.003 ETH/.test(await p.status(/Shielded|err/)), 'a plan for 0.003 ETH');
+await p.waitForSelector('#bal-note [data-plan-eth]', {timeout: 60e3});
+ok(/Take out as ETH/.test(await text('#bal-note .callout.plan')), 'its card offers to take it out as ETH', await text('#bal-note .callout.plan'));
+await p.click('#bal-note [data-plan-eth]');
+await p.waitForSelector('#f-wto', {timeout: 30e3});
+const amt3 = await p.inputValue('#f-wamt');
+ok((await p.inputValue('#f-wto')).toLowerCase() === D3 && /^0\.00\d+$/.test(amt3) && /ETH/.test(await text('#f-tok')) && !/PEPE/.test(await text('#f-tok')) && !(await p.$('#bal-note .callout.plan')), 'Withdraw opens on ETH with the plan’s address and amount, and the card is gone', `${amt3} ETH as ${await text('#f-tok')}`);
+await p.waitForFunction(() => !document.querySelector('#f-go').disabled, null, {timeout: 120e3});
+const before3 = await ethAt(D3);
+await p.click('#f-go');
+const out3 = await p.status(/Withdrew|err/);
+ok(/Withdrew/.test(out3) && await ethAt(D3) - before3 === wei(amt3), `the address receives exactly ${amt3} ETH`, out3);
+
 console.log('\na plan lost with the browser’s storage');
 await p.click('#tabs [data-tab="shield"]');
 await p.click('[data-from="wallet"]');
@@ -116,6 +151,8 @@ await p.waitForSelector('#f-pto', {timeout: 30e3});
 await p.fill('#f-samt', '0.002');
 await p.fill('#f-pto', D2);
 await p.waitForFunction(() => /Later/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 120e3});
+await p.waitForFunction(() => /PEPE, estimated/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 120e3}).catch(() => {});
+ok(/about [\d,.]+ PEPE, estimated/.test(await text('#f-rcpt')), 'paid with ETH, the plan is estimated too');
 const pre = await text('#bal .v');
 await p.click('#f-go');
 const said2 = await p.status(/Shielded|err/);

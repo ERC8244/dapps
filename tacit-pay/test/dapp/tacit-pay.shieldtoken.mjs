@@ -1,6 +1,9 @@
 /* Shielding from a token, against an anvil fork with the real pool, router, zQuoter, zRouter, Permit2 and token list: the
    wallet holds a listed token (bought through zRouter here first), picks it under Shield, and shields exactly 0.005 ETH.
    The private balance is then exactly 0.005, and the wallet spent no more of the token than the most the page showed.
+   First, Max: the ETH the whole balance buys, rounded down, which the wallet's token then pays for, and the line under the
+   amount with its cost in the token. With MODE=permit the amount is then typed in the token, 0.5 to spend, and the
+   deposit is the round amount of ETH that buys.
 
    MODE (with the zap deployed on the fork at its address, through the CREATE2 proxy, as on chain):
      permit   (default) a token with an EIP-2612 permit: one signature, one transaction
@@ -82,13 +85,32 @@ await p.waitForSelector(`[data-tk="${TOKEN}"]`, {timeout: 120e3});
 await p.click(`[data-tk="${TOKEN}"]`);
 await p.waitForFunction((s) => new RegExp(`Swap ${s} and shield`).test(document.querySelector('#f-go')?.textContent || '') || /Enter an amount/.test(document.querySelector('#f-go')?.textContent || ''), SYM, {timeout: 60e3});
 ok(/Pay with/.test(await p.textContent('#form')), `the form now pays with ${SYM}`);
-await p.fill('#f-samt', '0.005');
+await p.waitForFunction(() => /\d/.test(document.querySelector('#f-tb')?.textContent || ''), null, {timeout: 60e3});
+const held = await bal(), raw = (x) => (x ? BigInt(Math.ceil(Number(x) * 10 ** Math.min(DEC, 15))) * 10n ** BigInt(Math.max(0, DEC - 15)) : -1n);
+await p.click('#f-max');
+await p.waitForFunction(() => Number(document.querySelector('#f-samt').value) > 0, null, {timeout: 120e3});
+await p.waitForFunction(() => /At most|than your wallet holds|No route/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 300e3});
+const rm = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' '), mostMax = raw(new RegExp(`At most\\s*([\\d.]+)\\s*${SYM}`).exec(rm)?.[1]);
+ok(!/than your wallet holds/.test(rm) && mostMax > 0n && mostMax <= held, `Max asks ${await p.inputValue('#f-samt')} ETH, which the ${SYM} in the wallet pays for`, `${mostMax} ≤ ${held}`);
+ok(new RegExp(`≈ [\\d.,]+ ${SYM} · at most [\\d.,]+`).test(await p.textContent('#f-cap')), `the line under the amount gives its cost in ${SYM}`, await p.textContent('#f-cap'));
+let AMT = '0.005';
+if (MODE === 'permit') {
+  console.log(`\nthe amount in ${SYM}: 0.5 to spend`);
+  await p.click('#form [data-unit="tok"]');
+  await p.waitForFunction(() => /Amount to spend/.test(document.querySelector('#form')?.textContent || ''), null, {timeout: 30e3});
+  await p.fill('#f-samt', '0.5');
+  await p.waitForFunction(() => /Shields [\d.]+ ETH · about [\d.,]+/.test(document.querySelector('#f-cap')?.textContent || '') && /At most/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3});
+  AMT = /Shields ([\d.]+) ETH/.exec(await p.textContent('#f-cap'))[1];
+  const sig = AMT.replace('.', '').replace(/^0+/, '').replace(/0+$/, ''), atMost = raw(/At most\s*([\d.]+)/.exec((await p.textContent('#f-rcpt')).replace(/\s+/g, ' '))?.[1]);
+  ok(Number(AMT) > 0 && sig.length <= 2 && atMost > 0n && atMost <= raw('0.5'), `0.5 ${SYM} to spend shields ${AMT} ETH: a round amount, costing at most what was typed`, `${atMost} ≤ ${raw('0.5')}`);
+} else await p.fill('#f-samt', '0.005');
 if (RELAY) {
   await p.waitForSelector('[data-via="relay"]', {timeout: 60e3});
   await p.click('[data-via="relay"]');
 }
 await p.waitForFunction(() => /At most/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3});
 const r = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' ');
+ok(new RegExp(`Costs about\\s*[\\d.]+\\s*${SYM}`).test(r), `it shows what the ETH costs in ${SYM}`, r.slice(0, 160));
 if (MODE === 'box') ok(/your wallet takes it in/.test(r), 'with no zap and under the relay’s minimum, the wallet will take it in', r.slice(0, 200));
 else if (RELAY) ok(/the relay moves it in/.test(r) && /data-via="zap"/.test(await p.innerHTML('#f-via')), 'the relay will move it in, and the zap is offered instead', r.slice(0, 200));
 else ok(/shielded in the same transaction/.test(r) && /shielded in one transaction/.test(await p.textContent('#f-snote')), 'the zap shields it in the same transaction', r.slice(0, 200));
@@ -97,14 +119,14 @@ const before = await bal(), seen = (await p.wallet()).length;
 await p.click('#f-go');
 const said = await p.status(/Shielded|Swapped|err/);
 if (RELAY) ok(new RegExp(`Swapped ${SYM} for 0\\.005 ETH at a new deposit address`).test(said), 'the page swaps it to a new deposit address for the relay', said);
-else ok(new RegExp(`Shielded 0\\.005 ETH from ${SYM}`).test(said), 'the page shields it', said);
+else ok(new RegExp(`Shielded ${AMT.replace('.', '\\.')} ETH from ${SYM}`).test(said), 'the page shields it', said);
 const spent = before - await bal();
 ok(spent > 0n && spent <= most, `the wallet spent no more ${SYM} than the most shown`, `${spent} ≤ ${most}`);
 if (RELAY) {
   const rcv = relay.calls.filter((x) => x.path === '/receive').at(-1)?.body;
   const box = '0x' + (await f.rpc('eth_call', [{to: '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', data: id('receiveBoxOf(uint256,uint16)').slice(0, 10) + W(rcv.npk) + W(rcv.feeBps)}, 'latest'])).slice(-40);
   ok(BigInt(await f.rpc('eth_getBalance', [box, 'latest'])) === 5n * 10n ** 15n, 'the new deposit address the relay was told of holds exactly 0.005 ETH', box);
-} else ok(await p.balance('0.005') === '0.005', 'the private balance is exactly 0.005 ETH');
+} else ok(await p.balance(AMT) === AMT, `the private balance is exactly ${AMT} ETH`);
 
 const asked = (await p.wallet()).slice(seen).map((x) => x.split('@')[0]), sends = asked.filter((m) => m === 'eth_sendTransaction').length;
 if (MODE === 'box' || RELAY) {

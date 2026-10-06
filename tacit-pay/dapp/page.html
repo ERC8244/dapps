@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2n5v6J4O3FYK6X7UlV6JHJabB9Es8bsTiMyvXgqGlXw=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ZvMVg8kYo3HsVS19xXv8v8cnGbK5W7UAhsJ4Zc58c+Y=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -1598,12 +1598,24 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   let wrote = { at: 0, what: '' };
   // Other tabs of this browser write this same slot: a hold one of them sent out is held here too, and a write never drops a
   // hold this tab has not ended itself.
-  const ended = new Set();
+  const ended = new Set(), joined = new Set(), uid = (x) => x.u ?? x.id;
+  let mine = null;
   function joinHolds() {
+    const raw = store?.get(skey);
+    if (!raw || raw === mine) return;
+    mine = raw;
     try {
-      const o = JSON.parse(openState(keys.v, store?.get(skey), skey) || 'null');
-      for (const x of o?.inflight || []) if (!ended.has(x.id) && !saved.inflight.some((y) => y.id === x.id)) saved.inflight = [...saved.inflight, x];
-      for (const y of o?.landed || []) if (!(saved.landed || []).some((z) => z.at === y.at && JSON.stringify(z.pay) === JSON.stringify(y.pay))) saved.landed = [...(saved.landed || []), y].sort((p, q) => p.at - q.at).slice(-20);
+      const o = JSON.parse(openState(keys.v, raw, skey) || 'null');
+      if (!o) return;
+      const there = new Set((o.inflight || []).map(uid));
+      for (const x of saved.inflight) if (joined.has(uid(x)) && !there.has(uid(x))) { saved.inflight = saved.inflight.filter((y) => y !== x); joined.delete(uid(x)); ended.add(uid(x)); }
+      for (const x of o.inflight || []) {
+        if (ended.has(uid(x))) continue;
+        const own = saved.inflight.find((y) => uid(y) === uid(x));
+        if (!own) { saved.inflight = [...saved.inflight, x]; joined.add(uid(x)); }
+        else for (const t of x.tries) if (!own.tries.some((y) => y.start === t.start)) own.tries.push(t);
+      }
+      for (const y of o.landed || []) if (!(saved.landed || []).some((z) => JSON.stringify(z.pay) === JSON.stringify(y.pay) && Math.abs(z.at - y.at) < 120_000)) saved.landed = [...(saved.landed || []), y].sort((p, q) => p.at - q.at).slice(-20);
     } catch {}
   }
   const persist = () => {
@@ -1611,7 +1623,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (sig() === wrote.what && Date.now() - wrote.at < 300_000) return;
     joinHolds();
     wrote = { at: Date.now(), what: sig() };
-    try { if (store?.set(skey, sealState(keys.v, JSON.stringify({ ...saved, tree: saved.tree.toJSON(), notes: saved.notes.map(({ sk, nk, nf, ...n }) => n) }), skey)) !== false) store?.del?.(oldKey); } catch {}
+    try { const sealed = sealState(keys.v, JSON.stringify({ ...saved, tree: saved.tree.toJSON(), notes: saved.notes.map(({ sk, nk, nf, ...n }) => n) }), skey); if (store?.set(skey, sealed) !== false) { mine = sealed; store?.del?.(oldKey); } } catch {}
   };
   if (moved) persist();
   // A spend built again from the same note (a new quote, so new change) takes the next attempt, so two memos never
@@ -1904,7 +1916,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (open.length === saved.inflight.length) return;
     // A payment that landed is remembered for a day, so the same payment pressed again is asked about first.
     saved.landed = [...(saved.landed || []).filter((y) => now - y.at < 86_400_000), ...done.filter((x) => x.pay).map((x) => ({ pay: x.pay, at: now }))].slice(-20);
-    for (const x of saved.inflight) if (!open.includes(x)) ended.add(x.id);
+    for (const x of saved.inflight) if (!open.includes(x)) ended.add(uid(x));
     saved.inflight = open; persist();
   }
   // Whether state `s` holds the leaf at `top` (the newest input of a payment): only a read that does can show its notes spent;
@@ -2080,15 +2092,16 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     const handOut = (start) => {
       if (!nfs.length) return () => {};
       let x = saved.inflight.find((y) => y.id === id);
-      if (!x) { x = { id, nfs, pay, tries: [], at: Date.now(), top }; ended.delete(id); saved.inflight = [...saved.inflight, x]; }
+      if (x) joined.delete(uid(x));
+      else { x = { id, u: hex(randomBytes(8)), nfs, pay, tries: [], at: Date.now(), top }; saved.inflight = [...saved.inflight, x]; }
       const t = { start }; x.tries.push(t); persist();
-      return () => { x.tries = x.tries.filter((y) => y !== t); if (!x.tries.length) { ended.add(x.id); saved.inflight = saved.inflight.filter((y) => y !== x); } persist(); };
+      return () => { x.tries = x.tries.filter((y) => y !== t); if (!x.tries.length) { ended.add(uid(x)); saved.inflight = saved.inflight.filter((y) => y !== x); } persist(); };
     };
     // Seen to land: its hold ends now, not once it is confirmed, and the same payment pressed again is asked about first.
     const settled = () => {
       const x = saved.inflight.find((y) => y.id === id);
       if (!x) return;
-      ended.add(x.id);
+      ended.add(uid(x));
       saved.inflight = saved.inflight.filter((y) => y !== x);
       if (x.pay) saved.landed = [...(saved.landed || []), { pay: x.pay, at: Date.now() }].slice(-20);
       persist();
@@ -3108,7 +3121,7 @@ async function openWithWallet(say = () => {}) {
   if ((store.get(anchor) && store.get(anchor) !== seal) || (old && old !== hex(pubOf(key)))) throw new Error('This account opened a different Tacit key on this device before, so nothing was opened. Sign in with the wallet app you used then.');
   if (store.set(anchor, seal) && old) store.del(oldAnchor);
   if (gen !== SIGNIN || S.key !== was) throw new Quiet('another key was opened meanwhile');
-  setKey(key, a, first);
+  setKey(key, a, first, p);
 }
 function openWithKey(text) {
   const h = lc(text).trim().replace(/^0x/, '');
@@ -3116,10 +3129,10 @@ function openWithKey(text) {
   setKey(unhex(h), null);
 }
 // `first`: the first sign-in with this wallet in this browser, which says the key's Address ID once.
-function setKey(key, account, first = false) {
+function setKey(key, account, first = false, via = null) {
   const pool = poolKeys(key);
   if (S.key) { for (const k of Object.keys(TIMES)) delete TIMES[k]; for (const k of Object.keys(DRAFT)) delete DRAFT[k]; Object.assign(S, { want: {}, inTok: {}, outTok: {}, askTok: {}, planOut: null, planMoved: null, payIn: null, unitWas: null, outIn: null, outWas: null }); }
-  S.key = { pool, address: tacitAddress(key, pool), account, via: account ? S.provider : null };
+  S.key = { pool, address: tacitAddress(key, pool), account, via: account ? via || S.provider : null };
   if (!store.set('tacit-pay-probe-v1', '1')) toast('This browser will not let the page save anything. Keep this tab open until each payment shows done: one still under way is forgotten if you reload.', true); else store.del('tacit-pay-probe-v1');
   RECV.s = null; RECV.for = '';
   Object.assign(TIMES, vget('times') || {});
@@ -3647,7 +3660,7 @@ async function act(btn, fn, target = '#status') {
   } finally {
     clearInterval(tick);
     btn.removeAttribute('aria-busy');
-    S.busy = false;
+    S.busy = false; FRESH = false;
     const kept = status.innerHTML;
     if (S.lockAfter) { S.lockAfter = false; lock(); }
     render();
@@ -4704,7 +4717,7 @@ function formShieldToken(f, seg) {
     $$('[data-via]', f).forEach((b) => b.onclick = () => { S.shieldVia = b.dataset.via; note(); FORM.check?.(); });
   };
   note();
-  const readZap = () => zapOn(c).then((v) => { zap = v; note(); FORM.check?.(); if (v == null && f.isConnected) setTimeout(readZap, 4000); });
+  const here = FORM, readZap = () => zapOn(c).then((v) => { zap = v; note(); FORM.check?.(); if (v == null && FORM === here) setTimeout(readZap, 4000); });
   readZap();
   $$('[data-sl]', f).forEach((b) => b.onclick = () => { S.slip = BigInt(b.dataset.sl); renderForm(); });
   const amt = $('#f-samt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
@@ -4919,7 +4932,7 @@ function formShieldToken(f, seg) {
         const pull = await pullFor(c, t, r.limit, ZROUTER, step, s), swap = pull.kind === 'permit' ? routerWithPermit(pull, t.addr, r.data) : r.data;
         const calls = [...pull.before, { to: ZROUTER, data: swap }], short = () => { SHQ.at = SHQ.got = 0; return new Error('The swap would fail on chain right now, so it was not sent. Press again for a new route.'); };
         if (pull.before.length && await canBatch(c)) {
-          // In one batch the allowance ends at zero again, so zRouter keeps none of what the swap did not use.
+          // In one batch the allowance ends at zero again where the token allows it, so zRouter keeps none of what the swap did not use.
           let all = [...calls, { to: t.addr, data: '0x095ea7b3' + hex(addrWord(ZROUTER)) + hex(word(0n)) }];
           if (await fails(c, all)) { all = calls; if (await fails(c, all)) throw short(); }
           step('confirm in your wallet');
@@ -5274,7 +5287,7 @@ async function sentState({ h, batch, c, nonce, from }) {
     const rc = await walletRead(c, 'eth_getTransactionReceipt', [h]);
     if (rc) return rc.status === '0x1' ? 'landed' : 'failed';
     const t = await walletRead(c, 'eth_getTransactionByHash', [h]);
-    if (t) return t.blockNumber == null ? 'waiting' : null;
+    if (t) return t.blockNumber == null ? 'waiting' : 'mined';
     if (nonce != null && from && Number(await walletRead(c, 'eth_getTransactionCount', [from, 'latest'])) > nonce) return 'replaced';
     return t ? null : 'dropped';
   } catch { return null; }
@@ -5296,7 +5309,8 @@ const sentWire = (again) => $('#sent-again')?.addEventListener('click', (e) => b
   const st = await sentState(was);
   if (S.sent !== was) return;
   if (st === 'waiting') return toast('Your wallet still has it waiting. Speed it up or cancel it in your wallet first.', true);
-  if (st === null && was.h && (!S.provider || Number(await S.provider.request({ method: 'eth_chainId' }).catch(() => was.c.chainId)) !== was.c.chainId)) return toast(`Connect your wallet on ${was.c.full} first, so the page can check it. Then press again.`, true);
+  if (st === 'mined') return toast('It is in a block, but the network has not given its receipt yet. Check it in your wallet, then press again.', true);
+  if (st === null && was.h && (!S.provider || Number(await S.provider.request({ method: 'eth_chainId' }).catch(() => was.c.chainId)) !== was.c.chainId)) { toast(`Connect your wallet on ${was.c.full} first, so the page can check it. Then press again.`, true); return walletReady(was.c).catch(warn); }
   if (st === 'landed') { setSent(null); heldPlans(was.c, true); again(); return toast('It landed, so nothing more is needed.'); }
   if (st === 'replaced') { S.sent = { ...was, replaced: true }; return again(); }
   setSent(null); heldPlans(was.c, false); paintBal(); again();
@@ -5689,11 +5703,13 @@ function codeAt(c, a) {
 // Code that is not an account's EIP-7702 delegation.
 const isContract = (code) => /^0x[0-9a-f]+$/i.test(code) && code.length > 2 && !/^0xef0100[0-9a-f]{40}$/i.test(code);
 async function destRead(c, a) {
+  let at = c;
   try {
     if (isContract(await codeAt(c, a))) return { here: true };
+    at = CHAINS[0];
     if (c.chainId !== 1 && isContract(await codeAt(CHAINS[0], a))) return { l1: true };
     return {};
-  } catch { return { unread: true }; }
+  } catch { return { unread: true, at }; }
 }
 // What a read means for a payment of `tok` (a token a withdrawal arrives as; ETH when null): { warn, ack } or {}.
 const destSays = (c, v, tok) => (v.here ? (tok
@@ -5712,7 +5728,7 @@ function destNote(c, a, again = () => FORM.check?.(), tok = null, read = true) {
   const k = `${c.chainId}:${x}`;
   if (!DESTS.has(k)) { const p = destRead(c, a); DESTS.set(k, { p }); p.then((v) => { DESTS.set(k, { p, v }); again(); }); }
   const v = DESTS.get(k).v;
-  return v ? destSays(c, v, tok) : { pending: true };
+  return v ? (v.unread ? { unread: v.at } : destSays(c, v, tok)) : { pending: true };
 }
 // Checked again as the button is pressed, waiting for the read; one that could not be read is tried once more.
 async function destGate(c, a, tok = null) {
@@ -5720,7 +5736,7 @@ async function destGate(c, a, tok = null) {
   if (n.refuse) throw new Error(n.refuse);
   let v = await DESTS.get(k).p;
   if (v.unread) { DESTS.delete(k); destNote(c, a, () => {}); v = await DESTS.get(k).p; }
-  if (v.unread) throw new Error(`Could not check that address on ${c.full}, so nothing was sent. Try again in a moment.`);
+  if (v.unread) throw new Error(`Could not check that address on ${v.at.full}, so nothing was sent. Try again in a moment.`);
   const s = destSays(c, v, tok);
   if (s.ack && !TAKES.has(takeKey(c, a, tok))) throw new Error(s.warn);
 }
@@ -5730,7 +5746,7 @@ function destLines(c, a, t, tok = null) {
   return {
     ok: !n.refuse && !n.pending && (!n.ack || TAKES.has(k)),
     lines: html`${t?.fallback ? html`<p class="note">${t.name} lists no address for ${c.full}, so this is the address it gives for Ethereum.</p>` : ''}
-      ${n.refuse ? html`<p class="note err">${n.refuse}</p>` : n.pending ? html`<p class="note">Checking the address on ${c.full}…</p>` : n.warn ? html`<p class="note warn">${n.warn}${n.ack && !TAKES.has(k) ? html` <button class="link" type="button" id="f-takes" data-k="${k}">${n.ack}</button>` : ''}</p>` : ''}`,
+      ${n.refuse ? html`<p class="note err">${n.refuse}</p>` : n.pending ? html`<p class="note">Checking the address on ${c.full}…</p>` : n.unread ? html`<p class="note">Could not check that address on ${n.unread.full} just now. It is checked again when you press.</p>` : n.warn ? html`<p class="note warn">${n.warn}${n.ack && !TAKES.has(k) ? html` <button class="link" type="button" id="f-takes" data-k="${k}">${n.ack}</button>` : ''}</p>` : ''}`,
   };
 }
 const wireTakes = () => $('#f-takes')?.addEventListener('click', (e) => { TAKES.add(e.currentTarget.dataset.k); FORM.check?.(); });
@@ -5968,7 +5984,7 @@ function applyHash() {
     const only = (q.get('chains') || '').split(',').map(chainOf).filter(Boolean);
     const n = (q.get('n') || '').trim().toLowerCase(), ns = (q.get('ns') || '').trim().toLowerCase();
     const amt = (q.get('amount') || '').trim(), amount = amt ? parseEth(amt) : null;
-    openRequest({ to, amount: amount || null, bad: amt && !amount ? 'This link’s amount is not a number of ETH this page can read, so the link is not used. Ask for a new one.' : null, note: noteOf(q.get('for')), chains: only.length ? [...new Set(only)] : null, n: /^[0-9a-f]{1,64}$/.test(n) ? n : null, ns: /^[0-9a-f]{128}$/.test(ns) ? ns : null });
+    openRequest({ to, amount: amount || null, bad: amt && amount == null ? 'This link’s amount is not a number of ETH this page can read, so the link is not used. Ask for a new one.' : null, note: noteOf(q.get('for')), chains: only.length ? [...new Set(only)] : null, n: /^[0-9a-f]{1,64}$/.test(n) ? n : null, ns: /^[0-9a-f]{128}$/.test(ns) ? ns : null });
     return;
   }
   const want = (q.get('tab') || words.find((w) => TABS.some(([k]) => k === w) || w === 'deposit') || '').toLowerCase().replace('deposit', 'shield');

@@ -23,16 +23,21 @@ const {makePoolWallet, poolKeys} = lib, {RELAYERS} = config;
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', KEEPER = 'http://relay.test/evm-pool/keeper';
 const mkStore = () => { const m = new Map(); return {get: (k) => m.get(k) ?? null, set: (k, v) => { m.set(k, v); return true; }, del: (k) => { m.delete(k); }}; };
 const prove = async (input) => ({proof: {pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['5', '6']}, publicSignals: [input.root, input.oldRoot, input.newRoot, input.startIndex, input.publicAmount, input.extDataHash, input.asset, input.nf[0], input.nf[1], input.outLeaf[0], input.outLeaf[1]].map(String)});
-const tab = (node, key, store) => { const keys = poolKeys(key); return {keys, W: makePoolWallet({chain: {chainId: 1, pool: POOL, router: ROUTER, rpc: node.rpc, deployBlock: 100, confirmations: 3, keeper: KEEPER}, keys, prove, store, signer: null, feed: false, proofMs: () => 0})}; };
+const tab = (node, key, store, signer = null) => {
+  const keys = poolKeys(key), base = node.rpc;
+  const rpc = async (m, p) => (m === 'eth_call' && p[0].to.toLowerCase() === POOL.toLowerCase() && p[0].data.length > 1000 ? '0x' : base(m, p));
+  rpc.batch = base.batch;
+  return {keys, W: makePoolWallet({chain: {chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: 100, confirmations: 3, keeper: KEEPER}, keys, prove, store, signer, feed: false, proofMs: () => 0})};
+};
 // A relay that lands a proof at once ('apply'), or answers with a hash and never sends it ('hold').
 const relayUp = (apply) => {
-  const relay = {mode: 'apply'};
+  const relay = {mode: 'apply', held: []};
   globalThis.fetch = async (url, init = {}) => {
     const path = new URL(url).pathname.replace(/^.*\/keeper/, ''), body = init.body ? JSON.parse(init.body) : null;
     const rsp = (status, j) => ({status, ok: status < 300, headers: new Headers(), json: async () => j});
     if (path === '/quote') return rsp(200, {chainId: 1, pool: POOL, relayer: RELAYERS[1], fee: '1000000000000', gas: '450000'});
     if (path === '/relay') {
-      if (relay.mode === 'hold') return rsp(200, {txHash: '0x' + 'cd'.repeat(32)});
+      if (relay.mode === 'hold') { relay.held.push(body.tx); return rsp(200, {txHash: '0x' + 'cd'.repeat(32)}); }
       const r = apply(body.tx);
       return r.revert ? rsp(409, {error: r.revert, stale: true}) : rsp(200, {txHash: r.h});
     }
@@ -75,6 +80,51 @@ console.log('two tabs of one browser share one slot of storage');
   await C.W.sync();
   const e = await C.W.send({to: PAYEE, amount: 25n * E / 100n, via: null, expectFee: FEE}).catch((x) => x);
   ok(e?.duplicate === true, 'the same payment pressed again in another tab is asked about first', e?.message || 'it was paid again');
+}
+
+console.log('\nholds made again on the same notes, and holds taken back');
+{
+  const sleep = (ms) => new Promise((r) => realSet(r, ms)), DEST = '0x' + '77'.repeat(20);
+  const landedOf = (node, a) => node.logs.filter((l) => l.address.toLowerCase() === POOL.toLowerCase() && BigInt.asIntN(256, BigInt('0x' + l.data.slice(2 + 64 * 5, 2 + 64 * 6))) === -a).length;
+  {
+    const {node, relayed} = mkWorld(), store = mkStore(), relay = relayUp(relayed);
+    const T1 = tab(node, KEY, store);
+    depositTo(node, T1.keys, 3n * E / 10n, 105); node.tip = 130;
+    await T1.W.sync();
+    const T2 = tab(node, KEY, store); await T2.W.sync();
+    relay.mode = 'hold';
+    await T1.W.withdraw({to: DEST, amount: E / 10n, via: null, expectFee: FEE}).catch(() => {});
+    depositTo(node, poolKeys(new Uint8Array(32).fill(3)), E / 100n, 131); node.tip = 140;     // another payment lands: the held proof's slot is gone
+    await T1.W.sync(); await T2.W.sync();
+    ok(T1.W.inflight().length === 0 && T2.W.inflight().length === 0, 'a dead hold ends in both tabs');
+    relay.held.length = 0;
+    await T2.W.withdraw({to: DEST, amount: E / 10n, via: null, expectFee: FEE}).catch(() => {});   // the same payment again: a new hold, the same notes
+    const e = await T1.W.withdraw({to: DEST, amount: E / 10n, via: null, expectFee: FEE}).then(() => null, (x) => x);
+    ok(e?.hold === true, 'the other tab sees the new hold on the same notes and does not pay it again', e ? e.message.slice(0, 70) : 'it was paid a second time');
+    for (const tx of relay.held.splice(0)) relayed(tx);
+    node.tip += 10;
+    ok(landedOf(node, E / 10n) <= 1, 'and the amount lands at most once', `${landedOf(node, E / 10n)} time(s)`);
+  }
+  {
+    const {node} = mkWorld(), store = mkStore();
+    let reject;
+    const gate = new Promise((_, rej) => { reject = rej; });
+    const T2 = tab(node, KEY, store, {address: '0x' + '22'.repeat(20), ready: async () => {}, send: () => gate});
+    depositTo(node, T2.keys, 3n * E / 10n, 105); node.tip = 130;
+    await T2.W.sync();
+    const T1 = tab(node, KEY, store); await T1.W.sync();
+    relayUp(() => ({revert: 'x'}));
+    const pay = T2.W.withdraw({to: DEST, amount: E / 10n, via: 'self', expectFee: null}).catch((x) => x);
+    await sleep(300);
+    const e1 = await T1.W.withdraw({to: DEST, amount: E / 10n, via: null, expectFee: FEE}).then(() => null, (x) => x);
+    ok(e1?.hold === true, 'a hold handed to the wallet in one tab is joined by the other');
+    skewBy(301_000); node.tip += 6;
+    reject(Object.assign(new Error('User rejected'), {code: 4001}));
+    await pay; await sleep(50);
+    await T1.W.sync(); skewBy(301_000); node.tip += 6; await T1.W.sync();
+    const T3 = tab(node, KEY, store); await T3.W.sync();
+    ok(T2.W.inflight().length === 0 && T1.W.inflight().length === 0 && T3.W.inflight().length === 0, 'when the wallet refuses, no tab keeps or writes back the hold', `T1 ${T1.W.inflight().length} T2 ${T2.W.inflight().length} T3 ${T3.W.inflight().length}`);
+  }
 }
 
 console.log('\na destination whose code could not be read');
@@ -124,19 +174,20 @@ console.log('\n"It was dropped: pay again" with a wallet that cannot be asked');
   const code = cut('async function sentState(', '// Another action that went through says nothing of a held payment');
   const wire = cut('const sentWire = (again) =>', 'const RMIN = {}');
   const mk = (provider) => {
-    const log = {toasts: [], cleared: 0, again: 0};
+    const log = {toasts: [], cleared: 0, again: 0, ready: 0};
     const S = {sent: {h: '0x' + 'ab'.repeat(32), c: {chainId: 1, full: 'Ethereum'}, nonce: 4, from: '0xf'}, provider};
     const btn = {hasAttribute: () => false, addEventListener: null};
     let click = null;
     const $ = () => ({addEventListener: (ev, f) => { click = f; }});
     const busy = async (b, fn) => fn();
-    const f = new Function('S', 'walletRead', 'toast', 'setSent', 'heldPlans', 'paintBal', '$', 'busy', 'again', `${code}\n${wire}\nsentWire(again);\nreturn sentState;`)(
-      S, async () => { throw new Error('no wallet'); }, (m) => log.toasts.push(m), () => { log.cleared++; S.sent = null; }, () => {}, () => {}, $, busy, () => { log.again++; });
+    const f = new Function('S', 'walletRead', 'toast', 'setSent', 'heldPlans', 'paintBal', '$', 'busy', 'again', 'walletReady', 'warn', `${code}\n${wire}\nsentWire(again);\nreturn sentState;`)(
+      S, async () => { throw new Error('no wallet'); }, (m) => log.toasts.push(m), () => { log.cleared++; S.sent = null; }, () => {}, () => {}, $, busy, () => { log.again++; }, async () => { log.ready++; }, () => {});
     return {S, log, press: () => click({currentTarget: btn})};
   };
   const t = mk(null);
   await t.press();
   ok(t.log.cleared === 0 && t.S.sent && /Connect your wallet on Ethereum/.test(t.log.toasts[0] || ''), 'with no wallet connected the hold stays and the page says why', t.log.toasts[0] || 'it was cleared');
+  ok(t.log.ready === 1, 'and asks the wallet to connect on that chain');
 }
 
 console.log('\nwhat a failed check says');

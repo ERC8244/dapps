@@ -43,7 +43,8 @@ pragma solidity ^0.8.30;
 ///   It never sends a key anywhere: the Tacit key is derived in the tab from the wallet's signature over a fixed
 ///   message (the same in every Tacit app) and is never stored. It fetches no code: the prover, its field
 ///   arithmetic (WebAssembly the page writes itself), Poseidon (constants derived in the page), the curves and
-///   the hashes are all in the document. A proof is checked against the pool's verifier before anything is sent.
+///   the hashes are all in the document. A proof the wallet sends is checked against the pool's verifier through the wallet's node first;
+///   one the relay sends is checked by the relay.
 ///
 /// HOW TO READ THE DAPP
 ///   cast call <addr> "html()(string)" --rpc-url <rpc> \
@@ -64,7 +65,7 @@ contract TacitPay8244 {
     /// @notice The pool's router: deposit addresses that anyone can pay and anyone can sweep into the pool.
     address public constant ROUTER = 0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5;
 
-    /// @notice The pool's Groth16 verifier, which the page checks every proof against before sending it.
+    /// @notice The pool's Groth16 verifier, which the page checks each proof against before the wallet sends it (a relayed proof is checked by the relay).
     address public constant VERIFIER = 0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153;
 
     /// @notice The zap that shields a token in one transaction: it takes the token from the caller, swaps it through

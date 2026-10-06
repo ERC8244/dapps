@@ -133,7 +133,7 @@ saved state is sealed under the view key, the relay's event index is checked aga
 page to the chain's own logs, and an index that did that is not asked again that session), the unconfirmed tail counts only when
 the pool has held its root at that size, the head a read goes up to is the lower of two nodes' answers, and no nullifier is ever
 sent to ask whether it is spent. An index that leaves a memo out cannot hide a note from *Rebuild*, which reads the chain's logs alone. (A proof's public values do go to a node once,
-in the check against the pool's verifier just before the spend is sent.)
+in the check against the pool's verifier just before a spend the wallet sends; a relayed proof is not checked by the page.)
 
 **Added here:** shielding from a token (swapped for an exact amount of ETH through zRouter, in one transaction through
 the zap or to a deposit address the relay takes in), withdrawals that arrive as a token (an amount in ETH, or in the token
@@ -154,7 +154,8 @@ needed to pay or be paid.
   WebAssembly that the page writes itself from a short generator (Montgomery multiplication over eight 32-bit limbs,
   the representation the proving key stores), so there is no binary blob in the document. The work is shared across
   up to six workers started from the document's own `<script type="text/x-prover">`. A proof takes about 7 s on a
-  laptop, and every proof is checked against the pool's verifier by `eth_call` before it is sent.
+  laptop. A proof the wallet sends is checked against the pool's verifier by `eth_call` through the wallet's node before it is sent;
+  one the relay sends is checked by the relay.
 - *Poseidon.* Its round constants and MDS matrices are generated in the page by the Grain LFSR, as the Poseidon
   reference does, instead of being stored (about 80 KB of tables).
 - *SHA-256, HMAC, Keccak-256, secp256k1, BabyJubJub, bech32m, ABI encoding, the QR code:* written out in the page.
@@ -210,7 +211,7 @@ page asks the Ethereum nodes to agree before it shows which contract serves it a
 
 There are no other scripts, fonts, images or stylesheets: the document pins its one module by hash. The proving key is
 the one dependency that is not a chain read. Rebuilding a wallet from chain logs alone leans on nodes that serve old
-logs: on Ethereum and Base, one public node each does (Tenderly's), plus Base's own with 2,000-block ranges, and
+logs: on Ethereum and Base, one public node each does (Tenderly's), plus Base's own with 500-block ranges (Tenderly's Base node allows 1,000), and
 Robinhood Chain's own node. `test/dapp/tacit-pay.chains.mjs` measures this against the live nodes. A reader with an
 archive node of their own can set it under *Endpoints*.
 
@@ -301,7 +302,7 @@ Never run `forge build --force` or `forge clean` between `repin.sh` and the depl
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 330,763-byte page: about 76M gas, 0.076 ETH at 1 gwei, 0.0076 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 337,957-byte page: about 78M gas, 0.078 ETH at 1 gwei, 0.0078 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press

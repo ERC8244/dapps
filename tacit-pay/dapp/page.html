@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-aWW9Zi+VygNBlFsGzyQXaCPXu5VB2rxOfAxln1ySaBY=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-qTufDa2GrOtGg4qXBiSUiCVBJ1RtKMtDFOQgoK7Zv6Y=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -4199,7 +4199,8 @@ function routeOf(h, slip, u, v, S, mv, eo = false) {
 // through ETH and three hops as multicalls, and split routes, each with the share of slippage `slip` (basis points) it
 // needs; the most out wins. The nodes asked see a random stand-in for `to`, written into the route afterwards, and two
 // of them must return the same route at the same block, since the route says where the tokens go.
-// `least`: the most at its minimum wins instead, for an amount that must arrive.
+// `least`: for an amount that must arrive, routes rank by the least each pays, counted at no more than the slippage
+// chosen, so one asked with a share of it (through ETH, three hops) does not win by allowing less.
 async function swapRoute(c, t, amount, slip, to = null, least = false) {
   const stand = hex(randomBytes(20)), A = (a) => hex(addrWord(a)), U = (v) => hex(word(v)), deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
   const tk = (sl) => U(0n) + A(ZERO_ADDRESS) + A(t.addr) + U(amount) + U(sl) + U(deadline), me = '0'.repeat(24) + stand;
@@ -4212,7 +4213,8 @@ async function swapRoute(c, t, amount, slip, to = null, least = false) {
   // nodes allow a call.
   const ask = (q, d) => quorum(q, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => ({ h }), () => anyNode(c, q, '0x' + d, block).then((h) => ({ h, lone: true })));
   const got = await Promise.all(jobs.map(([q, d, sl, ...r]) => ask(q, d).then(({ h, lone }) => ({ ...routeOf(h, sl, ...r), lone })).catch(() => null)));
-  const by = least ? 'limit' : 'out', ok = got.filter((r) => r?.out && r.value === amount && r.data.includes(stand)).sort((a, b) => (b[by] > a[by] ? 1 : b[by] < a[by] ? -1 : 0));
+  const B = 10000n, by = (r) => (!least ? r.out : r.limit < r.out * (B - slip) / B ? r.limit : r.out * (B - slip) / B);
+  const ok = got.filter((r) => r?.out && r.value === amount && r.data.includes(stand)).sort((a, b) => (by(b) > by(a) ? 1 : by(b) < by(a) ? -1 : 0));
   let best = null;
   for (const r of ok) if ((!r.lone && !t.added) || await routePays(c, t, r, stand, block)) { best = r; break; }
   if (!best) return null;

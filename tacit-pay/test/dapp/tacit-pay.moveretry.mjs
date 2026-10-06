@@ -41,7 +41,7 @@ relay.mode = 'send';
 await p.clock.install();
 await p.clock.fastForward('52:00');
 await p.click('#status [data-retry="relay"]');
-const said = await p.status(/landed|settled|err/);
+const said = await p.status(/It landed|It is settled|err/);
 ok(/It landed/.test(said), 'it lands', said);
 const second = relay.calls.filter((x) => x.path === '/relay' && x.body?.call).pop()?.body.call;
 ok(first && second && BigInt(second.deadline) > BigInt(first.deadline) && second.nonce !== first.nonce, 'built afresh: a later deadline, so a new escrow', `${first?.deadline} → ${second?.deadline}`);

@@ -113,7 +113,13 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   // Logs before the fork are the chain's own: asked of its real node, which serves long ranges and is not the bottleneck
   // a fork's upstream is; logs after it come from anvil. A range that crosses the fork is asked of both.
   const REAL = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https://mainnet.base.org', robinhood: 'https://rpc.mainnet.chain.robinhood.com'};
-  const post = async (url, req) => (await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req)})).json();
+  // A public node drops a connection or answers with a page that is not JSON now and then: the request is made again.
+  const post = async (url, req, tries = 3) => {
+    for (let i = 1; ; i++) {
+      try { return await (await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req)})).json(); }
+      catch (e) { if (i >= tries) throw e; await new Promise((ok) => setTimeout(ok, 500 * i)); }
+    }
+  };
   // Base's public nodes serve short ranges (Tenderly 1,000 blocks, Base's own 500): before Base's fork the lab serves up to
   // 10,000 a request, read as 1,000-block parts from Tenderly a few at a time, and a part Tenderly refuses from Base's own
   // node in halves.

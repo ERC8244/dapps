@@ -107,7 +107,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tac
 const ALL_RUNTIMES = ${JSON.stringify(runtimes)}, NEEDS = ${JSON.stringify(needsDeploy)}, NEW_CREATION = ${JSON.stringify(Object.fromEntries(needsDeploy.map((i) => [i, chunks[i]])))};
 const REUSED = ${JSON.stringify(Object.fromEntries(reused.map((a, i) => [i, a]).filter(([, a]) => a)))};
 const STEWARD = ${JSON.stringify(STEWARD)}, OLD_WRAPPER = ${JSON.stringify(OLD_WRAPPER)}, PAGE_HASH = ${JSON.stringify(pageHash)}, SHA = ${JSON.stringify(manifest.sha256)}, GAS = ${GAS};
-const VANITY = ${VANITY}, NAME = ${JSON.stringify(NAME)}, WNS = ${JSON.stringify(WNS)}, TOKEN = ${JSON.stringify(TOKEN)};
+const VANITY = ${VANITY}, NAME = ${JSON.stringify(NAME)}, WNS = ${JSON.stringify(WNS)}, TOKEN = ${JSON.stringify(TOKEN)}, MAXGWEI = ${Number(process.env.MAX_GWEI ?? 1)};
 const KEY = 'tacit-pay-deploy-next-' + OLD_WRAPPER.slice(2, 10) + '-' + SHA.slice(0, 16);
 let st = JSON.parse(localStorage.getItem(KEY) || JSON.stringify({ chunks: Object.assign(new Array(ALL_RUNTIMES.length), REUSED) })), eth = null, from = null;
 const save = () => localStorage.setItem(KEY, JSON.stringify(st));
@@ -169,6 +169,30 @@ async function onMainnet() {
   const id = parseInt(await rpc('eth_chainId'), 16);
   if (id !== 1) throw new Error('Your wallet is on chain ' + id + ', not Ethereum mainnet. Switch it and press the button again: nothing was sent.');
 }
+// Before the wallet is asked: what cannot go through is said here, in words, rather than left as a popup that never
+// completes. Three things: a transaction from this account still pending (the next one queues behind it, and if it is this
+// very chunk it would be deployed twice), an account that cannot pay for it at today's gas, and gas above the ceiling
+// (MAX_GWEI on the server, default 1; ?maxgwei=N on this page changes it, 0 turns it off), which waits for gas to fall.
+async function preflight(label, gas) {
+  const q = new URLSearchParams(location.search).get('maxgwei'), ceiling = q === null || q === '' ? MAXGWEI : Number(q);
+  let asked = false;
+  for (;;) {
+    const [bal, gp, latest, pending] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice'), rpc('eth_getTransactionCount', [from, 'latest']), rpc('eth_getTransactionCount', [from, 'pending'])]);
+    const gwei = Number(BigInt(gp)) / 1e9, cost = Number(BigInt(gas) * BigInt(gp)) / 1e18, have = Number(BigInt(bal)) / 1e18;
+    if (!asked && parseInt(pending, 16) > parseInt(latest, 16)) {
+      asked = true;
+      if (!confirm('This account has a transaction still pending (nonce ' + parseInt(latest, 16) + '). ' + label + ' would queue behind it, and if that pending one already is ' + label + ', it would be deployed twice. Check the activity in your wallet first.\\n\\nSend anyway?'))
+        throw new Error('Nothing was sent: a transaction from this account is still pending (nonce ' + parseInt(latest, 16) + '). Let it finish, or speed it up or cancel it in your wallet, then press the button again.');
+    }
+    if (have < cost * 1.3) throw new Error('Nothing was sent: ' + label + ' needs about ' + cost.toFixed(4) + ' ETH at ' + gwei.toFixed(3) + ' gwei, and ' + from + ' holds ' + have.toFixed(4) + ' ETH. Add ETH to it and press the button again.');
+    if (ceiling > 0 && gwei > ceiling) {
+      paint('Gas is ' + gwei.toFixed(3) + ' gwei, above the ' + ceiling + ' gwei ceiling, so ' + label + ' waits for it to fall (checked every 15 s). Add ?maxgwei=N to this page&#39;s address to change the ceiling, or ?maxgwei=0 to turn it off.');
+      await sleep(15000);
+      continue;
+    }
+    return;
+  }
+}
 // Sends the creation code and waits for the contract. landed(address) says whether the intended contract is at an
 // address: that is how a replaced or sped-up transaction (same nonce, so the same address) is found.
 async function create(data, label, landed) {
@@ -177,6 +201,7 @@ async function create(data, label, landed) {
   const expected = await (await fetch('/addr?from=' + from + '&nonce=' + nonce)).text();
   if (await landed(expected)) return expected;
   const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, data }]))) * 1.1).toString(16);
+  await preflight(label, gas);
   paint('confirm ' + label + ' in your wallet');
   const h = await nudged(rpc('eth_sendTransaction', [{ from, data, gas, nonce: '0x' + nonce.toString(16) }]), label);
   paint(label + ': waiting for <code>' + h + '</code>');
@@ -219,10 +244,12 @@ async function reconcile() {
 // confirmed, in this browser, in this tab, so a reload a moment too early leaves nothing recorded even though it
 // landed. The window looks only at the most recent nonces.
 async function discover() {
-  if (allChunksIn() || !st.chunks.filter(Boolean).length) return;
+  // Also when nothing is recorded yet: the first chunk can land without this tab having seen it confirmed. A match is by
+  // the exact runtime code, so a creation that is not one of these chunks is never taken for one.
+  if (allChunksIn()) return;
   let left = ALL_RUNTIMES.length - st.chunks.filter(Boolean).length;
   const sent = parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16);
-  const WINDOW = 8, from0 = Math.max(0, sent - WINDOW);
+  const WINDOW = 24, from0 = Math.max(0, sent - WINDOW);
   for (let n = sent - 1; n >= from0 && left > 0; n--) {
     const a = await (await fetch('/addr?from=' + from + '&nonce=' + n)).text(), c = await code(a);
     for (const i of NEEDS) if (!st.chunks[i] && c === ALL_RUNTIMES[i].toLowerCase()) { st.chunks[i] = a; left--; break; }
@@ -248,7 +275,8 @@ $('#connect').onclick = async () => {
     const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
     $('#who').textContent = w.info.name + ' · ' + from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the rest of the deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
     $('#go').disabled = false;
-    paint();
+    const [nl, np] = (await Promise.all([rpc('eth_getTransactionCount', [from, 'latest']), rpc('eth_getTransactionCount', [from, 'pending'])])).map((x) => parseInt(x, 16));
+    paint(np > nl ? '<span class="err">A transaction from this account is still pending (nonce ' + nl + '). Check your wallet&#39;s activity before sending the next chunk: it queues behind that one.</span>' : '');
   } catch (e) { paint('<span class="err">' + (e.message || e) + '</span>'); }
 };
 $('#reset').onclick = () => { if (confirm('Forget the addresses deployed so far? (They stay on chain.)')) { st = { chunks: Object.assign(new Array(ALL_RUNTIMES.length), REUSED) }; save(); paint(); } };

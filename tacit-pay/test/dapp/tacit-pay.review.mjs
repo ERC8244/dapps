@@ -141,6 +141,17 @@ console.log('\na destination whose code could not be read');
   ok(/contract on Base/.test(e2?.message || ''), 'with the code read, a contract still asks "It takes ETH"', e2?.message || 'it went ahead');
   const e3 = await live.destGate(BASE, '0x' + '11'.repeat(20)).then(() => null, (e) => e);
   ok(e3 === null, 'and an account goes ahead');
+  // Ethereum cannot be read, the rollup can (the lab forks one chain only): an account on the rollup goes ahead, a contract there still asks.
+  const split = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', `${code}\nreturn { destGate };`)(
+    (c) => [c.chainId === 1 ? 'eth' : 'l2'], (u) => async (m, p) => reads(u, p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}, {chainId: 8453}]);
+  const l2only = split(async (u, a) => { if (u === 'eth') throw new Error('ethereum down'); return a === SAFE ? '0x6080' : '0x'; });
+  const e4 = await l2only.destGate(BASE, '0x' + '11'.repeat(20)).then(() => null, (e) => e);
+  ok(e4 === null, 'with only Ethereum unreadable, an account on the rollup goes ahead', e4?.message || '');
+  const e5 = await l2only.destGate(BASE, SAFE).then(() => null, (e) => e);
+  ok(/contract on Base/.test(e5?.message || ''), 'and a contract on the rollup still asks', e5?.message || 'it went ahead');
+  const l1safe = split(async (u, a) => (u === 'eth' && a === SAFE ? '0x6080' : '0x'));
+  const e6 = await l1safe.destGate(BASE, SAFE).then(() => null, (e) => e);
+  ok(/contract on Ethereum with nothing on Base/.test(e6?.message || ''), 'with Ethereum readable, a contract there and nothing here still asks', e6?.message || 'it went ahead');
 }
 
 console.log('\nan escrow the pool paid without running its calls');

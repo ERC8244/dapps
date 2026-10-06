@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ZvMVg8kYo3HsVS19xXv8v8cnGbK5W7UAhsJ4Zc58c+Y=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-G0qxgfSX4gb4r2+62bSVLlmLI3X0vE6ktMc1Ah/GCoM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -5703,13 +5703,11 @@ function codeAt(c, a) {
 // Code that is not an account's EIP-7702 delegation.
 const isContract = (code) => /^0x[0-9a-f]+$/i.test(code) && code.length > 2 && !/^0xef0100[0-9a-f]{40}$/i.test(code);
 async function destRead(c, a) {
-  let at = c;
-  try {
-    if (isContract(await codeAt(c, a))) return { here: true };
-    at = CHAINS[0];
-    if (c.chainId !== 1 && isContract(await codeAt(CHAINS[0], a))) return { l1: true };
-    return {};
-  } catch { return { unread: true, at }; }
+  try { if (isContract(await codeAt(c, a))) return { here: true }; } catch { return { unread: true, at: c }; }
+  // The same address on Ethereum is only a second look, for a Safe that has no code here yet: when Ethereum cannot be read,
+  // a withdrawal on a rollup is not held up by it.
+  if (c.chainId !== 1) { try { if (isContract(await codeAt(CHAINS[0], a))) return { l1: true }; } catch {} }
+  return {};
 }
 // What a read means for a payment of `tok` (a token a withdrawal arrives as; ETH when null): { warn, ack } or {}.
 const destSays = (c, v, tok) => (v.here ? (tok

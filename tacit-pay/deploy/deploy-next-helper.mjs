@@ -5,6 +5,9 @@
 // mainnet at startup here, not assumed from an edit history.
 //   node ../scripts/chunk.mjs tacit-pay && forge build && node deploy/deploy-next-helper.mjs [port]     (from tacit-pay/)
 // Never `forge build --force` or `forge clean` between chunk.mjs and this: they delete out/.
+// The chunks that are new are deployed through CreateX's CREATE2 under a chain-bound salt anyone may use (the same plan as the
+// /tasks job that pays for them: salt = 20 zero bytes, 0x01, 'g4chunkNN' and two zero bytes), so each lands at an address fixed by
+// its code. One already there (sent by someone doing that job) is found and used, not sent again.
 // deployNext does a plain CREATE2 from the current wrapper's own address, and only the steward can call it: no CreateX
 // hop needed, since there is no front-running risk to guard against. The address can still be mined for leading zero
 // bytes with deploy/vanity/target/release/vanity2 (built alongside vanity: cargo build --release --offline --manifest-path
@@ -61,6 +64,15 @@ const GAS = Math.round(needsDeploy.reduce((s, i) => s + (runtimes[i].length - 2)
 const MINER = DIR + 'deploy/vanity/target/release/vanity2', ZEROS = Number(process.env.ZEROS || 3), VANITY = existsSync(MINER);
 const DEPLOYNEXT = id('deployNext(bytes,bytes32)').slice(0, 10);
 const create2Address = (deployer, salt, initcodeHash) => getAddress('0x' + keccak256(concat(['0xff', deployer, salt, initcodeHash])).slice(26));
+// Where each chunk lands through CreateX, and the call that puts it there (deployCreate2(bytes32,bytes)).
+const CREATEX = '0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed';
+const PLAN = chunks.map((init, i) => {
+  const salt = '0x' + Buffer.concat([Buffer.alloc(20), Buffer.from([1]), Buffer.from(`g4chunk${String(i + 1).padStart(2, '0')}`), Buffer.alloc(2)]).toString('hex');
+  const guarded = keccak256(abi.encode(['uint256', 'bytes32'], [1, salt]));
+  const n = (init.length - 2) / 2;
+  const data = id('deployCreate2(bytes32,bytes)').slice(0, 10) + abi.encode(['bytes32', 'bytes'], [salt, init]).slice(2);
+  return { salt, address: create2Address(CREATEX, guarded, keccak256(init)), data, bytes: n };
+});
 
 // The new generation's constructor args and deployNext calldata, for one final chunk list: built with ethers' own ABI
 // coder rather than by hand, since getting an offset wrong in a real deployNext call is not a cheap mistake to make twice.
@@ -104,7 +116,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tac
 <p><button id="name" hidden>Point ${NAME} at it</button> <span id="named"></span></p>
 <ol id="steps"></ol><pre id="out" hidden></pre>
 <script>
-const ALL_RUNTIMES = ${JSON.stringify(runtimes)}, NEEDS = ${JSON.stringify(needsDeploy)}, NEW_CREATION = ${JSON.stringify(Object.fromEntries(needsDeploy.map((i) => [i, chunks[i]])))};
+const ALL_RUNTIMES = ${JSON.stringify(runtimes)}, NEEDS = ${JSON.stringify(needsDeploy)}, PLAN = ${JSON.stringify(PLAN)}, CREATEX = ${JSON.stringify(CREATEX)};
 const REUSED = ${JSON.stringify(Object.fromEntries(reused.map((a, i) => [i, a]).filter(([, a]) => a)))};
 const STEWARD = ${JSON.stringify(STEWARD)}, OLD_WRAPPER = ${JSON.stringify(OLD_WRAPPER)}, PAGE_HASH = ${JSON.stringify(pageHash)}, SHA = ${JSON.stringify(manifest.sha256)}, GAS = ${GAS};
 const VANITY = ${VANITY}, NAME = ${JSON.stringify(NAME)}, WNS = ${JSON.stringify(WNS)}, TOKEN = ${JSON.stringify(TOKEN)}, MAXGWEI = ${Number(process.env.MAX_GWEI ?? 1)};
@@ -165,6 +177,8 @@ function paint(note) {
   $('#steps').innerHTML = items.join('');
 }
 const code = async (a) => (await rpc('eth_getCode', [a, 'latest'])).toLowerCase();
+// The same read through this page's own server, for the moment before a wallet is connected.
+const publicCode = async (a) => (await (await fetch('/code?a=' + a, { signal: AbortSignal.timeout(20000) })).text()).toLowerCase();
 async function onMainnet() {
   const id = parseInt(await rpc('eth_chainId'), 16);
   if (id !== 1) throw new Error('Your wallet is on chain ' + id + ', not Ethereum mainnet. Switch it and press the button again: nothing was sent.');
@@ -213,6 +227,27 @@ async function create(data, label, landed) {
     await sleep(3000);
   }
 }
+// A chunk through CreateX at its planned address: sent with a "to", and found by what the address holds.
+async function viaCreateX(i) {
+  await onMainnet();
+  const plan = PLAN[i], want = ALL_RUNTIMES[i].toLowerCase(), label = 'chunk ' + (i + 1), has = async () => (await code(plan.address)) === want;
+  if (await has()) return plan.address;
+  if ((await code(plan.address)).length > 2) throw new Error('Something else is already at ' + plan.address + '. Nothing was sent.');
+  const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, to: CREATEX, data: plan.data }]))) * 1.1).toString(16);
+  await preflight(label, gas);
+  const nonce = await nextNonce();
+  paint('confirm ' + label + ' in your wallet');
+  const h = await nudged(rpc('eth_sendTransaction', [{ from, to: CREATEX, data: plan.data, gas, nonce: '0x' + nonce.toString(16) }]), label);
+  paint(label + ': waiting for <code>' + h + '</code>');
+  for (;;) {
+    const r = await rpc('eth_getTransactionReceipt', [h]);
+    if (r && r.status !== '0x1') throw new Error(label + ' reverted in ' + h);
+    if (await has()) { NONCE_FLOOR = nonce + 1; return plan.address; }
+    if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await has()))
+      throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
+    await sleep(3000);
+  }
+}
 // deployNext on the live wrapper: a plain call, not a creation, so it is sent with a "to" address and checked the
 // same way chunks are — by what the address holds, not by trusting that a receipt came back.
 async function viaWrapper(data, expected) {
@@ -242,10 +277,11 @@ async function reconcile() {
 // A chunk's address is remembered only once its transaction is seen confirmed in this tab, so a reload a moment too early
 // loses one that landed. What the steward has already created is therefore read by this page's own server (no wallet
 // involved) as the page opens: its last 40 creations, matched by exact runtime code. The Deploy button waits for it.
-const foundP = fetch('/found', { signal: AbortSignal.timeout(20000) }).then((r) => r.json()).then((found) => {
-  for (const [i, a] of Object.entries(found)) if (!st.chunks[i]) st.chunks[i] = a;
-  save(); paint();
-}).catch(() => {});
+const foundP = Promise.all([
+  fetch('/found', { signal: AbortSignal.timeout(20000) }).then((r) => r.json()).then((found) => { for (const [i, a] of Object.entries(found)) if (!st.chunks[i]) st.chunks[i] = a; }).catch(() => {}),
+  // A chunk already at its planned address (sent by whoever did that part of the /tasks job) is used as it stands.
+  Promise.all(NEEDS.map(async (i) => { try { if (!st.chunks[i] && (await publicCode(PLAN[i].address)) === ALL_RUNTIMES[i].toLowerCase()) st.chunks[i] = PLAN[i].address; } catch {} })),
+]).then(() => { save(); paint(); });
 $('#connect').onclick = async () => {
   askWallets(); await sleep(150);
   const list = installed();
@@ -275,7 +311,7 @@ $('#go').onclick = async () => {
     await foundP;
     for (const i of NEEDS) {
       if (st.chunks[i]) continue;
-      const a = await create(NEW_CREATION[i], 'chunk ' + (i + 1), async (x) => (await code(x)) === ALL_RUNTIMES[i].toLowerCase());
+      const a = await viaCreateX(i);
       if ((await code(a)) !== ALL_RUNTIMES[i].toLowerCase()) throw new Error('chunk ' + (i + 1) + ' at ' + a + ' is not its build');
       st.chunks[i] = a; save(); paint();
     }
@@ -357,6 +393,12 @@ http.createServer((q, r) => {
       return out;
     }).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
       (e) => { r.writeHead(500, { 'content-type': 'text/plain' }); r.end(String(e.message || e)); });
+    return;
+  }
+  if (u.pathname === '/code') {                        // the code at an address, through the server's own node
+    const a = u.searchParams.get('a') || '';
+    if (!/^0x[0-9a-fA-F]{40}$/.test(a)) { r.writeHead(400); return r.end('an address'); }
+    rpcCall('eth_getCode', [a, 'latest']).then((c) => { r.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); r.end(c); }, (e) => { r.writeHead(502); r.end(String(e.message)); });
     return;
   }
   if (u.pathname === '/addr') {                       // where a contract creation by `from` at `nonce` lands

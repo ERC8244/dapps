@@ -35,6 +35,8 @@ const CHAIN = {code: new Map(), bad: null};
     CHAIN[n] = {manifest: at(man), pieces};
   }
 }
+// The manifests alone: with `CHAIN.noPieces` the nodes answer for them and for no piece, so the onchain copy fails at once.
+CHAIN.manifests = new Set(Object.keys(real).map((n) => CHAIN[n].manifest));
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
 
@@ -61,7 +63,7 @@ async function open(serve, {ends} = {}) {
     const cors = {'access-control-allow-origin': '*'};
     if (/base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org|base-sepolia\.drpc\.org/.test(url.host) && CHAIN.on) {
       const req = JSON.parse(route.request().postData() || '[]'), limit = CHAIN.limits?.[url.host], one = (x) => {
-        const c = CHAIN.code.get(String(x.params?.[0]).toLowerCase());
+        const c = CHAIN.noPieces && !CHAIN.manifests.has(String(x.params?.[0]).toLowerCase()) ? null : CHAIN.code.get(String(x.params?.[0]).toLowerCase());
         const out = c && CHAIN.bad === String(x.params[0]).toLowerCase() ? (() => { const d = Buffer.from(c); d[d.length >> 1] ^= 1; return d; })() : c;
         return {jsonrpc: '2.0', id: x.id, result: '0x' + (out ? out.toString('hex') : '')};
       };
@@ -99,6 +101,9 @@ const workers = (p) => p.evaluate(() => window.__workers);
 const saved = (p) => p.evaluate(async () => { try { return (await (await caches.open('tacit-pay-artifacts-v1')).keys()).length; } catch { return -1; } });
 
 console.log('a mirror that serves the wrong bytes');
+// (The onchain copy is up but has no pieces, so it fails at once; with every node of it down the page rests each node and asks
+// again for three minutes, which the case after this loop waits out once.)
+CHAIN.on = true; CHAIN.noPieces = true;
 for (const [what, bad] of Object.entries(BAD)) {
   const p = await open((host, name) => bad[name] || real[name]);
   await press(p);
@@ -107,6 +112,17 @@ for (const [what, bad] of Object.entries(BAD)) {
   ok(await workers(p) === 0, `${what}: no prover worker was started`);
   ok(await saved(p) <= 1, `${what}: the bad file was not kept in the browser`, `${await saved(p)} saved (the good one may be)`);
   ok(!p.errors.length, `${what}: no page errors`, p.errors.join(' '));
+  await p.context().close();
+}
+CHAIN.on = false; CHAIN.noPieces = false;
+
+console.log('\nevery mirror serves bad bytes and every node of the onchain copy is down');
+{
+  const p = await open((host, name) => BAD['one byte more (zkey)'][name] || real[name]);
+  await press(p);
+  const r = await outcome(p, 330e3);
+  ok(!r.ready && /could not be downloaded/.test(r.err) && await workers(p) === 0, 'the nodes are rested and asked again, then the card says the key could not be downloaded', r.err.slice(0, 90));
+  ok(!p.errors.length, 'no page errors', p.errors.join(' '));
   await p.context().close();
 }
 

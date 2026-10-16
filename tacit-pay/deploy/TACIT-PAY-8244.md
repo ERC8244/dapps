@@ -204,7 +204,7 @@ page asks the Ethereum nodes to agree before it shows which contract serves it a
 | it depends on | for | when it is down |
 | --- | --- | --- |
 | public JSON-RPC nodes, 2 to 4 per chain (replaceable under *Endpoints*) | every read and send, and names | the next node is tried; the page remembers the one that answered |
-| a wallet (EIP-1193, EIP-6963) | gas for wallet-sent spends and shielding | relayed spends and reading need none |
+| a wallet (EIP-1193, EIP-6963), or a wallet app joined by WalletConnect through `relay.walletconnect.org` | gas for wallet-sent spends and shielding | relayed spends and reading need none |
 | the proving key and witness program, 33 MB, from tacit.finance, Filebase, ipfs.orbitor.dev or the Pinata gateway, from its onchain copy on Base Sepolia, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
 | a relay (optional) | spends with no gas, deposit-address sweeps, a fast first read | the wallet route and chain logs |
 | a gateway to serve the page | getting the page | any ERC-8244 gateway, or `html()` from any node |
@@ -220,16 +220,26 @@ archive node of their own can set it under *Endpoints*.
 - **Chain state:** public nodes per chain, which the reader can replace under *Endpoints*; transactions through the
   reader's wallet (EIP-1193, discovered with EIP-6963; a wallet that only sets `window.ethereum` works too). A wallet
   still connected to the page is picked up on a later visit without a prompt, and is put on the chain (switched, or
-  added first) before a proof is started, not after it.
-- **Relays:** one per chain, for relayed spends, fee quotes, an index of pool events and watching deposit addresses.
-  The reader can point a chain at another relay or none. A relay the reader sets is held to the fee ceiling but not
+  added first) before a proof is started, not after it. A wallet app on a phone, or in another browser, joins by
+  WalletConnect (v2, written out in the page in what a browser has: X25519, Ed25519, HKDF and SHA-256 from WebCrypto, and a
+  ChaCha20-Poly1305 of its own): the page shows a code and a link, the wallet approves, and `relay.walletconnect.org` carries
+  messages sealed under a key only the two hold. The wallet signs and sends; every read (balances, fees, receipts) is asked of
+  the page's own nodes, as the wallet cannot answer them over the relay. The connection survives a reload of the tab and not a
+  new visit, as the signature that opens the key is asked of it.
+- **Relays:** one per chain, all served from `tacit-evm-pool-keepers.onrender.com/<chainId>/evm-pool/keeper`, for relayed
+  spends, fee quotes, an index of pool events and watching deposit addresses. The reader can point a chain at another relay
+  or none. A relay the reader sets is held to the fee ceiling but not
   to the default relay's address.
-- **The catch-up registry** (TacitEvmPoolCheckpoints, `0x000000CDfeda8512b8DcD8642765A5Fa43b6Ab4b` on each chain): the
-  pool's tree edge at a count, posted by anyone who has read that far and kept only if the pool held its root. A key
-  with nothing read yet starts from the newest point at once and reads the history behind it in the background; the
-  page checks a point against the pool the same way it checks every page of the relay's index, and offers to post one
-  (Activity → Catch-up points) from a wallet that has read the whole history. A chain without the registry is read from
-  the pool's first block.
+- **The catch-up registry** (TacitEvmPoolCheckpoints, `0x00000000C3267616ED5E0DAA6F6490D109d6844D` on each chain, one
+  address through CreateX's CREATE2 under an open salt, so fixed by the registry's code): the pool's tree edge at a count, posted by anyone who has read
+  that far and kept only if the pool held its root. A key with nothing read yet starts from the newest point at once and
+  reads the history behind it in the background (the balance shows what is after the point first, and the older notes join
+  when that history is in); the page checks a point against the pool the same way it checks every page of the relay's
+  index, and passes a point whose block does not fit for the one before it, or for the pool's first block. With every
+  full read it also looks at the registry: once the newest point is 3,000 leaves behind what the device has read (the
+  keepers post at 2,000, so this shows only when they have not), the balance area offers to post a fresh one from the
+  wallet, one transaction with only gas in it; Activity → Catch-up points shows the same status and button at any time.
+  A chain without the registry is read from the pool's first block.
 - **Mirrors** for the proving key, as above.
 - **Swaps:** zQuoter (`0x000000bd2db80567c23e353ca95a251c573cbf9b`) finds routes and zRouter
   (`0x000000000000FB114709235f1ccBFfb925F600e4`) runs them, for shielding from a token and withdrawing as one; the zap

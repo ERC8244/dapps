@@ -141,7 +141,7 @@ if (steps.has('base')) {
   let swept = false;
   for (let i = 0; i < 80 && box && !swept; i++) {
     await new Promise((r) => setTimeout(r, 15_000));
-    const j = await (await fetch(`https://tacit-evm-pool-keeper-base.onrender.com/evm-pool/keeper/events?from=${(await base.getBlockNumber()) - 3000}`)).json().catch(() => ({}));
+    const j = await (await fetch(`https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper/events?from=${(await base.getBlockNumber()) - 3000}`)).json().catch(() => ({}));
     const hit = (j.events || []).find((e) => e.kind === 'received' && String(e.box).toLowerCase() === box.toLowerCase());
     if (hit) { swept = true; log(`swept on Base in ${hit.tx}: ${hit.value} wei into a note, fee ${hit.fee}`); }
     else if (i % 8 === 0) log(`at the box on Base: ${await base.getBalance(box)} wei`);

@@ -179,7 +179,7 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         catch (e) { t = JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}); }
         return route.fulfill({status: 200, contentType: 'application/json', headers: cors, body: t}).catch(() => {});
       }
-      if (/tacit-evm-pool-keeper/.test(u.host)) return relayRoute(route);
+      if (/tacit-evm-pool-keepers?/.test(u.host)) return relayRoute(route);
       if (/\/(transact\.wasm|transact_final\.zkey)$/.test(u.pathname)) {
         if (process.env.OFFLINE) return route.abort();
         if (!process.env.ARTIFACTS) return route.continue();

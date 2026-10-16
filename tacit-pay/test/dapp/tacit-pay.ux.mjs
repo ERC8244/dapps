@@ -118,7 +118,7 @@ async function open(C, {hash = '', modes = null, viewport = {width: 1100, height
     const req = route.request(), url = new URL(req.url());
     if (process.env.ARTIFACTS && /\/(transact\.wasm|transact_final\.zkey)$/.test(url.pathname)) return route.fulfill({status: 200, headers: cors, body: fs.readFileSync(`${process.env.ARTIFACTS}/${url.pathname.split('/').pop()}`)});
     if (/onrender\.com$/.test(url.host)) {
-      const cid = /-base/.test(url.host) ? 8453 : /-robinhood/.test(url.host) ? 4663 : 1, n = C[cid], path = url.pathname.replace(/^\/evm-pool\/keeper/, '');
+      const cid = Number(/^\/(\d+)\/evm-pool\/keeper/.exec(url.pathname)?.[1] || 1), n = C[cid], path = url.pathname.replace(/^\/\d+\/evm-pool\/keeper/, '');
       const json = (status, body) => route.fulfill({status, contentType: 'application/json', headers: cors, body: JSON.stringify(body)});
       if (n.relayDelay) await new Promise((r) => setTimeout(r, n.relayDelay));
       if (!n.relayUp) return json(503, {error: 'offline'});

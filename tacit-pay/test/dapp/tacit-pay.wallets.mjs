@@ -108,6 +108,8 @@ async function open(wallets) {
       if (mode === 'v01') return sig.serialized.slice(0, 130) + (sig.v - 27).toString(16).padStart(2, '0');
       return sig.serialized;
     });
+    // WalletConnect's relay is out of reach here: a socket that cannot open.
+    await ctx.addInitScript(`window.WebSocket = class { constructor() { setTimeout(() => this.onerror && this.onerror(new Event('error')), 30); } close() {} send() {} };`);
     await ctx.addInitScript(`window.__WALLETS = ${JSON.stringify(wallets)};`);
     await ctx.addInitScript(WALLET);
   }
@@ -141,7 +143,9 @@ console.log('one wallet: a first sign-in, then a later visit');
 {
   const p = await open([ALPHA]);
   ok(await label(p) === 'Sign in', 'nothing is asked of the wallet on arrival', (await log(p)).join());
-  await signInFromHeader(p);
+  await p.click('#wallet');
+  await shot(p, 'signin-one-wallet');
+  await p.click('#sheet-wallet [data-in="eth"]');
   ok(await opened(p), 'the wallet opens the key');
   ok((await log(p)).filter((x) => x === '0:personal_sign').length === 2, 'a first sign-in asks for the signature twice', (await log(p)).join());
   ok(/once more|again/i.test(await says(p)), 'and says why it asks again', await says(p));
@@ -166,7 +170,7 @@ console.log('two wallets: the picker, and the wallet chosen there');
   await signInFromHeader(p);
   ok(await until(p, () => document.querySelector('#sheet-pick')?.open), 'two wallets bring up the picker');
   await shot(p, 'picker');
-  ok((await p.$$eval('#pick-body button', (b) => b.map((x) => x.textContent.trim()))).join() === 'Alpha,Beta', 'listing each by name');
+  ok((await p.$$eval('#pick-body button', (b) => b.map((x) => x.textContent.trim().replace(/a wallet app$/, '')))).join() === 'Alpha,Beta,WalletConnect', 'listing each by name, and WalletConnect for a wallet app');
   await p.keyboard.press('Escape');
   ok(await settled(p), 'closing it puts the button back');
   ok(!(await bad(p)).length, 'without an error', (await bad(p)).join());
@@ -238,10 +242,11 @@ console.log('a bare window.ethereum, and none at all');
   const p = await open([]);
   await p.click('#wallet');
   await shot(p, 'nowallet');
-  ok(/no ethereum wallet/i.test(await p.textContent('#sheet-wallet')), 'with no wallet, the sheet says so before anything is pressed', await p.textContent('#sheet-wallet'));
+  ok(/no wallet in this browser/i.test(await p.textContent('#sheet-wallet')), 'with no wallet, the sheet says so before anything is pressed', await p.textContent('#sheet-wallet'));
   await p.click('#sheet-wallet [data-in="eth"]');
-  ok(await settled(p), 'pressing it anyway');
-  ok(/wallet app|extension/i.test(await sayText(p)), 'says where a wallet can be found', await sayText(p));
+  ok(await until(p, () => document.querySelector('#sheet-wc')?.open) || await settled(p), 'pressing it anyway opens the WalletConnect sheet (or says why it cannot)');
+  ok(await until(p, () => !document.querySelector('#sheet-wc')?.open) && await settled(p), 'which closes when the relay cannot be reached');
+  ok(/WalletConnect relay could not be reached/.test(await sayText(p)), 'and says so', await sayText(p));
   ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
   await p.context().close();
 }

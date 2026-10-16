@@ -114,7 +114,7 @@ async function open(C, {hash = '', modes = null, viewport = {width: 1100, height
     const req = route.request(), url = new URL(req.url());
     if (process.env.ARTIFACTS && /\/(transact\.wasm|transact_final\.zkey)$/.test(url.pathname)) return route.fulfill({status: 200, headers: cors, body: fs.readFileSync(`${process.env.ARTIFACTS}/${url.pathname.split('/').pop()}`)});
     if (/onrender\.com$/.test(url.host)) {
-      const cid = /-base/.test(url.host) ? 8453 : /-robinhood/.test(url.host) ? 4663 : 1, n = C[cid], path = url.pathname.replace(/^\/evm-pool\/keeper/, '');
+      const cid = Number(/^\/(\d+)\/evm-pool\/keeper/.exec(url.pathname)?.[1] || 1), n = C[cid], path = url.pathname.replace(/^\/\d+\/evm-pool\/keeper/, '');
       const json = (status, body) => route.fulfill({status, contentType: 'application/json', headers: cors, body: JSON.stringify(body)});
       if (n.relayDelay) await new Promise((r) => setTimeout(r, n.relayDelay));
       if (!n.relayUp) return json(503, {error: 'offline'});
@@ -178,9 +178,10 @@ for (const vw of [320, 360]) {
   C[8453].relayDrop = true;
   await p.click('#f-go');
   await until(p, () => /may still send|did not answer/.test(document.querySelector('#status').textContent), null, 120e3);
+  if (process.env.DEBUG) console.log('status after first send:', await p.evaluate(() => document.querySelector('#status').textContent.slice(0, 300)));
   await until(p, () => !document.querySelector('#f-go').disabled, null, 20e3);
   await p.click('#f-go');
-  ok(await until(p, () => !!document.querySelector('[data-fresh]'), null, 60e3), 'pressing Send again says a payment may still land, with the three ways on');
+  ok(await until(p, () => !!document.querySelector('[data-fresh]'), null, 60e3), 'pressing Send again says a payment may still land, with the three ways on', await p.evaluate(() => document.querySelector('#status').textContent.slice(0, 200)));
   const rows = await probe(p);
   ok(rows.length === 3, 'three links', rows.map((r) => r.name).join(' | '));
   for (const r of rows) ok(r.h >= 44 && r.misses.length === 0, `"${r.name}": a row of ${r.h} px, and a tap on it is its own`, r.misses.join(' | '));

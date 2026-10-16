@@ -172,27 +172,32 @@ console.log('\nan escrow the pool paid without running its calls');
   a.f(c); await new Promise((r) => realSet(r, 20)); const out = a.f(c);
   ok(Object.keys(a.saved.escrows).length === 1, 'its record is kept while the escrow holds ETH', `${Object.keys(a.saved.escrows).length} record(s)`);
   ok(out.length === 1 && out[0].v === 10n ** 18n, 'and it is offered to be finished or sent on', JSON.stringify(out.map((x) => String(x.v))));
-  // One that is empty is forgotten, after two reads of nothing.
+  // One that is empty is forgotten only after three reads of nothing, the last five minutes after the first: one node that
+  // lags or lies cannot take the record of an escrow that still holds ETH.
   const b = mk([], [], 0n);
   b.f(c); await new Promise((r) => realSet(r, 20));
   ok(Object.keys(b.saved.escrows).length === 1, 'a first read of nothing does not drop a record');
   skewBy(61_000); b.f(c); await new Promise((r) => realSet(r, 20));
-  ok(Object.keys(b.saved.escrows).length === 0, 'a second read of nothing does');
+  ok(Object.keys(b.saved.escrows).length === 1, 'nor does a second');
+  skewBy(61_000); b.f(c); await new Promise((r) => realSet(r, 20));
+  ok(Object.keys(b.saved.escrows).length === 1, 'nor a third a few minutes after the first');
+  skewBy(300_000); b.f(c); await new Promise((r) => realSet(r, 20));
+  ok(Object.keys(b.saved.escrows).length === 0, 'a read of nothing after five minutes does');
 }
 
 console.log('\n"It was dropped: pay again" with a wallet that cannot be asked');
 {
   const code = cut('async function sentState(', '// Another action that went through says nothing of a held payment');
-  const wire = cut('const sentWire = (again) =>', 'const RMIN = {}');
+  const wire = cut('const dropSent =', 'const RMIN = {}');
   const mk = (provider) => {
     const log = {toasts: [], cleared: 0, again: 0, ready: 0};
     const S = {sent: {h: '0x' + 'ab'.repeat(32), c: {chainId: 1, full: 'Ethereum'}, nonce: 4, from: '0xf'}, provider};
     const btn = {hasAttribute: () => false, addEventListener: null};
     let click = null;
-    const $ = () => ({addEventListener: (ev, f) => { click = f; }});
+    const $$ = () => [{set onclick(f) { click = f; }}];
     const busy = async (b, fn) => fn();
-    const f = new Function('S', 'walletRead', 'toast', 'setSent', 'heldPlans', 'paintBal', '$', 'busy', 'again', 'walletReady', 'warn', `${code}\n${wire}\nsentWire(again);\nreturn sentState;`)(
-      S, async () => { throw new Error('no wallet'); }, (m) => log.toasts.push(m), () => { log.cleared++; S.sent = null; }, () => {}, () => {}, $, busy, () => { log.again++; }, async () => { log.ready++; }, () => {});
+    const f = new Function('S', 'walletRead', 'toast', 'setSent', 'heldPlans', 'paintBal', '$$', 'busy', 'again', 'walletReady', 'warn', 'unissue', `${code}\n${wire}\nsentWire(again, {});\nreturn sentState;`)(
+      S, async () => { throw new Error('no wallet'); }, (m) => log.toasts.push(m), () => { log.cleared++; S.sent = null; }, () => {}, () => {}, $$, busy, () => { log.again++; }, async () => { log.ready++; }, () => {});
     return {S, log, press: () => click({currentTarget: btn})};
   };
   const t = mk(null);
@@ -218,7 +223,7 @@ console.log('\nwhat a shortfall and a large fee say');
   const html = (st, ...v) => st.reduce((o, x, i) => o + x + (v[i] ?? ''), ''), kvRow = (k, v) => `[${k}: ${v}]`;
   const E18 = 10n ** 18n, eth = (x) => BigInt(Math.round(x * 1e9)) * 10n ** 9n;
   const FMT = `${cut('function fmt(v, max = 6)', '\nfunction ')}\n${cut('const group =', '\nconst ')}`;
-  const mk = (most) => new Function('html', 'maxSpend', `${FMT}\n${cut('const shortSay', 'const heldHint')}\nreturn {shortSay, feeBig};`)(html, () => most);
+  const mk = (most) => new Function('html', 'maxSpend', `${FMT}\n${cut('const withHeadroom', 'const heldHint')}\nreturn {shortSay, feeBig};`)(html, () => most);
   // The case that was reported: 0.001453 held, 0.000739 asked, a relay fee of 0.0013.
   const {shortSay, feeBig} = mk(eth(0.00013));
   const said = shortSay(eth(0.000739), eth(0.0013), eth(0.001453));

@@ -76,6 +76,8 @@ const TOKEN = '0x' + '7a'.repeat(20);
 const POINTS = {[namehash('bob.wei')]: PAYEE, [namehash('bob.gwei')]: PAYEE2, [namehash('direct.eth')]: PAYEE, [namehash('sub.parent.eth')]: PAYEE2, [namehash('zero.wei')]: '0x' + '00'.repeat(20), [namehash('pool.wei')]: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9'};
 const ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12', ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288';
 const answer = (host, {method, params}) => {
+  // The nodes a reader sets under Endpoints are asked their chain before they are saved: this one for Base, that one for Ethereum.
+  if (method === 'eth_chainId') return host === 'example.org' ? '0x2105' : '0x1';
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
   if (to === ZRPC && data === '0xd77e4c79') return coder.encode(['string[]'], [['https://registry-eth.example', 'http://insecure.example', 'https://ethereum-rpc.publicnode.com']]);
   if (to === ZEND && data.startsWith('0xc03c2d74')) return coder.encode(['string[][]'], [[['https://registry-base.example'], ['https://registry-rh.example'], ['https://registry-logs.example']]]);
@@ -414,6 +416,7 @@ await p.click('#settings-open');
 await p.fill('#e-rpc-8453', 'https://example.org/rpc');
 await p.fill('#e-rpc-1', 'https://own-eth.example/rpc');
 await p.click('#e-save');
+await p.waitForFunction(() => localStorage.getItem('tacit-pay-endpoints-v1'), null, {timeout: 10e3});
 const saved = JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')));
 ok(saved.rpc[8453][0] === 'https://example.org/rpc' && saved.rpc[1][0] === 'https://own-eth.example/rpc', 'a reader’s own node is saved, one field per chain');
 const isName = ([, m, d]) => m === 'eth_call' && d.startsWith('0x59d1d43c');
@@ -457,7 +460,7 @@ console.log('a wallet that is connected but has not signed in');
   await q.close();
 }
 
-const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
+const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keepers\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
 ok(!hosts.length, 'it talks only to its listed nodes, relays, proving-key mirrors and the nodes of the key’s onchain copy', hosts.join(' '));
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();

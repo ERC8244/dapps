@@ -4,7 +4,7 @@
    where it stopped; a point whose block is wrong, or an edge a lying node serves, is passed over for the chain itself.
 
    Usage: node test/dapp/tacit-pay.points.mjs                                                                       */
-import {mkNode, mkWallet, depositTo, lib} from './engine-mock.mjs';
+import {mkNode, mkWallet, depositTo, lib, POOL, CHECKPOINTS} from './engine-mock.mjs';
 
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
@@ -126,17 +126,104 @@ console.log('\nrebuilding from the chain');
   ok(await settled(W) && W.summary().balance === 8n * E / 10n, 'and reads the older history again behind it', `${W.summary().balance}`);
 }
 
-console.log('\nposting a point');
+console.log('\nthe join is written down');
 {
+  // A key with nothing in the pool: its older history changes no counts, so nothing but the join says the read is whole.
+  const {node} = world(), store = mkStore(), key = new Uint8Array(32).fill(9), k9 = lib.poolKeys(key);
+  const {W} = mkWallet(node, {points: true, store, key});
+  await W.sync();
+  ok(await settled(W), 'a key with no history reads its older history');
+  await sleep(300);
+  const main = lib.slotOf(k9.v, `pool:1:${POOL.toLowerCase()}`), st = JSON.parse(lib.openState(k9.v, store.get(main), main));
+  ok(!st.from && st.block > 250, 'and the join is in storage at once, not after five minutes', `from ${JSON.stringify(st.from)}, block ${st.block}`);
+  const again = mkWallet(node, {points: true, store, key}).W;
+  await again.sync();
+  ok(again.older() === null, 'so a reload has nothing left to read');
+}
+console.log('\na copy of the older history that is further along');
+{
+  // Another tab's stored copy has read past where this tab's own node says the chain is: the join waits for this tab to catch
+  // up, and the page stays alive while it does.
+  const {node} = world(), store = mkStore();
+  const rpc0 = node.rpc; let hang = false;
+  const rpcB = async (m, p) => { if (hang && m === 'eth_call' && p[0].to.toLowerCase() === CHECKPOINTS.toLowerCase()) await new Promise(() => {}); return rpc0(m, p); };
+  rpcB.batch = rpc0.batch;
+  node.rpc = rpcB;
+  const B = mkWallet(node, {points: true, store}).W;
+  await B.sync(); hang = true;
+  await sleep(2500);
+  node.rpc = rpc0; node.lag = 20;
+  const A = mkWallet(node, {points: true, store}).W;
+  let ticks = 0; const iv = setInterval(() => { ticks++; }, 50);
+  await A.sync();
+  const before = ticks;
+  await sleep(1000);
+  clearInterval(iv);
+  ok(ticks - before > 5, 'the page’s timers keep running while the join waits', `${ticks - before} ticks in a second`);
+  node.lag = 0;
+}
+console.log('\na registry call that fails once');
+{
+  const {node} = world(), rpc0 = node.rpc;
+  let fail = 1;
+  const rpc = async (m, p) => { if (m === 'eth_call' && p[0].to.toLowerCase() === CHECKPOINTS.toLowerCase() && fail-- > 0) throw new Error('429 Too Many Requests'); return rpc0(m, p); };
+  rpc.batch = rpc0.batch; node.rpc = rpc;
+  const {W} = mkWallet(node, {points: true, store: mkStore()});
+  await W.sync();
+  ok(node.logReads[0] > 100, 'does not send a new device to read the whole chain: the call is tried again', `first log read from ${node.logReads[0]}`);
+}
+console.log('\na stored copy of the older history that does not fit');
+{
+  const {node, keys} = world(), store = mkStore();
+  const t = lib.incTree(); t.append([...Array(224)].map((_, i) => BigInt(i + 1)));
+  const back = {block: 210, tree: t.toJSON(), notes: [], rows: [], nextRefund: 1, attempts: {}, inflight: [], landed: [], from: null};
+  const bk = lib.slotOf(keys.v, `pool-back:1:${POOL.toLowerCase()}`);
+  store.set(bk, lib.sealState(keys.v, JSON.stringify(back), bk));
+  const realNow = Date.now.bind(Date); let skew = 0; Date.now = () => realNow() + skew;
+  const {W} = mkWallet(node, {points: true, store});
+  await W.sync();
+  await sleep(300);
+  for (let i = 0; i < 4 && W.older() !== null; i++) { skew += 150_000; await W.sync(undefined, true); await sleep(1500); }
+  Date.now = realNow;
+  ok(W.older() === null, 'is dropped, and the older history is read again and joins', `older ${W.older()}`);
+}
+
+console.log('\nthe registry, as the wallet tracks it');
+{
+  // No point yet: the registry is read with the full read, and the gap is everything the wallet has.
   const {node} = world({point: false});
   const {W} = mkWallet(node, {points: true});
+  ok(W.newestPoint() === undefined && W.pointGap() === null, 'before a read, the registry is unread and there is no gap');
   await W.sync();
+  ok(W.newestPoint() === null && W.pointGap() === node.size, 'after one, a registry with no point reads as none, and the whole tree is the gap', `${W.pointGap()} of ${node.size}`);
   const e = await W.postPoint().catch((x) => x);
   ok(/Connect a wallet/.test(e.message), 'a post goes from the wallet, so it needs one', e.message);
-  ok((await W.latestPoint()) === null, 'no point yet');
-  node.postPoint({block: 300});
-  const p = await W.latestPoint();
-  ok(p && p.size === node.size && p.block === 300, 'the latest point is read back', JSON.stringify(p));
+}
+{
+  const {node} = world({point: false});
+  const W = mkWallet(node, {points: true}).W;
+  await W.sync();
+  node.postPoint({block: 300});              // the newest point is now as recent as the wallet's tree
+  const store2 = mkStore(), W2 = mkWallet(node, {points: true, store: store2}).W;
+  await W2.sync(); await settled(W2);
+  ok(W2.newestPoint()?.size === node.size && W2.pointGap() === 0, 'a device as far as the newest point has no gap', `${W2.pointGap()}`);
+  const e = await W2.postPoint().catch((x) => x);
+  ok(/posted already/.test(e.message), 'and a post is refused before the wallet is asked', e.message);
+}
+{
+  // Behind: the point is old, the wallet has read past it.
+  const node = mkNode(), keys = lib.poolKeys(new Uint8Array(32).fill(7));
+  for (let i = 0; i < 40; i++) depositTo(node, other, E / 100n, 101 + i);
+  node.tip = 150; node.postPoint({block: 150});
+  for (let i = 0; i < 60; i++) depositTo(node, other, E / 100n, 160 + i);
+  node.tip = 300;
+  const W = mkWallet(node, {points: true}).W;
+  await W.sync();
+  await settled(W);
+  ok(W.newestPoint()?.size === 80 && W.pointGap() === node.size - 80, 'a device that has caught up sees how far past the newest point it is', `gap ${W.pointGap()} of ${node.size}`);
+  const reads = node.pointReads;
+  await W.sync(undefined, true);
+  ok(node.pointReads === reads, 'the registry is read at most every five minutes, not on every read', `${node.pointReads - reads} extra call(s)`);
 }
 
 console.log('\nthe root of a tree from its edge');

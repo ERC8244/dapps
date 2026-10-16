@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Fs+AzBvOq7+lPfjMHRsKig3HBzvjp4RTrtGDIhe3hBM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-GXLXgR2p52NxxSRVpSEW4iD9pobTnbPwWS0ss1rQgv0=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>anon.wei</title>
@@ -958,6 +958,52 @@ const secp = (() => {
     return R;
   };
   const affine = ([X, Y, Z]) => { if (!Z) throw new Error('point at infinity'); const zi = inv(Z, p), z2 = zi * zi % p; return [X * z2 % p, Y * z2 % p * zi % p]; };
+  // k·P for many P under one k, as a view key is tried against every memo: k is split once over the curve's
+  // endomorphism (λ·(x, y) = (β·x, y)) into two halves of 128 bits, each written in signed digits five bits wide, so a
+  // point costs about 128 doublings and 50 additions rather than 256 and 128; and the results are made affine together,
+  // one inversion for the whole batch. → each point compressed, 33 zero bytes where an input is not a point.
+  const BETA = 0x7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501een;
+  const LAMBDA = 0x5363ad4cc05c30e0a5261c028812645a122e22ea20816678df02967c1b23bd72n;
+  const GLV = { a1: 0x3086d221a7d46bcde86c90e49284eb15n, b1: -0xe4437ed6010e88286f547fa90abfe4c3n, a2: 0x114ca50f7a8e2f3f657c1108d9d44cfd8n, b2: 0x3086d221a7d46bcde86c90e49284eb15n };
+  const roundDiv = (a, b) => { const q = a / b, r = a - q * b; return 2n * (r < 0n ? -r : r) >= b ? q + (r < 0n ? -1n : 1n) : q; };
+  const split = (k) => { const c1 = roundDiv(GLV.b2 * k, SN), c2 = roundDiv(-GLV.b1 * k, SN); return [k - c1 * GLV.a1 - c2 * GLV.a2, -c1 * GLV.b1 - c2 * GLV.b2]; };
+  // Signed digits, each odd and under 16 or zero, lowest first; negative digits for the point's negative.
+  const wnaf = (k) => { const d = []; for (; k > 0n; k >>= 1n) { if (k & 1n) { let x = Number(k & 31n); if (x > 16) x -= 32; d.push(x); k -= BigInt(x); } else d.push(0); } return d; };
+  const neg = ([X, Y, Z]) => [X, Z ? p - Y : Y, Z];
+  const mulMany = (points, k) => {
+    k = mod(k, SN);
+    const [k1, k2] = split(k), plain = (k1 + k2 * LAMBDA - k) % SN !== 0n;
+    const n1 = k1 < 0n, n2 = k2 < 0n, d1 = wnaf(n1 ? -k1 : k1), d2 = wnaf(n2 ? -k2 : k2), L = Math.max(d1.length, d2.length);
+    const out = points.map((P) => {
+      if (!P) return null;
+      if (plain) { const R = mul(P, k); return R[2] ? R : null; }
+      // Odd multiples of P up to 15P, and the same of λP: the latter from the former by one multiplication each.
+      const base = n1 ? neg(P) : P, P2 = dbl(base), T1 = [base];
+      for (let i = 1; i < 8; i++) T1.push(add(T1[i - 1], P2));
+      const T2 = T1.map(([X, Y, Z]) => { const Q = [BETA * X % p, Y, Z]; return n1 !== n2 ? neg(Q) : Q; });
+      let R = [0n, 1n, 0n];
+      for (let i = L - 1; i >= 0; i--) {
+        R = dbl(R);
+        const a = d1[i] || 0, b = d2[i] || 0;
+        if (a) R = add(R, a > 0 ? T1[(a - 1) / 2] : neg(T1[(-a - 1) / 2]));
+        if (b) R = add(R, b > 0 ? T2[(b - 1) / 2] : neg(T2[(-b - 1) / 2]));
+      }
+      return R[2] ? R : null;
+    });
+    // Montgomery's trick: the inverses of every Z from one inversion and three multiplications apiece.
+    const zs = out.filter(Boolean).map((R) => R[2]), acc = [];
+    let run = 1n;
+    for (const z of zs) { acc.push(run); run = run * z % p; }
+    let invRun = zs.length ? inv(run, p) : 1n;
+    const zi = new Array(zs.length);
+    for (let i = zs.length - 1; i >= 0; i--) { zi[i] = invRun * acc[i] % p; invRun = invRun * zs[i] % p; }
+    let j = 0;
+    return out.map((R) => {
+      if (!R) return null;
+      const z1 = zi[j++], z2 = z1 * z1 % p, x = R[0] * z2 % p, y = R[1] * z2 % p * z1 % p;
+      return cat([y & 1n ? 3 : 2], be(x));
+    });
+  };
   const G = [0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n, 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n, 1n];
   const table = [G];
   for (let i = 1; i < 256; i++) table.push(dbl(table[i - 1]));
@@ -997,7 +1043,7 @@ const secp = (() => {
     if (!r || r >= SN || !x || x > SN / 2n) return false;
     try { const w = inv(x, SN), R = add(mulG(big(hash) % SN * w % SN), mul(decompress(pub), r * w % SN)); return !!R[2] && affine(R)[0] % SN === r; } catch { return false; }
   };
-  return { G, mul, mulG, add, affine, compress, decompress, recover, sign, verify };
+  return { G, mul, mulG, mulMany, add, affine, compress, decompress, recover, sign, verify };
 })();
 const pubOf = (priv) => secp.compress(secp.mulG(big(priv)));
 
@@ -1029,7 +1075,9 @@ const poseidon = (() => {
     return { C, M: M.map((row) => row.map((v) => inv(v, FR))) };
   }
   return (inputs) => {
-    const t = inputs.length + 1, { C, M } = cache[t] ||= params(t), rounds = 8 + PARTIAL[t];
+    const t = inputs.length + 1;
+    if (!PARTIAL[t]) throw new Error(`poseidon: no parameters for ${inputs.length} inputs`);
+    const { C, M } = cache[t] ||= params(t), rounds = 8 + PARTIAL[t];
     let s = [0n, ...inputs.map((x) => mod(BigInt(x), FR))];
     const p5 = (x) => { const x2 = x * x % FR; return x2 * x2 % FR * x % FR; };
     for (let r = 0; r < rounds; r++) {
@@ -1175,11 +1223,22 @@ function incTree(state = null) {
     // Level-1 siblings of the next pair slot: where the next insertion goes.
     insertPath() { const o = []; for (let d = 1; d < TREE_DEPTH; d++) o.push(Math.floor(size / 2 ** d) % 2 ? filled[d] : ZEROS[d]); return o; },
     untrack: (i) => tracked.delete(Number(i)),
+    // The right edge: what a catch-up point posts.
+    edge: () => ({ size, filled: filled.slice() }),
     // Words in hex; a sibling that is an empty subtree is written 0, which is most of a path while the pool is young.
     toJSON: () => ({ size, root: w(root), filled: filled.map(w), tracked: Object.fromEntries([...tracked].map(([i, p]) => [i, p.map((x, L) => (x === ZEROS[L] ? 0 : w(x)))])) }),
     clone: () => incTree({ size, root, filled: filled.slice(), tracked: Object.fromEntries([...tracked].map(([i, p]) => [i, p.slice()])) }),
   };
 }
+// The root of the tree at `size` from its right edge, as incTree keeps it (`filled`): what a catch-up point folds to.
+function edgeRoot(size, filled) {
+  while (ZEROS.length <= TREE_DEPTH) ZEROS.push(H([ZEROS[ZEROS.length - 1], ZEROS[ZEROS.length - 1]]));
+  let cur = ZEROS[0];
+  for (let L = 0; L < TREE_DEPTH; L++) cur = Math.floor(size / 2 ** L) % 2 ? H([BigInt(filled[L]), cur]) : H([cur, ZEROS[L]]);
+  return cur;
+}
+// A tree of `size` leaves that tracks nothing, from its right edge.
+const treeFromEdge = (size, filled) => incTree({ size, root: edgeRoot(size, filled), filled, tracked: {} });
 function insertRoot(pair, start, path) {
   let cur = H(pair), i = BigInt(start) >> 1n;
   for (let d = 0; d < TREE_DEPTH - 1; d++) cur = (i >> BigInt(d)) & 1n ? H([path[d], cur]) : H([cur, path[d]]);
@@ -1474,9 +1533,10 @@ function jsonRpc(src, lead = () => 0, spare = () => true) {
     for (const i of order(urls, spare(method), logs)) {
       try {
         const r = await fetch(urls[i], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: timeoutSignal(logs ? 30_000 : 12_000) });
-        const j = await r.json();
+        const j = await r.json().catch(() => { throw new Error(r.status === 429 ? 'rate limited (429)' : `the node answered ${r.status} without JSON`); });
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
-        if (!('result' in j)) throw new Error('the node sent no result');
+        if (!('result' in j)) throw new Error(r.status === 429 ? 'rate limited (429)' : 'the node sent no result');
+        if (logs && !Array.isArray(j.result)) throw new Error('the node sent no log list');
         took(i, logs);
         return j.result;
       } catch (e) {
@@ -1499,27 +1559,42 @@ function logFailure(e, step) {
   const each = (e.all || [e]).map((x) => `${x.message} ${JSON.stringify(x.rpc?.data ?? '')}`.slice(0, 2000));
   const named = each.flatMap((t) => [...t.matchAll(/(\d[\d,]*)\s*(?:blocks?|range)\b/gi)].map((x) => Number(x[1].replace(/,/g, '')))).filter((n) => n > 0 && n < step);
   if (named.length) return { step: Math.max(...named) };
-  if (each.some((t) => /rate.?limit|too many requests|\b429\b|over rate|capacity/i.test(t))) return { busy: true };
-  if (step > 1 && each.some((t) => /range|limit|too many|too large|exceed|response size|10000/i.test(t))) return { step: Math.max(1, Math.floor(step / 4)) };
+  if (each.some((t) => /rate.?limit|request limit|too many requests|\b429\b|over rate|capacity|throttl/i.test(t))) return { busy: true };
+  if (step > 1 && each.some((t) => /range|limit|too many|too large|exceed|response size|10000|abort|timed? ?out|no log list|without JSON/i.test(t))) return { step: Math.max(1, Math.floor(step / 4)) };
   return null;
 }
 // Logs in [from, to], in ranges the endpoints accept: a limit an endpoint names is taken, otherwise the range shrinks.
-// `size.step` carries the range that worked on to the next read, which then does not fail its way down again.
-async function getLogs(rpc, address, topics, from, to, size = { step: 50_000 }) {
-  const out = [];
-  for (let a = from, busy = 0; a <= to;) {
-    const b = Math.min(to, a + size.step - 1);
-    try {
-      out.push(...await rpc('eth_getLogs', [{ address, topics, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }]));
-      a = b + 1; busy = 0;
-    } catch (e) {
-      const f = logFailure(e, size.step);
-      if (f?.step) { size.step = f.step; continue; }
-      if (f?.busy && ++busy <= 8) { await sleep(Math.min(12_000, 1500 * 2 ** (busy - 1))); continue; }
-      throw e;
+// `size.step` carries the range that worked on to the next read, which then does not fail its way down again. Up to
+// `lanes` ranges are in flight at once, each read in pieces of the step as it stands, and put together in block order.
+async function getLogs(rpc, address, topics, from, to, size = { step: 50_000 }, lanes = 3) {
+  const parts = new Map();
+  let next = from, failed = null;
+  const read = async (a, b) => {
+    const out = [];
+    for (let busy = 0; a <= b;) {
+      const z = Math.min(b, a + size.step - 1);
+      try {
+        out.push(...await rpc('eth_getLogs', [{ address, topics, fromBlock: '0x' + a.toString(16), toBlock: '0x' + z.toString(16) }]));
+        a = z + 1; busy = 0;
+      } catch (e) {
+        const f = logFailure(e, size.step);
+        if (f?.step) { size.step = Math.min(size.step, f.step); continue; }
+        if (f?.busy && ++busy <= 8) { await sleep(Math.min(12_000, 1500 * 2 ** (busy - 1))); continue; }
+        throw e;
+      }
     }
-  }
-  return out;
+    return out;
+  };
+  const lane = async () => {
+    while (!failed && next <= to) {
+      const a = next, b = Math.min(to, a + size.step - 1);
+      next = b + 1;
+      try { parts.set(a, await read(a, b)); } catch (e) { failed ||= e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(lanes, Math.ceil((to - from + 1) / size.step))) }, lane));
+  if (failed) throw failed;
+  return [...parts.keys()].sort((x, y) => x - y).flatMap((k) => parts.get(k));
 }
 const T_TRANSACT = keccakHex(utf8('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)'));
 const T_RECEIVED = keccakHex(utf8('Received(address,uint256,uint256,uint256,uint256,uint256)'));
@@ -1565,6 +1640,18 @@ function openState(v, stored, name = null) {
   return new TextDecoder().decode(ct.map((x, i) => x ^ ks[i]));
 }
 
+// The shared secrets of memo keys with view scalar `v`, worked out here when no worker can: in slices, with a pause
+// for the page between them. → Map index → 33-byte secret (33 zero bytes for a key that is not a point).
+async function localSecrets(v, tried) {
+  const out = new Map(), zero = new Uint8Array(33);
+  for (let i = 0; i < tried.length; i += 256) {
+    const part = tried.slice(i, i + 256), pts = part.map(([, pk]) => { try { return secp.decompress(pk); } catch { return null; } });
+    secp.mulMany(pts, v).forEach((c, j) => out.set(part[j][0], c || zero));
+    if (i + 256 < tried.length) await yieldNow();
+  }
+  return out;
+}
+
 // ── the wallet, on one chain ──
 // chain: { chainId, pool, router, rpc, deployBlock, confirmations, keeper (relay base URL or null) }.
 // keys: poolKeys(key). prove(input) → { proof, publicSignals }. store: { get(k), set(k, v) } or null.
@@ -1578,7 +1665,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const asset = poolAsset(chain.chainId, chain.pool), keeper = chain.keeper;
   const REFUND_GAP = 20, skey = slotOf(keys.v, `pool:${chain.chainId}:${chain.pool.toLowerCase()}`), oldKey = `tacit-evm-pool-v1:${chain.chainId}:${chain.pool.toLowerCase()}:${keys.address}`;
   const boxAt = new Map(), boxOf = (i) => boxAt.get(i) ?? boxAt.set(i, receiveBoxAddress(chain.router, receiveKeys(keys, i).npk)).get(i);
-  const blank = () => ({ block: chain.deployBlock - 1, tree: incTree(), notes: [], rows: [], nextRefund: 1, attempts: {}, inflight: [], landed: [] });
+  // `from`: the catch-up point this state began at ({ size, block, root }), while the history behind it is still being read.
+  const blank = () => ({ block: chain.deployBlock - 1, tree: incTree(), notes: [], rows: [], nextRefund: 1, attempts: {}, inflight: [], landed: [], from: null });
   // What a fresh read from the chain keeps: counters, and the spends still in flight (only the chain can close those).
   const fresh = () => ({ ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund, inflight: saved.inflight, landed: saved.landed });
   let saved = blank(), view = null, moved = false;
@@ -1640,8 +1728,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // Box 0 is the deposit address; boxes after it are one-time ones (payment links, refunds), watched up to
   // REFUND_GAP past the last one used, so a wallet rebuilt from the key finds them all.
   const boxes = new Map();
-  const boxTopics = () => {
-    for (let i = 0, n = Math.max(saved.nextRefund + REFUND_GAP, ...boxIdx.map((x) => x + 1)); i < n; i++) if (![...boxes.values()].includes(i)) boxes.set(topicOf(boxOf(i)), i);
+  const boxTopics = (st = saved) => {
+    for (let i = 0, n = Math.max(st.nextRefund + REFUND_GAP, ...boxIdx.map((x) => x + 1)); i < n; i++) if (![...boxes.values()].includes(i)) boxes.set(topicOf(boxOf(i)), i);
     return [...boxes.keys()];
   };
 
@@ -1650,12 +1738,16 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // that touched this key leaves a row: what it used of ours, what it kept or brought in, and (from logs) its
   // public amount, fee and recipient.
   async function absorb(state, transacts, receipts) {
+    // Behind a catch-up point, an insertion before it is already in the edge; what it spent or paid is found by the
+    // read of the older history.
+    if (state.from) transacts = transacts.filter((t) => t.firstIndex >= state.from.size || !(t.outLeaf[0] || t.outLeaf[1]));
     const notes = new Map(state.notes.map((n) => [n.index, n])), byNf = new Map(state.notes.map((n) => [String(n.nf), n]));
     const tree = state.tree.clone(), rows = [...state.rows], received = new Map(receipts.map((r) => [r.index, r]));
     // Every memo's shared secret with this key, one curve multiplication each, is worked out for the whole batch first.
     const tried = [];
     for (const t of transacts) for (let k = 0; k < 2; k++) if (t.outLeaf[k] && !received.has(t.firstIndex + k) && t.memo[k]?.length === 65) tried.push([t.firstIndex + k, t.memo[k].subarray(0, 33)]);
-    const sec = secrets && tried.length >= 64 ? await secrets(keys.v, tried.map(([, pk]) => pk)).then((x) => new Map(tried.map(([i], j) => [i, x[j]])), () => null) : null;
+    let sec = secrets && tried.length >= 64 ? await secrets(keys.v, tried.map(([, pk]) => pk)).then((x) => new Map(tried.map(([i], j) => [i, x[j]])), () => null) : null;
+    if (!sec && tried.length) sec = await localSecrets(keys.v, tried);
     // The new leaves go into the tree in batches, each node hashed once: 256 at a time here, or thousands at a time when
     // the hashing is shared out. The work pauses every ~12 ms for the page.
     const batch = pairs ? 8192 : 256, leaves = [], track = new Set();
@@ -1733,9 +1825,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // that size, so the index cannot invent leaves. No nullifier is sent to a node to ask whether it is spent: a spend
   // the index left out shows when the chain logs reach it, or as a refused spend, which rebuilds from the chain. An
   // index that withholds a memo could hide a note until Rebuild reads the chain's logs alone; it cannot move funds.
-  async function fromIndex(safe) {
-    boxTopics();
-    let cand = saved;
+  async function fromIndex(st, safe, write) {
+    boxTopics(st);
+    let cand = st;
     for (let page = 0; page < 2_000; page++) {
       const from = cand.block + 1;
       if (from > safe) break;
@@ -1750,15 +1842,15 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         memo: [unhex(e.memo0 || '0x'), unhex(e.memo1 || '0x')], block: e.block, tx: e.tx,
         ...(e.extAmount != null && e.recipient && { ext: BigInt(e.extAmount), fee: BigInt(e.fee ?? 0), recipient: String(e.recipient) }),
       })).sort((x, y) => x.block - y.block || x.firstIndex - y.firstIndex);
-      const rs = evs.filter((e) => e.kind === 'received' && boxes.has(topicOf(e.box))).map((e) => ({
-        box: topicOf(e.box), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx,
-      }));
-      const next = { ...(await absorb(cand, ts, rs)), block: through };
+      const rec = (e) => ({ box: topicOf(e.box), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx });
+      const rs = evs.filter((e) => e.kind === 'received' && boxes.has(topicOf(e.box))).map(rec);
+      let next = { ...(await absorb(cand, ts, rs)), block: through };
+      while (next.nextRefund > cand.nextRefund) { cand = { ...cand, nextRefund: next.nextRefund }; boxTopics(cand); next = { ...(await absorb(cand, ts, evs.filter((e) => e.kind === 'received' && boxes.has(topicOf(e.box))).map(rec))), block: through }; }
       if (next.tree.size !== cand.tree.size) await held(next.tree);
-      if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; boxTopics(); continue; }
       // Each page that checks out against the pool is kept at once: a later page that fails costs only itself.
-      saved = cand = next; persist();
+      cand = next; write(cand);
     }
+    return cand;
   }
   // Rows taken from the relay's index lack the public amount, fee and recipient. They are filled from the pool's logs a
   // whole aligned window at a time, the same windows for every user: no node is asked about one of this key's transactions.
@@ -1830,17 +1922,79 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     }
     return { tip, leaves, waiting, pool };
   }
+  // The confirmed events through block `upTo`, from the relay's index where `useFeed` allows and then from the chain's
+  // logs, read and kept a window at a time (through `write`) so a long read that fails partway keeps what it has. → the
+  // state read to `upTo`.
+  async function advance(st, upTo, write, useFeed) {
+    if (keeper && useFeed && st.block < upTo && Date.now() >= feedPause) st = await fromIndex(st, upTo, write).catch(() => { feedPause = Date.now() + 120_000; return st; });
+    for (let behind = 0; st.block < upTo;) {
+      const a = st.block + 1, z = Math.min(upTo, a + READ_WINDOW - 1);
+      boxTopics(st);
+      const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z, logSize), getLogs(chain.rpc, chain.router, [T_RECEIVED], a, z, logSize)]);
+      const ts = tl.map(decodeTransact).sort(byOrder), rs = rl.map(decodeReceived);
+      let next = { ...(await absorb(st, ts, rs.filter((r) => boxes.has(r.box)))), block: z };
+      // A deposit address used in this window widens the set watched: the same logs are taken again with the longer list.
+      while (next.nextRefund > st.nextRefund) { st = { ...st, nextRefund: next.nextRefund }; boxTopics(st); next = { ...(await absorb(st, ts, rs.filter((r) => boxes.has(r.box)))), block: z }; }
+      if (next.tree.size !== st.tree.size) await held(next.tree);
+      // The last window reaches near the head, where a log node can be a few blocks behind and answer with a prefix whose
+      // root the pool did hold: the pool's own count at that block says so, and the window is read again.
+      if (z === upTo && behind < 3) {
+        const at = await chain.rpc('eth_call', [{ to: chain.pool, data: calldata('nextIndex()', [], []) }, '0x' + z.toString(16)]).then((x) => BigInt(x), () => null);
+        if (at != null && at > BigInt(next.tree.size)) { behind++; await sleep(2000); continue; }
+      }
+      st = next; write(st);
+    }
+    return st;
+  }
+  // A catch-up point: the tree's right edge at a size, posted on chain by anyone who had read the pool that far, and kept
+  // there only if the pool held the root it folds to at that size. It is checked here again, by the nodes' vote, before it
+  // is used; one whose block turned out wrong (the events after it then read out of order) is passed over for the one
+  // before it. → { size, block, root, tree }, or null when the chain has none this wallet can use.
+  const badPoints = new Set();
+  async function readPoint() {
+    if (!chain.points) return null;
+    try {
+      let size = Number(BigInt(await chain.rpc('eth_call', [{ to: chain.points, data: calldata('latest()', [], []) }, 'latest'])));
+      for (let i = 0; size && i < 4; i++) {
+        const r = await chain.rpc('eth_call', [{ to: chain.points, data: calldata('pointAt(uint256)', ['uint256'], [BigInt(size)]) }, 'latest']);
+        if (r.length < 2 + 64 * (2 + TREE_DEPTH)) return null;
+        const w = (k) => BigInt('0x' + r.slice(2 + 64 * k, 66 + 64 * k));
+        const block = Number(w(0)), prev = Number(w(1)), filled = Array.from({ length: TREE_DEPTH }, (_, k) => w(2 + k));
+        if (!badPoints.has(size) && size % 2 === 0 && block >= chain.deployBlock) {
+          const tree = treeFromEdge(size, filled);
+          if (await held(tree, 1).then(() => true, () => false)) return { size, block, root: tree.root, tree };
+        }
+        size = prev;
+      }
+    } catch {}
+    return null;
+  }
+  // The latest point on chain, as posted: { size, block }, or null.
+  async function latestPoint() {
+    if (!chain.points) return null;
+    const size = Number(BigInt(await chain.rpc('eth_call', [{ to: chain.points, data: calldata('latest()', [], []) }, 'latest'])));
+    if (!size) return null;
+    const r = await chain.rpc('eth_call', [{ to: chain.points, data: calldata('pointAt(uint256)', ['uint256'], [BigInt(size)]) }, 'latest']);
+    return { size, block: Number(BigInt('0x' + r.slice(2, 66))) };
+  }
+  // A state that begins at a catch-up point: the tree is the point's edge, and nothing before it is known yet.
+  const startAt = (pt) => ({ ...fresh(), block: pt.block, tree: pt.tree.clone(), from: { size: pt.size, block: pt.block, root: '0x' + pt.root.toString(16) } });
+
   async function readNew(force = false) {
     const { tip, leaves, waiting, pool } = await headRead(boxIdx), safe = tip - chain.confirmations, key = `${tip}:${leaves}:${boxIdx.join()}`;
     boxW = waiting; if (pool != null) poolWei = pool;
     if (key === lastKey && !force) return summary();
     // Nothing new in the pool since the last full read: no new leaf, and a log read less than five minutes ago.
-    if (!force && !saved.inflight.length && leaves != null && BigInt(state().tree.size) === leaves && saved.block >= chain.deployBlock && Date.now() - logsAt < 300_000) return summary();
+    if (!force && !saved.inflight.length && leaves != null && BigInt(state().tree.size) === leaves && saved.block >= chain.deployBlock && Date.now() - logsAt < 300_000) { backfill(); return summary(); }
     reachTo = safe;
-    if (keeper && feed && saved.block < safe && Date.now() >= feedPause) await fromIndex(safe).catch(() => { feedPause = Date.now() + 120_000; });
+    // A state with nothing read yet starts at the newest catch-up point the pool vouches for, and the history behind
+    // it is read in the background; without one, from the pool's first block.
+    if (saved.block < chain.deployBlock) { const pt = await readPoint(); if (pt) { saved = startAt(pt); view = null; persist(); } }
     // The index and the logs must add up to the pool: events left out show as a leaf out of order, a root the pool never
     // held, or a tree short of its leaf count, and the state is then read again from the chain alone.
     const rebuild = async () => {
+      // A state begun at a catch-up point that does not add up is the point's doing (its block was wrong): it is passed over.
+      if (saved.from) badPoints.add(saved.from.size);
       saved = fresh(); view = null; lastKey = null; persist();
       const f = feed; feed = false;
       try { return await readNew(); } finally { feed = f; }
@@ -1848,6 +2002,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // Events left out, or a node a block behind: a second look first, then the state is read again from the chain. An index
     // that left events out is not asked again this session; with no index in play, a rebuild comes at most once in ten minutes.
     const inconsistent = async () => {
+      if (saved.from) { strikes = 0; return rebuild(); }
       if (++strikes < 2) { await sleep(2000); return readNew(); }
       strikes = 0;
       if (feed) { feed = false; lastRebuild = Date.now(); return rebuild(); }
@@ -1856,18 +2011,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       return rebuild();
     };
     try {
-      // The confirmed part is read and kept a window at a time, so a long read that fails partway keeps what it has.
-      while (saved.block < safe) {
-        const a = saved.block + 1, z = Math.min(safe, a + READ_WINDOW - 1);
-        boxTopics();
-        const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z, logSize), getLogs(chain.rpc, chain.router, [T_RECEIVED], a, z, logSize)]);
-        const next = { ...(await absorb(saved, tl.map(decodeTransact).sort(byOrder), rl.map(decodeReceived).filter((r) => boxes.has(r.box)))), block: z };
-        if (next.tree.size !== saved.tree.size) await held(next.tree);
-        // A deposit address used in this window widens the set watched: read the same window again with the longer list.
-        if (next.nextRefund > saved.nextRefund) { saved.nextRefund = next.nextRefund; continue; }
-        saved = next; view = null;
-        persist();
-      }
+      saved = await advance(saved, safe, (st) => { saved = st; view = null; persist(); }, feed);
       if (saved.block < tip) {
         boxTopics();
         const [tl, rl] = await Promise.all([getLogs(chain.rpc, chain.pool, [T_TRANSACT], saved.block + 1, tip, logSize), getLogs(chain.rpc, chain.router, [T_RECEIVED], saved.block + 1, tip, logSize)]);
@@ -1893,12 +2037,61 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     closeInflight();
     fillRows().catch(() => {});
     lastKey = key; logsAt = Date.now();
+    backfill();
     return summary();
   }
-  // Forgets the synced state and rebuilds it from chain logs alone.
+  // Behind a catch-up point, the older history is read from the pool's first block into a second state, kept under its
+  // own name so a later visit goes on where this one stopped, between the reads of new events; once it has caught up
+  // with the state in use it takes that state's place, and the notes from before the point show.
+  const bkey = slotOf(keys.v, `pool-back:${chain.chainId}:${chain.pool.toLowerCase()}`);
+  let back = null, backing = null, backFailAt = 0, backFeed = true;
+  const openBack = () => { try { const o = JSON.parse(openState(keys.v, store?.get(bkey), bkey) || 'null'); if (o?.tree && !o.from) return { ...blank(), ...o, tree: incTree(o.tree), notes: o.notes.map(withKeys) }; } catch {} return null; };
+  // Another tab may be further along: its copy is taken rather than written over.
+  const persistBack = (st) => {
+    back = st;
+    const there = openBack();
+    if (there && there.block > st.block) { back = there; return; }
+    try { store?.set(bkey, sealState(keys.v, JSON.stringify({ ...st, tree: st.tree.toJSON(), notes: st.notes.map(({ sk, nk, nf, ...n }) => n) }), bkey)); } catch {}
+  };
+  const dropBack = () => { back = null; store?.del?.(bkey); };
+  function backfill() {
+    if (!saved.from || backing || Date.now() < backFailAt) return;
+    backing = (async () => {
+      try {
+        back ||= openBack() || blank();
+        // Up to the point first: what was read cannot be past the edge the pool vouched for, and where it reaches it,
+        // must be it (a point can name a block before the tree reached its count; then the join below is the check).
+        if (back.block < saved.from.block) back = await advance(back, saved.from.block, persistBack, feed && backFeed);
+        if (back.block === saved.from.block && (back.tree.size > saved.from.size || (back.tree.size === saved.from.size && '0x' + back.tree.root.toString(16) !== saved.from.root))) throw new Error('the older history does not match the point');
+        for (;;) {
+          if (back.block < saved.block) back = await advance(back, saved.block, persistBack, feed && backFeed);
+          // The join, under the read lock, so the state in use does not move meanwhile; the last stretch is short.
+          const joined = await (reading = reading.catch(() => {}).then(async () => {
+            if (!saved.from) return true;
+            if (back.block < saved.block) back = await advance(back, saved.block, persistBack, feed && backFeed);
+            if (back.block !== saved.block) return false;
+            if (back.tree.size !== saved.tree.size || back.tree.root !== saved.tree.root) throw new Error('the older history does not match the point');
+            saved = { ...back, attempts: saved.attempts, inflight: saved.inflight, landed: saved.landed, nextRefund: Math.max(back.nextRefund, saved.nextRefund), from: null };
+            view = null; lastKey = null; dropBack(); backFeed = true; persist();
+            return true;
+          }));
+          if (joined) return;
+        }
+      } catch (e) {
+        // A read that does not add up is forgotten and taken again later, from the start.
+        if (/does not match|out of order/.test(e?.message || '')) dropBack();
+        backFailAt = Date.now() + 120_000;
+      } finally { backing = null; }
+    })();
+  }
+  // How far the older history behind a catch-up point has been read, 0 to 1; null when there is none to read.
+  const older = () => (saved.from ? Math.max(0, Math.min(1, ((back?.block ?? chain.deployBlock - 1) - chain.deployBlock + 1) / (saved.from.block - chain.deployBlock + 1))) : null);
+  // Forgets the synced state and rebuilds it from the chain alone: from a catch-up point the pool vouches for, with
+  // the history behind it read again from the first block, without the relay.
   async function rescan() {
     await reading.catch(() => {});
-    saved = fresh(); view = null; lastKey = null; persist();
+    await backing?.catch(() => {});
+    saved = fresh(); view = null; lastKey = null; dropBack(); backFailAt = 0; backFeed = false; persist();
     const f = feed; feed = false;
     try { return await sync(); } finally { feed = f; }
   }
@@ -1915,7 +2108,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     const open = saved.inflight.filter((x) => !done.includes(x) && !(x.tries.length && x.tries.every((t) => t.start < size)));
     if (open.length === saved.inflight.length) return;
     // A payment that landed is remembered for a day, so the same payment pressed again is asked about first.
-    saved.landed = [...(saved.landed || []).filter((y) => now - y.at < 86_400_000), ...done.filter((x) => x.pay).map((x) => ({ pay: x.pay, at: now }))].slice(-20);
+    saved.landed = [...(saved.landed || []).filter((y) => now - y.at < 86_400_000), ...done.filter((x) => x.pay && !x.pay.merge).map((x) => ({ pay: x.pay, at: now }))].slice(-20);
     for (const x of saved.inflight) if (!open.includes(x)) ended.add(uid(x));
     saved.inflight = open; persist();
   }
@@ -1926,11 +2119,12 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const unspent = () => { const l = locked(); return state().notes.filter((n) => !pending.has(String(n.nf)) && !l.has(String(n.nf))); };
   const summary = () => { const u = unspent(); return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size }; };
 
-  // Up to two notes covering `need`, the smallest that do; null if no two do.
+  // Up to two notes covering `need`, the smallest that do (the smallest larger note, with the smallest partner that
+  // covers with it), so small notes are used up rather than left as dust; null if no two do.
   function select(need) {
     const u = unspent().sort((a, b) => (BigInt(a.v) < BigInt(b.v) ? -1 : 1)), one = u.find((n) => BigInt(n.v) >= need);
     if (one) return [one];
-    for (let i = u.length - 1; i > 0; i--) for (let j = i - 1; j >= 0; j--) if (BigInt(u[i].v) + BigInt(u[j].v) >= need) return [u[i], u[j]];
+    for (let i = 1; i < u.length; i++) for (let j = 0; j < i; j++) if (BigInt(u[i].v) + BigInt(u[j].v) >= need) return [u[i], u[j]];
     return null;
   }
   const toTx = ({ proof, publicSignals }, rest) => ({
@@ -2235,7 +2429,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (total <= mfee) break;
       onStep('combining two notes first');
       const used = new Set([String(u[0].nf), String(u[1].nf)]), top = Math.max(Number(u[0].index), Number(u[1].index));
-      await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - mfee }, null], q: mq && { ...mq, expect: String(expectFee ?? q.fee) }, onStep });
+      // Held like any payment if its outcome stays unknown: a merge is a payment to this key, listed and tried again as one.
+      await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - mfee }, null], q: mq && { ...mq, expect: String(expectFee ?? q.fee) }, onStep, pay: { kind: 'send', to: keys.address, amount: String(total - mfee), merge: true } });
       await waitFor(() => covers(state(), top) && !state().notes.some((n) => used.has(String(n.nf))));
     }
     const last = select(need);
@@ -2334,10 +2529,24 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // The ETH the pool holds, as of the last head read.
     poolBalance: () => poolWei,
     // How far a read under way has come through the blocks it reads, 0 to 1; null when none is.
-    progress: () => (reachTo > chain.deployBlock ? Math.max(0, Math.min(1, (saved.block - chain.deployBlock + 1) / (reachTo - chain.deployBlock + 1))) : null),
+    progress: () => { const b = saved.from ? saved.from.block : chain.deployBlock - 1; return reachTo > b ? Math.max(0, Math.min(1, (saved.block - b) / (reachTo - b))) : null; },
     boxSpan: () => saved.nextRefund + REFUND_GAP,
     nextBox: () => saved.nextRefund,
     rescan,
+    // The older history behind a catch-up point, still being read: how far, 0 to 1; null once every block is read.
+    older,
+    // The latest catch-up point posted on this chain ({ size, block }), null when none or no registry.
+    latestPoint,
+    // Posts this wallet's own edge as a catch-up point, from the signer: one transaction, no proof. → tx hash. Only once
+    // the whole history is read, and only where the pool has grown since the newest point.
+    async postPoint({ onStep = () => {} } = {}) {
+      if (!chain.points) throw new Error('This chain has no catch-up registry.');
+      await sync();
+      if (saved.from) throw new Error('The older history is still being read. Try again once it is.');
+      const { size, filled } = saved.tree.edge();
+      if (!size) throw new Error('Nothing to post yet.');
+      return sendSelf(chain.points, calldata('post(uint256,uint256,bytes32[32])', ['uint256', 'uint256', { tuple: Array(TREE_DEPTH).fill('uint256') }], [BigInt(size), BigInt(saved.block), filled]), 0n, onStep);
+    },
     // Whether the deposit address can be shown: the pool and router have code, and the router's own box for this key
     // is the address computed here.
     async ready() {
@@ -2399,6 +2608,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
 // The same contracts at the same addresses on each chain; verified on each chain's explorer.
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
 const ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
+// The catch-up registry (TacitEvmPoolCheckpoints): the pool's tree edge at a count, posted by anyone, kept only when the
+// pool held its root; the same address on each chain. A chain without it is read from the pool's first block.
+const CHECKPOINTS = '0x000000CDfeda8512b8DcD8642765A5Fa43b6Ab4b';
 const VERIFIER = '0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153';
 const relayAt = (sub) => `https://tacit-evm-pool-keeper${sub}.onrender.com/evm-pool/keeper`;
 const CHAINS = [
@@ -2708,6 +2920,7 @@ async function artifact(a, onBytes) {
     const ac = new AbortController(), began = Date.now(), last = at === list.length - 1;
     let stall;
     const arm = () => { clearTimeout(stall); stall = setTimeout(() => ac.abort(), 25_000); };
+    PROVER.stop = () => ac.abort();
     try {
       arm();
       const r = await fetch(base + a.name, { signal: ac.signal });
@@ -2858,8 +3071,9 @@ function scanWorkers() {
   SCAN.url = URL.createObjectURL(new Blob([text.slice(0, end.index + end[0].length), `
 onmessage = ({ data: { id, v, pks, xs } }) => {
   if (xs) { const out = []; for (let i = 0; i < xs.length; i += 2) out.push(H([xs[i], xs[i + 1]])); return postMessage({ id, out }); }
-  const V = BigInt(v), n = pks.length / 33, out = new Uint8Array(n * 33);
-  for (let i = 0; i < n; i++) { try { out.set(secp.compress(secp.mul(secp.decompress(pks.subarray(33 * i, 33 * i + 33)), V)), 33 * i); } catch {} }
+  const V = BigInt(v), n = pks.length / 33, out = new Uint8Array(n * 33), pts = [];
+  for (let i = 0; i < n; i++) { try { pts.push(secp.decompress(pks.subarray(33 * i, 33 * i + 33))); } catch { pts.push(null); } }
+  secp.mulMany(pts, V).forEach((c, i) => { if (c) out.set(c, 33 * i); });
   postMessage({ id, out }, [out.buffer]);
 };`], { type: 'text/javascript' }));
   const fail = () => { for (const r of SCAN.wait.values()) r.reject(new Error('a scan worker stopped')); SCAN.wait.clear(); SCAN.ws?.forEach((w) => w.terminate()); SCAN.ws = null; };
@@ -3052,6 +3266,7 @@ const signerFor = (c) => ({
   batch: (calls, sent) => sendCalls(c, calls, sent),
   // The wallet's own node, for reads about what this account sends: its errors carry revert data where the engine looks.
   rpc: async (method, params) => {
+    if (Number(await S.provider.request({ method: 'eth_chainId' }).catch(() => 0)) !== c.chainId) throw Object.assign(new Error(`Your wallet is on another chain. Switch it to ${c.full} and try again.`), { otherChain: true });
     try { return await S.provider.request({ method, params }); }
     catch (e) { const d = [e?.data?.originalError?.data, e?.data?.data, e?.data].find((x) => typeof x === 'string' && x.startsWith('0x')); throw Object.assign(new Error(String(e?.message || e)), { rpc: { data: d }, code: e?.code }); }
   },
@@ -3153,7 +3368,7 @@ function lock() {
 
 // ── per chain ──
 // A relay the reader set is held to the fee ceiling but not to the default relay's address.
-const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, rpc: rpcOn(c), head: () => headOf(headNodes(c)), vote: (to, data) => quorum(to, data, ownNodes(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
+const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, points: BigInt(CHECKPOINTS) ? CHECKPOINTS : null, rpc: rpcOn(c), head: () => headOf(headNodes(c)), vote: (to, data) => quorum(to, data, ownNodes(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
 function walletOn(c) {
   const st = CH[c.chainId];
   return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c), proofMs: () => PROVER.ms || 0, secrets: sharedSecrets, pairs: hashPairs }));
@@ -3162,24 +3377,26 @@ function syncChain(c, fresh = false, force = false) {
   const st = CH[c.chainId], key = S.key;
   if (!key || (st.syncing && !fresh)) return st.syncing || Promise.resolve();
   const W = walletOn(c);
+  // The key or the engine (new endpoints) may change during a read: a read for either that is gone writes nothing.
+  const gone = () => S.key !== key || CH[c.chainId].W !== W;
   const p = st.syncing = (st.syncing || Promise.resolve()).catch(() => {}).then(async () => {
-    if (S.key !== key) return;
+    if (gone()) return;
     // The relay's quote is kept whatever the nodes did: a read that failed says nothing about the relay.
     const [r, q] = await Promise.all([W.sync([0], force).then((s) => ({ s }), (e) => ({ e })), relayOf(c) && (c === S.chain || !st.quote) ? W.quote().catch((e) => ({ error: e })) : st.quote ?? null]);
-    if (S.key === key) Object.assign(st, { quote: q?.error ? null : q, quoteErr: q?.error || null });
+    if (!gone()) Object.assign(st, { quote: q?.error ? null : q, quoteErr: q?.error || null });
     if (r.e) throw r.e;
     const s = r.s, bw = W.boxBalances();
     if (bw[0] != null) st.boxW = { ...st.boxW, 0: bw[0] };
     checkBoxes(c);
     const waiting = st.boxW?.[0] ?? null;
-    if (S.key !== key) return;
+    if (gone()) return;
     if (!fresh && st.bal != null && s.balance > st.bal && !S.busy) toast(`${fmt(s.balance - st.bal)} ETH arrived on ${c.full}.`);
     if (W.poolBalance() != null) POOLETH[c.chainId] = { ...POOLETH[c.chainId], v: W.poolBalance(), at: Date.now() };
     Object.assign(st, { bal: s.balance, notes: W.notes().map((n) => BigInt(n.v)), leaves: s.leaves, waiting, err: null, at: Date.now() });
     const seen = vget('seen') || {};
     if (seen[c.chainId] !== String(s.balance)) { seen[c.chainId] = String(s.balance); vset('seen', seen); }
     st.fails = 0;
-  }).catch((e) => { if (S.key === key) { st.err = e; st.fails = (st.fails || 0) + 1; st.failAt = Date.now(); } }).finally(() => { if (st.syncing === p) st.syncing = null; paint(); });
+  }).catch((e) => { if (!gone()) { st.err = e; st.fails = (st.fails || 0) + 1; st.failAt = Date.now(); } }).finally(() => { if (st.syncing === p) st.syncing = null; paint(); });
   return p;
 }
 // After an action the wallet already knows its balance; the next read confirms it.
@@ -3198,7 +3415,7 @@ const syncAll = (fresh) => CHAINS.forEach((c) => syncChain(c, fresh));
 // How far a long read of a chain's history has come, as it is shown beside the balance.
 const readPct = (st) => { const p = st.W?.progress(); return p != null && p < 0.99 ? ` ${Math.floor(p * 100)}%` : ''; };
 const due = () => {
-  if (!document.hidden && S.key && cur().syncing) paintBal();
+  if (!document.hidden && S.key && (cur().syncing || cur().W?.older() != null)) paintBal();
   if (document.hidden || !S.key || S.busy) return;
   for (const c of CHAINS) {
     const st = CH[c.chainId];
@@ -3378,7 +3595,11 @@ function issueBox(label) {
 // The deposit address of the payment link being made: one nobody else has been given, kept while the link is edited and
 // until it is paid. undefined while a chain's history is still being read (an address must never be handed out twice),
 // null when the gap is full.
-const historyRead = () => CHAINS.every((c) => CH[c.chainId].at != null || (CH[c.chainId].fails || 0) >= 2);
+// Every chain read through, the older history behind a catch-up point included (a one-time address is numbered after
+// the last one used, which that history holds), or given up on.
+const historyRead = () => CHAINS.every((c) => (CH[c.chainId].at != null && CH[c.chainId].W?.older() == null) || (CH[c.chainId].fails || 0) >= 2);
+// How far the older history behind this chain's catch-up point has been read, as text; '' once it all has.
+const olderPct = (st) => { const p = st.W?.older(); return p == null ? '' : `older history ${Math.floor(p * 100)}%`; };
 // `another`: a new one for another payer, though this one is not paid yet.
 function linkBox(another = false) {
   if (!historyRead()) return undefined;
@@ -3444,8 +3665,8 @@ function paintBal() {
   const stuck = S.key ? escrowsLeft(c) : [];
   const stuckLine = (e) => html`<div class="callout held"><span>${e.label}: the pool paid ${fmt(e.v)} ETH into its escrow, but the steps after that did not run, so the ETH is waiting there. ${Date.now() > Number(e.intent.deadline) * 1000 ? (/^Move/.test(e.label) ? `Time is up, so it can go back to your own deposit address ${short(e.intent.refund)} on ${c.full} as ETH, where you take it in.` : `Time is up, so it can be sent on to ${short(e.intent.refund)} as ETH, not as the token.`) : 'Your wallet can run them now.'}</span><span style="display:grid;gap:8px">${S.busy ? '' : html`<button class="btn ghost sm" type="button" data-esc="${e.addr}">${Date.now() > Number(e.intent.deadline) * 1000 ? (/^Move/.test(e.label) ? 'Send the ETH back' : 'Send the ETH on') : 'Finish it from my wallet'}</button>`}</span></div>`;
   const flying = S.key && st.W ? st.W.inflight() : [], pl = S.key ? plans().filter((p) => p.chainId === c.chainId && !p.out) : [];
-  const flyTo = (p) => (p.why?.swap ? `as ${p.why.swap.sym} to ${short(p.why.dest, 8)}` : p.why?.move ? `to your private balance on ${chainOf(p.why.move)?.full || 'another chain'}` : `to ${short(p.to, 8)}`);
-  const flyLine = (x) => html`<div class="callout held"><span>${x.pay.why?.move ? 'A move' : x.pay.kind === 'send' ? 'A payment' : 'A withdrawal'} of ${fmt(BigInt(x.pay.why?.move ? x.pay.why.amount : x.pay.amount))} ETH ${flyTo(x.pay)} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
+  const flyTo = (p) => (p.merge ? 'back into your private balance' : p.why?.swap ? `as ${p.why.swap.sym} to ${short(p.why.dest, 8)}` : p.why?.move ? `to your private balance on ${chainOf(p.why.move)?.full || 'another chain'}` : `to ${short(p.to, 8)}`);
+  const flyLine = (x) => html`<div class="callout held"><span>${x.pay.merge ? 'A step combining parts of your balance' : x.pay.why?.move ? 'A move' : x.pay.kind === 'send' ? 'A payment' : 'A withdrawal'} of ${fmt(BigInt(x.pay.why?.move ? x.pay.why.amount : x.pay.amount))} ETH ${flyTo(x.pay)} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
   mount($('#bal-note'), html`${stuck.map(stuckLine)}${flying.map(flyLine)}${pl.map(planLine)}${total > 0n && CHAINS.filter((x) => CH[x.chainId].bal > 0n).length > 1 ? html`<p class="note">Your total across chains: <b class="num">${fmt(total)} ETH</b></p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : ''}`);
   wireHeld($('#bal-note'));
   $$('[data-plan]', $('#bal-note')).forEach((b) => b.onclick = () => swapOut(c, b.dataset.plan));
@@ -3471,7 +3692,7 @@ function paintBal() {
   }
   const v = st.bal != null ? ethStr(st.bal) : st.last != null ? html`<span class="stale">${ethStr(st.last)}</span>` : st.err ? html`<span class="err">—</span>` : html`<span class="sk" style="--w:8ch"></span>`;
   mount($('#bal'), html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg><div><div class="v num">${v}</div><div class="u">ETH, private on ${c.full}</div>${poolLine}</div>
-    <div class="side">${st.err ? html`<span class="err">${errText(st.err)}</span><br>` : ''}<button class="link" type="button" id="bal-re">${st.syncing && (st.asked || st.bal == null) ? `reading…${readPct(st)}` : 'refresh'}</button></div>`);
+    <div class="side">${st.err ? html`<span class="err">${errText(st.err)}</span><br>` : ''}<button class="link" type="button" id="bal-re">${st.syncing && (st.asked || st.bal == null) ? `reading…${readPct(st)}` : 'refresh'}</button>${olderPct(st) ? html`<br><span class="muted">${olderPct(st)}</span>` : ''}</div>`);
   // Refresh reads every chain again, this one first, past a read that found nothing new: the balances in the chain tabs
   // and the total across chains come with it.
   $('#bal-re').onclick = () => {
@@ -3700,6 +3921,7 @@ const dropPlan = (id) => vset('plans', plans().filter((p) => p.id !== id));
 // `held`: the deposit is one the wallet may still send; the plan goes with it if the payer finds it was not sent.
 function addPlan(c, w, payer, eth, from, h, d, held = false) {
   if (!w || !S.key) return;
+  if (plans().length >= 20) return toast('Twenty swap plans are kept, so this one is not: the ETH is in your private balance. Swap one out or remove one first.', true);
   const est = OUTQ.key === `${c.chainId}|${w.addr}|${eth}` && OUTQ.out ? { est: String(OUTQ.out) } : {};
   vset('plans', [...plans(), { id: hex(randomBytes(8)), chainId: c.chainId, eth: String(eth), from, want: { chainId: w.chainId, addr: w.addr, sym: w.sym, name: w.name, dec: w.dec, ...(w.added ? { added: true } : {}) }, to: d.addr, name: d.name || null, payer, tx: h || null, at: Math.floor(Date.now() / 1000), start: walletOn(c).summary().leaves, ...(held ? { held: true } : {}), ...est }].slice(-20));
 }
@@ -3909,6 +4131,7 @@ function formShield(f) {
     });
     const target = () => { const raw = to ? to.value.trim() : ''; return raw ? recipientOf(raw) : S.key ? { self: true } : null; };
     FORM.check = () => {
+    if (S.busy) return;
       const a = parseEth(amt.value), t = target(), d = w ? planDest(pto.value.trim(), c) : null;
       rc.hidden = true; mount(rc, ''); go.disabled = true; go.textContent = label;
       if (S.sent?.c === c) { mount(rc, sentNote(c)); rc.hidden = false; return sentWire(renderForm); }
@@ -3987,6 +4210,7 @@ function formSend(f) {
   };
   let shown = null;
   FORM.check = () => {
+    if (S.busy) return;
     const a = parseEth(amt.value), t = target(), fee = feeOf(tab), bal = cur().bal;
     shown = fee;
     rc.hidden = true; mount(rc, ''); go.disabled = true; go.textContent = t?.addr ? `Pay ${short(t.addr)}` : 'Send privately';
@@ -4052,6 +4276,7 @@ function formWithdraw(f) {
   $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return; maxPublic(amt, maxSpend(fee ? fee * 6n / 5n + 10n ** 12n : fee), 'private'); };
   let shown = null;
   FORM.check = () => {
+    if (S.busy) return;
     const a = parseEth(amt.value), raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
     shown = fee;
     rc.hidden = true; mount(rc, ''); go.disabled = true; go.textContent = label;
@@ -4284,7 +4509,9 @@ async function swapRoute(c, t, amount, slip, to = null, least = false) {
   // nodes allow a call.
   const ask = (q, d) => quorum(q, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => ({ h }), () => anyNode(c, q, '0x' + d, block).then((h) => ({ h, lone: true })));
   const got = await Promise.all(jobs.map(([q, d, sl, ...r]) => ask(q, d).then(({ h, lone }) => ({ ...routeOf(h, sl, ...r), lone })).catch(() => null)));
-  const B = 10000n, by = (r) => (!least ? r.out : r.limit < r.out * (B - slip) / B ? r.limit : r.out * (B - slip) / B);
+  // Ranked by what a route guarantees under the chosen slippage (the lower of its own floor and the quote less the
+  // slippage): the hybrid job is quoted with a wider floor, and wins only when that floor still beats the others.
+  const B = 10000n, by = (r) => (r.limit < r.out * (B - slip) / B ? r.limit : r.out * (B - slip) / B);
   const ok = got.filter((r) => r?.out && r.value === amount && r.data.includes(stand)).sort((a, b) => (by(b) > by(a) ? 1 : by(b) < by(a) ? -1 : 0));
   let best = null;
   for (const r of ok) if ((!r.lone && !t.added) || await routePays(c, t, r, stand, block)) { best = r; break; }
@@ -4439,7 +4666,7 @@ function formSwap(f, seg) {
   });
   // Max: all one withdrawal can take, rounded down; in the token, the least that much ETH buys, to four figures.
   $('#f-max').onclick = (ev) => {
-    const fee = SWAPQ.key.endsWith(`|${viaOf(tab)}|${inTok}`) ? SWAPQ.fee ?? feeOf(tab) : feeOf(tab), m = ev.currentTarget;
+    const fee = SWAPQ.key.startsWith(`${c.chainId}|${t.addr}|`) && SWAPQ.key.endsWith(`|${viaOf(tab)}|${inTok}`) ? SWAPQ.fee ?? feeOf(tab) : feeOf(tab), m = ev.currentTarget;
     if (fee == null || m.disabled) return;
     const most = maxSpend(fee ? fee * 6n / 5n + 10n ** 12n : fee);
     if (!inTok) return maxPublic(amt, most, 'private');
@@ -4459,6 +4686,7 @@ function formSwap(f, seg) {
   const wireExit = () => $('#f-toeth')?.addEventListener('click', () => { const p = planHere(); S.planOut = S.planMoved = null; (S.outTok ||= {})[c.chainId] = null; if (p) dropPlan(p.id); renderForm(); paintBal(); });
   let shown = null;
   FORM.check = () => {
+    if (S.busy) return;
     const x = inTok ? tokAmt() : null, a = ethAmt(), raw = to.value.trim(), bal = cur().bal;
     mount($('#f-cap'), caption());
     rc.hidden = true; mount(rc, ''); go.disabled = true; go.textContent = label;
@@ -4827,6 +5055,7 @@ function formShieldToken(f, seg) {
   // The route the receipt shows, which is the one a press uses.
   let shownR = null;
   FORM.check = () => {
+    if (S.busy) return;
     const x = inTok ? tokAmt() : null, a = ethAmt(), d = w ? planDest($('#f-pto').value.trim(), c) : null;
     mount($('#f-cap'), S.key ? caption() : '');
     rc.hidden = true; mount(rc, ''); go.disabled = !S.key ? false : true; go.textContent = label;
@@ -5035,6 +5264,7 @@ function formMove(f, seg) {
   $('#f-max').onclick = () => { const fee = feeNow(); if (fee == null || q.extra == null) return; const v = maxSpend(fee ? fee * 6n / 5n + 10n ** 12n : fee) - q.extra * 3n / 2n; maxPublic(amt, v > 0n ? v : 0n, 'private'); };
   let shown = null;
   FORM.check = () => {
+    if (S.busy) return;
     read();
     const a = parseEth(amt.value), fee = feeNow(), bal = cur().bal;
     shown = fee;
@@ -5107,7 +5337,8 @@ const payLink = ({ to, n, ns, amount, chains, note, tok }) => {
   if (tok) q.set('token', tok.addr);
   if (n != null && ns) { q.set('n', npkHex(n)); q.set('ns', ns); }
   if (amount) q.set('amount', tok ? unitsAll(amount, tok.dec) : plain(amount));
-  if (chains?.length) { q.set('chain', chains[0].key); if (chains.length > 1) q.set('chains', chains.map((c) => c.key).join(',')); }
+  // An offered chain, even one, is a restriction (`chains`); a token link is held to its one `chain` by tokenSpec.
+  if (chains?.length) { q.set('chain', chains[0].key); if (!tok) q.set('chains', chains.map((c) => c.key).join(',')); }
   if (noteOf(note)) q.set('for', noteOf(note));
   return `${location.origin}${location.pathname}#${q}`;
 };
@@ -5172,6 +5403,7 @@ function formReceive(f) {
   const link = () => (tok ? ((d) => payLink({ to: d.name || d.addr, tok, amount: parseUnits($('#f-ramt').value, tok.dec), chains: [c], note: $('#f-rfor').value.trim() }))(rto()) : payLink({ to: RECV.s?.ok ? $('#f-rname').value.trim().toLowerCase() : k.address, n, ns, amount: parseEth($('#f-ramt').value), chains: RECV.scope === 'any' ? null : [chainOf(RECV.scope)], note: $('#f-rfor').value.trim() }));
   let last = '', qrTimer = null, qrAt = 0;
   FORM.check = () => {
+    if (S.busy) return;
     const raw = $('#f-ramt').value.trim(), bad = !!raw && (tok ? parseUnits(raw, tok.dec) : parseEth(raw)) == null;
     // A token link is made once where it arrives has been read and can be paid.
     let ready = true;
@@ -5518,8 +5750,8 @@ function paintReq() {
     const a = amount(), wb = r.wb?.[c.chainId];
     pay.textContent = !S.account ? 'Connect a wallet to pay' : a ? `Pay ${fmt(a, 18)} ETH on ${c.name}` : `Pay on ${c.name}`;
     if (S.account && !a) pay.textContent = 'Enter an amount';
-    const low = S.account && a && wb != null && a + c.gasReserve > wb, small = viaBox && a && min && a < min, held = S.sent?.c === c;
-    mount($('#req-note'), held ? sentNote(c) : low ? html`<p class="note err">Your wallet holds ${fmt(wb, 4)} ETH on ${c.full}, not enough for this and its gas. ${chains.length > 1 ? 'Pick another chain, or add funds.' : 'Add funds to pay this.'}</p>`
+    const low = S.account && a && wb != null && a + c.gasReserve > wb, small = viaBox && a && min && a < min, held = !!S.sent;
+    mount($('#req-note'), held ? sentNote(S.sent.c) : low ? html`<p class="note err">Your wallet holds ${fmt(wb, 4)} ETH on ${c.full}, not enough for this and its gas. ${chains.length > 1 ? 'Pick another chain, or add funds.' : 'Add funds to pay this.'}</p>`
       : small ? html`<p class="note">Under ${fmtUp(min)} ETH on ${c.full} the relay does not move it in: it waits at their deposit address until they take it in themselves.</p>` : amtIn ? badAmt(amtIn) : '');
     pay.disabled = held || (!!S.account && (!a || low));
     if (held) sentWire(paintReq);
@@ -5835,8 +6067,8 @@ function paintActivity() {
   if (!S.key) { $('#activity-at').textContent = ''; return mount(el, html`<p class="lede">Your payments, rebuilt on any device from your key and the chain. Nothing else needs backing up.</p>`); }
   const at = (r) => blockTime(r.c, r.block) || Infinity;
   const every = CHAINS.flatMap(rowsOf).sort((a, b) => (at(a) === at(b) ? b.block - a.block : at(b) - at(a))), rows = every.slice(0, 40);
-  const reading = CHAINS.some((c) => CH[c.chainId].syncing && CH[c.chainId].at == null);
-  $('#activity-at').textContent = reading ? 'reading…' : '';
+  const reading = CHAINS.some((c) => CH[c.chainId].syncing && CH[c.chainId].at == null), older = CHAINS.map((c) => CH[c.chainId].W?.older()).filter((p) => p != null);
+  $('#activity-at').textContent = reading ? 'reading…' : older.length ? `older history ${Math.floor(Math.min(...older) * 100)}%` : '';
   const opened = el.querySelector('details')?.open;
   mount(el, html`
     <p class="lede">Rebuilt from your key and the chain. This browser keeps only an encrypted copy, which cannot spend.</p>
@@ -5845,13 +6077,41 @@ function paintActivity() {
       return html`<li><div class="h"><b>${pal(d.pal)}${d.label}</b><span class="${d.in ? 'in' : ''}">${d.in ? '+' : d.v ? '−' : ''}${ethStr(d.v)} ETH</span></div>
         <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${ethStr(d.fee)}` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
     })}</ul>${every.length > rows.length ? html`<p class="note">Showing the latest ${rows.length} of ${every.length}.</p>` : ''}` : CHAINS.every((c) => CH[c.chainId].at) ? html`<p class="note">${pal('ninja')}Nothing yet. Shield some ETH to start. Expecting a payment? Rebuild, below, reads every chain directly.</p>` : ''}
-    <details class="adv" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads every chain again from the pool’s first block, without the relay.</p><button class="btn ghost sm" type="button" id="rebuild" ${rebuilding ? html`disabled aria-busy="true"` : ''}>Rebuild</button></details>`);
+    <details class="adv" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads every chain again: from the newest catch-up point the pool vouches for, then the history behind it, without the relay.</p><button class="btn ghost sm" type="button" id="rebuild" ${rebuilding ? html`disabled aria-busy="true"` : ''}>Rebuild</button></details>
+    ${BigInt(CHECKPOINTS) ? html`<details class="adv" id="points-more" ${pointsOpen ? 'open' : ''}><summary>Catch-up points</summary><p class="note">A key with nothing read yet starts from the pool’s newest catch-up point rather than its first block: the tree’s edge at some count, posted on chain by anyone who has read that far, kept only if the pool held its root. ${pointLine(S.chain)}</p><button class="btn ghost sm" type="button" id="post-point" ${canPost(S.chain) ? '' : 'disabled'}>Post one from my wallet on ${S.chain.full}</button></details>` : ''}`);
+  const pm = $('#points-more'), pp = $('#post-point');
+  if (pm) pm.ontoggle = (e) => { pointsOpen = e.currentTarget.open; };
+  if (pp) pp.onclick = (e) => postPoint(e.currentTarget, S.chain);
   $('#rebuild').onclick = (e) => S.busy ? toast('Wait for the current action to finish, then rebuild.', true) : rebuilding || busy(e.currentTarget, async () => {
     rebuilding = true; paintActivity();
     const res = await Promise.allSettled(CHAINS.map(async (c) => { const W = walletOn(c); await W.rescan(); await syncChain(c, true); }));
     const bad = CHAINS.filter((c, i) => res[i].status === 'rejected').map((c) => c.name);
     toast(bad.length ? `Rebuilt, except ${bad.join(' and ')}, which could not be read. Try again.` : 'Rebuilt from your key.', !!bad.length);
   }).finally(() => { rebuilding = false; paintActivity(); });
+}
+
+// The newest catch-up point on a chain, read once a key is open and again after a post: { size, block } or null, as
+// `point`; undefined while unread.
+let pointsOpen = false;
+function pointLine(c) {
+  const st = CH[c.chainId];
+  if (st.point === undefined && st.W && !st.pointBusy) { st.pointBusy = true; st.W.latestPoint().then((p) => { st.point = p; }, () => { st.point = null; }).finally(() => { st.pointBusy = false; paintActivity(); }); }
+  const p = st.point;
+  return p === undefined ? 'Reading the newest one…' : p === null ? `${c.full} has none yet.` : `The newest on ${c.full} is at ${group(p.size)} of the pool’s ${group(st.leaves ?? 0)} leaves (block ${group(p.block)}).`;
+}
+// Posting is for a wallet that has read the whole history, where the pool has grown since the newest point.
+const canPost = (c) => { const st = CH[c.chainId]; return !!(S.key && st.W && st.at && st.W.older() == null && st.point !== undefined && (st.point == null || st.point.size < (st.leaves ?? 0)) && !S.busy); };
+function postPoint(btn, c) {
+  return busy(btn, async () => {
+    try {
+      await walletReady(c, (m) => toast(m));
+      const h = await walletOn(c).postPoint({ onStep: (m) => toast(m) });
+      if (!h) throw new Error('Someone posted a newer point first.');
+      toast(`Posted. ${short(h, 8)}`);
+      CH[c.chainId].point = undefined;
+    } catch (e) { warn(e); }
+    paintActivity();
+  });
 }
 
 // ── the device ──
@@ -5873,7 +6133,7 @@ function paintDevice() {
     ${PROVER.err ? html`<p class="note err">${errText(PROVER.err)}</p>` : ''}
     <div class="foot-a"><button class="btn ghost sm" type="button" id="device-load" ${PROVER.state !== 'idle' ? 'disabled' : ''}>Download the proving key now</button><button class="link" type="button" id="device-file">or load the two files from disk</button></div>`);
   paintMeter();
-  $('#device-more').addEventListener('toggle', (e) => { deviceMore = e.currentTarget.open; });
+  $('#device-more').ontoggle = (e) => { deviceMore = e.currentTarget.open; };
   $('#device-load').onclick = () => prover().catch(() => {});
   $('#device-file').onclick = loadFromDisk;
 }
@@ -5891,6 +6151,7 @@ function loadFromDisk() {
       for (const a of [CEREMONY.wasm, CEREMONY.zkey]) await cache.put(`${location.origin}/${a.name}?sha256=${a.sha256}`, new Response(got[a.name].slice()));
     } catch {}
     proverP?.then((p) => p.stop()).catch(() => {});
+    PROVER.stop?.(); PROVER.stop = null;
     proverP = null;
     prover([got[CEREMONY.wasm.name], got[CEREMONY.zkey.name]]).then(() => toast('Proving key loaded.')).catch((e) => toast(errText(e), true));
   };

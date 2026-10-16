@@ -326,7 +326,7 @@ await p.waitForFunction(() => /points to this address/.test(document.querySelect
 await p.fill('#f-ramt', '0.5'); await p.fill('#f-rfor', 'rent');
 await p.click('#f-rchains [data-rs="base"]');
 const link = await p.textContent('#f-rlink');
-ok(/#pay=ross\.wei&n=[0-9a-f]{64}&ns=[0-9a-f]{128}&amount=0\.5&chain=base&for=rent$/.test(link), 'the link carries the name, a signed deposit address, amount, chain and note', link);
+ok(/#pay=ross\.wei&n=[0-9a-f]{64}&ns=[0-9a-f]{128}&amount=0\.5&chain=base&chains=base&for=rent$/.test(link), 'the link carries the name, a signed deposit address, amount, the one chain offered (as a restriction) and note', link);
 await p.click('#f-rchains [data-rs="any"]');
 ok(!/chain=/.test(await p.textContent('#f-rlink')), 'and offers every chain unless one is picked');
 ok(await p.isVisible('#f-qr svg'), 'with a QR code of it');

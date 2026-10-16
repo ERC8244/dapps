@@ -224,6 +224,12 @@ archive node of their own can set it under *Endpoints*.
 - **Relays:** one per chain, for relayed spends, fee quotes, an index of pool events and watching deposit addresses.
   The reader can point a chain at another relay or none. A relay the reader sets is held to the fee ceiling but not
   to the default relay's address.
+- **The catch-up registry** (TacitEvmPoolCheckpoints, `0x000000CDfeda8512b8DcD8642765A5Fa43b6Ab4b` on each chain): the
+  pool's tree edge at a count, posted by anyone who has read that far and kept only if the pool held its root. A key
+  with nothing read yet starts from the newest point at once and reads the history behind it in the background; the
+  page checks a point against the pool the same way it checks every page of the relay's index, and offers to post one
+  (Activity → Catch-up points) from a wallet that has read the whole history. A chain without the registry is read from
+  the pool's first block.
 - **Mirrors** for the proving key, as above.
 - **Swaps:** zQuoter (`0x000000bd2db80567c23e353ca95a251c573cbf9b`) finds routes and zRouter
   (`0x000000000000FB114709235f1ccBFfb925F600e4`) runs them, for shielding from a token and withdrawing as one; the zap

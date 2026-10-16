@@ -14,13 +14,15 @@ if (a < 0 || end < 3) throw new Error('page layout changed: makePoolWallet');
 // The engine's messages write amounts with the page's own formatting, which the page defines further down.
 const f0 = mod.indexOf('const group ='), f1 = mod.indexOf('\nconst ethStr', f0);
 if (f0 < 0 || f1 < 0) throw new Error('page layout changed: fmt');
-const body = `${mod.slice(0, end)}\n${mod.slice(f0, f1)}\nexport { headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, H, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
+const body = `${mod.slice(0, end)}\n${mod.slice(f0, f1)}\nexport { headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, edgeRoot, treeFromEdge, rootFromPath, secp, getLogs, H, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
 const file = path.join(os.tmpdir(), `tacit-pay-engine-${createHash('sha256').update(body).digest('hex').slice(0, 12)}.mjs`);
 fs.writeFileSync(file, body);
 export const lib = await import(file);
 const {makePoolWallet, poolKeys, sealNote, poolAsset, incTree, hex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress} = lib;
 
 export const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', MULTICALL = '0xcA11bde05977b3631167028862bE2a173976CA11';
+// The catch-up registry (TacitEvmPoolCheckpoints), as the page names it.
+export const CHECKPOINTS = /const CHECKPOINTS = '(0x[0-9a-fA-F]{40})'/.exec(mod)[1];
 const iface = new Interface(['function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[] returnData)', 'function getEthBalance(address) view returns (uint256)']);
 const coder = AbiCoder.defaultAbiCoder();
 const h32 = (x) => '0x' + BigInt(x).toString(16).padStart(64, '0');
@@ -29,6 +31,16 @@ const rnd = () => BigInt(Math.floor(Math.random() * 2 ** 50)) + 1n;
 export function mkNode({deployBlock = 100, multicall = true} = {}) {
   const node = {tip: deployBlock + 10, logs: [], size: 0, tree: incTree(), roots: new Map(), balances: new Map(), calls: [], multicall, lag: 0, rootLagCalls: 0, txn: 0, receipts: new Map(), spent: new Set(), sizes: [[deployBlock, 0]], logReads: []};
   node.roots.set(String(node.tree.root), 0);
+  // Catch-up points, as the registry serves them: size → { block, prev, filled }; `lie` serves an edge the pool never held.
+  node.points = { latest: 0, at: new Map() };
+  node.postPoint = ({block, lie = false} = {}) => {
+    const e = node.tree.edge();
+    // A lie changes a level the fold reads for this count: the lowest set bit's.
+    const low = e.size ? Math.log2(e.size & -e.size) : 0, filled = lie ? e.filled.map((x, i) => (i === low ? x ^ 1n : x)) : e.filled;
+    node.points.at.set(e.size, {block: block ?? node.tip, prev: node.points.latest, filled});
+    if (e.size > node.points.latest) node.points.latest = e.size;
+    return e.size;
+  };
   // The leaf count as of a block, for a read at a block tag.
   node.sizeAt = (tag) => { if (typeof tag !== 'string' || !/^0x[0-9a-f]+$/i.test(tag)) return node.size; const b = parseInt(tag, 16); let s = 0; for (const [at, n] of node.sizes) if (at <= b) s = n; return s; };
   node.addTransact = ({block, nf, outs, ext = 0n, memos = ['0x', '0x']}) => {
@@ -57,6 +69,7 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
     if (method === 'eth_getLogs') {
       const f = params[0], from = parseInt(f.fromBlock, 16), to = parseInt(f.toBlock, 16);
       node.logReads.push(from);
+      if (node.logDelay) { const ms = node.logDelay(from, to); if (ms) await new Promise((r) => setTimeout(r, ms)); }
       return node.logs.filter((l) => l.address.toLowerCase() === f.address.toLowerCase() && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to && (!f.topics || f.topics.every((t, i) => !t || (Array.isArray(t) ? t.includes(l.topics[i]) : t === l.topics[i]))));
     }
     if (method === 'eth_call') {
@@ -70,6 +83,11 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
           return [false, '0x'];
         });
         return iface.encodeFunctionResult('aggregate3', [res]);
+      }
+      if (to.toLowerCase() === CHECKPOINTS.toLowerCase()) {
+        node.pointReads = (node.pointReads || 0) + 1;
+        if (sel === id('latest()').slice(0, 10)) return coder.encode(['uint256'], [node.points.latest]);
+        if (sel === id('pointAt(uint256)').slice(0, 10)) { const p = node.points.at.get(Number(BigInt('0x' + data.slice(10)))); return coder.encode(['uint256', 'uint256', 'bytes32[32]'], p ? [p.block, p.prev, p.filled.map(h32)] : [0, 0, Array(32).fill(h32(0n))]); }
       }
       if (to.toLowerCase() === POOL.toLowerCase()) {
         if (sel === id('nextIndex()').slice(0, 10)) return coder.encode(['uint256'], [size]);
@@ -89,10 +107,10 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
   return node;
 }
 
-export function mkWallet(node, {keeper = null, confirmations = 3, deployBlock = 100, vote, head, key = new Uint8Array(32).fill(7), prove = null} = {}) {
+export function mkWallet(node, {keeper = null, confirmations = 3, deployBlock = 100, vote, head, key = new Uint8Array(32).fill(7), prove = null, points = false, store = null} = {}) {
   const keys = poolKeys(key);
-  const chain = {chainId: 1, pool: POOL, router: ROUTER, rpc: node.rpc, deployBlock, confirmations, keeper, vote, head};
-  const W = makePoolWallet({chain, keys, prove, store: null, signer: null, feed: !!keeper});
+  const chain = {chainId: 1, pool: POOL, router: ROUTER, rpc: node.rpc, deployBlock, confirmations, keeper, vote, head, points: points ? CHECKPOINTS : null};
+  const W = makePoolWallet({chain, keys, prove, store, signer: null, feed: !!keeper});
   return {W, keys, chain};
 }
 export const asset = poolAsset(1, POOL);

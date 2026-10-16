@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pTSvbDT16MpM2v1fQEHjOz6uSkIBJ9Mef7tMv2ux7qE=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss://relay.walletconnect.org http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8HLNhMrJiCoxU7ZBzEAEHzst2ed+MiKK8Jp4uhdyaEo=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss://relay.walletconnect.org http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -3177,6 +3177,10 @@ const warm = () => { if (!navigator.connection?.saveData) prover().catch(() => {
 // part (bytes, hashes, secp256k1 and Poseidon: the same code, under the page's hash pin) share both out over the device's
 // cores; when they cannot run, the engine does the work itself.
 const SCAN = { ws: null, url: '', timer: 0, seq: 0, wait: new Map() };
+// A part that no worker answers in two minutes (a worker the browser stopped without an error) ends them all, so the read goes on
+// in this thread rather than waiting for ever.
+const SCAN_PART_MS = 120_000;
+const scanStop = () => { for (const r of SCAN.wait.values()) r.reject(new Error('a scan worker stopped')); SCAN.wait.clear(); SCAN.ws?.forEach((w) => w.terminate()); SCAN.ws = null; };
 function scanWorkers() {
   // Ended a minute after the last use once nothing waits on them (a tab put to sleep mid-read wakes to this timer
   // first); what is still unanswered ten minutes on is given up, so a read fails rather than waiting forever.
@@ -3199,7 +3203,7 @@ onmessage = ({ data: { id, v, pks, xs } }) => {
   secp.mulMany(pts, V).forEach((c, i) => { if (c) out.set(c, 33 * i); });
   postMessage({ id, out }, [out.buffer]);
 };`], { type: 'text/javascript' }));
-  const fail = () => { for (const r of SCAN.wait.values()) r.reject(new Error('a scan worker stopped')); SCAN.wait.clear(); SCAN.ws?.forEach((w) => w.terminate()); SCAN.ws = null; };
+  const fail = scanStop;
   try {
     SCAN.ws = Array.from({ length: Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 1)) }, () => {
       const w = new Worker(SCAN.url);
@@ -3220,7 +3224,11 @@ async function scanShare(items, pack, unpack) {
     const mine = items.slice(j * per, (j + 1) * per), id = ++SCAN.seq;
     if (!mine.length) return [];
     const [msg, move] = pack(mine);
-    return new Promise((resolve, reject) => { SCAN.wait.set(id, { resolve: (out) => resolve(unpack(out)), reject }); w.postMessage({ id, ...msg }, move); });
+    return new Promise((resolve, reject) => {
+      const late = setTimeout(scanStop, SCAN_PART_MS);
+      SCAN.wait.set(id, { resolve: (out) => { clearTimeout(late); resolve(unpack(out)); }, reject: (e) => { clearTimeout(late); reject(e); } });
+      w.postMessage({ id, ...msg }, move);
+    });
   }));
   return parts.flat();
 }
@@ -3230,7 +3238,9 @@ const sharedSecrets = (v, pks) => scanShare(pks, (mine) => { const b = new Uint8
 // The hashes of a tree level's pairs ([left, right, …]), shared out by whole pairs; here when the workers cannot run.
 const hashPairs = (xs) => {
   const pairs = Array.from({ length: xs.length / 2 }, (_, i) => [xs[2 * i], xs[2 * i + 1]]);
-  return scanShare(pairs, (mine) => [{ xs: mine.flat() }, []], (out) => out).catch(() => pairs.map((p) => H(p)));
+  // On this thread a level of thousands of pairs would hold the page still, so it gives way every 256 hashes.
+  const here = async () => { const out = []; for (let i = 0; i < pairs.length; i++) { out.push(H(pairs[i])); if (i % 256 === 255) await sleep(0); } return out; };
+  return scanShare(pairs, (mine) => [{ xs: mine.flat() }, []], (out) => out).catch(here);
 };
 // A throwaway key's wallet, which only proves a deposit, owns no note to look for.
 const noSecrets = async (v, pks) => pks.map(() => new Uint8Array(33));
@@ -3709,7 +3719,7 @@ async function connectWc() {
   mount(body, html`<p class="note">Connecting…</p>`);
   d.showModal();
   try {
-    const paired = client.pair(CHAINS.map((c) => c.chainId), { name: 'anon.wei', description: 'Private ETH payments', url: location.origin, icons: [] });
+    const paired = client.pair(CHAINS.map((c) => c.chainId), { name: 'anon.wei', description: 'Private ETH payments', url: location.origin, icons: ['https://tacit.finance/tac-logo.png'] });
     paired.catch(() => {});
     const { uri, done } = await Promise.race([paired, closed]);
     done.catch(() => {});
@@ -3767,7 +3777,8 @@ async function restoreWc() {
     if (isAddr(a || '') && !S.wallet) bind({ info: { name: session.peerName || WC_ENTRY.info.name, rdns: WC_ENTRY.info.rdns }, provider }, a); else client.close();
   } catch { wcc().close(); }
 }
-const CHAIN_ADD = Object.fromEntries(CHAINS.map((c) => [c.chainId, { chainName: c.full, rpcUrls: [c.rpc[0]], blockExplorerUrls: [c.explorer] }]));
+// A wallet that has no picture for a chain it is asked to add shows ours (Ethereum is in every wallet).
+const CHAIN_ADD = Object.fromEntries(CHAINS.map((c) => [c.chainId, { chainName: c.full, rpcUrls: [c.rpc[0]], blockExplorerUrls: [c.explorer], ...(c.chainId === 1 ? {} : { iconUrls: [`https://tacit.finance/chain-icons/${c.chainId}.svg`] }) }]));
 // The wallet is put on the chain before anything is proved: switched, or added first when it has never seen it.
 // Reads that name the connected account or its transfers go to the wallet's own node, which knows them already. A wallet
 // answers for the chain it is on, so a read for another chain is not made at all.
@@ -3925,7 +3936,8 @@ function lock() {
 
 // ── per chain ──
 // A relay the reader set is held to the fee ceiling but not to the default relay's address.
-const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, points: CHECKPOINTS, rpc: rpcOn(c), head: () => headOf(headNodes(c)), vote: (to, data) => quorum(to, data, ownNodes(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
+const pointsAddr = () => (/^none$/i.test(ends.points || '') ? null : /^0x[0-9a-fA-F]{40}$/.test(ends.points || '') ? ends.points : CHECKPOINTS);
+const chainCfg = (c) => ({ chainId: c.chainId, pool: POOL, router: ROUTER, points: pointsAddr(), rpc: rpcOn(c), head: () => headOf(headNodes(c)), vote: (to, data) => quorum(to, data, ownNodes(c)), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayOf(c), ...(relayOf(c) !== c.relay && { relayer: null }) });
 function walletOn(c) {
   const st = CH[c.chainId];
   return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c), proofMs: () => PROVER.ms || 0, secrets: sharedSecrets, pairs: hashPairs }));
@@ -6765,10 +6777,11 @@ function renderWalletSheet() {
 }
 function renderSettings() {
   const el = $('#settings-body');
-  mount(el, html`<p class="lede">Each chain is read through public nodes, which see your IP address. With your own node, or a private RPC URL, the reads that say what you are doing go only to it: names, swap routes, withdrawal addresses, your deposit addresses and the pool’s checks. Names, and some checks of a withdrawal address, are read on Ethereum, so add one there too. One node is taken as given; two, separated by a space, must agree. The pool’s history, the same for everyone, is read through your node first, with public nodes as backup.</p>
-    <p class="note">A relay sends payments for you and sees your IP address and what it sends; it cannot change where they go. Saved in this browser.</p>
+  mount(el, html`<p class="lede">Each chain is read through public nodes, which see your IP address. Add a node of your own, or a private RPC URL, and the reads that say what you are doing go only to it: names, swap routes, withdrawal addresses, your deposit addresses and the pool’s checks. Names and some withdrawal checks are read on Ethereum, so add one there too. One node is taken as given; two, separated by a space, must agree. The pool’s history, the same for everyone, is read through your node first, with public nodes as backup.</p>
+    <p class="note">A relay sends payments for you and sees your IP address and what it sends; it cannot change where they go. The catch-up registry is where a new device starts reading: your own, or none to read from the pool’s first block. Saved in this browser.</p>
     ${CHAINS.map((c) => html`<label class="lbl" for="e-rpc-${c.chainId}"><span>${c.full} · your own node</span></label><textarea id="e-rpc-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.rpc?.[c.chainId] || []).join(' ')}</textarea>
       <label class="lbl" for="e-relay-${c.chainId}"><span>${c.full} relay</span></label><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:58px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
+    <label class="lbl" for="e-points"><span>Catch-up registry · an address, or none</span></label><input id="e-points" spellcheck="false" placeholder="${CHECKPOINTS} · or none" value="${/^none$/i.test(ends.points || '') ? 'none' : /^0x[0-9a-fA-F]{40}$/.test(ends.points || '') ? ends.points : ''}">
     <label class="lbl" for="e-wc"><span>WalletConnect project ID</span></label><input id="e-wc" spellcheck="false" placeholder="32 characters (optional)" value="${/^[0-9a-f]{32}$/.test(ends.wc || '') ? ends.wc : ''}">
     <label class="lbl" for="e-mirror"><span>Another mirror for the proving key</span></label><textarea id="e-mirror" spellcheck="false" style="min-height:58px" placeholder="https://…/ serving transact.wasm and transact_final.zkey">${ends.mirror || ''}</textarea>
     <div class="row2"><button class="btn" type="button" id="e-save">Save</button><button class="btn ghost" type="button" id="e-reset">Use the defaults</button></div>`);
@@ -6777,9 +6790,12 @@ function renderSettings() {
   const good = (u) => /^https:\/\/[^\s/]+/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(u);
   const urls = (t) => [...new Set(t.split(/\s+/).filter(Boolean).map((u) => u.replace(/\/+$/, '')))];
   $('#e-save').onclick = async (e) => {
-    const next = { rpc: {}, relay: {}, mirror: '', wc: '' }, bad = [];
+    const next = { rpc: {}, relay: {}, mirror: '', wc: '', points: '' }, bad = [];
     const take = (t) => { const l = urls(t); bad.push(...l.filter((u) => !good(u))); return l.filter(good); };
     next.mirror = take($('#e-mirror').value)[0] || '';
+    const pts = $('#e-points').value.trim();
+    if (pts && !/^none$/i.test(pts) && !/^0x[0-9a-fA-F]{40}$/.test(pts)) return toast('A catch-up registry is an 0x address, or none.', true);
+    next.points = /^none$/i.test(pts) ? 'none' : pts;
     const wc = $('#e-wc').value.trim().toLowerCase();
     if (wc && !/^[0-9a-f]{32}$/.test(wc)) return toast('A WalletConnect project ID is 32 hex characters.', true);
     next.wc = wc;
@@ -6814,7 +6830,7 @@ function applyEndpoints(next) {
 $('#wallet').onclick = openSheet;
 $('#settings-open').onclick = () => { renderSettings(); $('#sheet-settings').showModal(); };
 // The footer says when the reader's own endpoints are in use, so a setting made long ago is not forgotten.
-const endsMark = () => { $('#settings-open').textContent = Object.values(ends.rpc || {}).some((x) => x?.length) || Object.keys(ends.relay || {}).length || ends.mirror || ends.wc ? 'Endpoints: yours' : 'Endpoints'; };
+const endsMark = () => { $('#settings-open').textContent = Object.values(ends.rpc || {}).some((x) => x?.length) || Object.keys(ends.relay || {}).length || ends.mirror || ends.wc || ends.points ? 'Endpoints: yours' : 'Endpoints'; };
 endsMark();
 $$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close());
 // A sheet closes on a click on its backdrop, not on a drag that began inside it and ended there.

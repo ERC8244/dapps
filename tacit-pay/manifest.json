@@ -1,7 +1,7 @@
 {
   "name": "tacit-pay",
-  "title": "anon.wei — private ETH payments",
-  "description": "Onchain front end for private ETH payments on Ethereum, Base and Robinhood Chain: shield from any wallet into anyone’s private balance, pay privately, withdraw any part. Proved in the reader’s browser, recovered from the reader’s key.",
+  "title": "anon.wei \u2014 private ETH payments",
+  "description": "Onchain front end for private ETH payments on Ethereum, Base and Robinhood Chain: shield from any wallet into anyone\u2019s private balance, pay privately, withdraw any part. Proved in the reader\u2019s browser, recovered from the reader\u2019s key.",
   "source": "dapp/page.html",
   "page": "dapp/page.min.html",
   "bytes": 382215,
@@ -13,32 +13,37 @@
   },
   "deployment": {
     "chainId": 1,
-    "contract": "0x0000005a9E52BD30867872DCb323bc78Eb5cF919",
-    "pageSha256": "947bc1a7b9d25f449b602bd0b543726dfcf035d29654fbd59316fafc63d1313c",
+    "contract": "0x937BFF44d6EeeF798AbB0088b6441843eA276DFF",
+    "previous": "0x0000002145004Fd9637c0FA5AED0A9Ea05E89A9D",
+    "pageSha256": "ceeaad92839b970556d371373519e4f62a89fded79222f3c8ef9880bcde3c7d4",
     "steward": "0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20",
     "chunkContracts": [
-      "0xB0d9a87d555c8b597107369643F09d91F3c81058",
-      "0x86671Ec8a873FC9277e99b4a0da244087476e7f2",
-      "0xE4bF37A5ce872F27946C17ee803c0f7F827c68b3",
-      "0xe8fb74740De2D47d71D760139B30e30B652B13f4",
-      "0xc572e7526224F74911Ad4A580E0402ecD6DaE0c2",
-      "0xC7ab1591cC002729CB63939b2cF426c8936d78Fc",
-      "0x9a4EEEae095B3BC7F59fdc4e3d8ed0A5f84c4E56",
-      "0x01f0F5152C48F9478Ca4881320b8dbc6bFBD1357",
-      "0x276C7d1Eca90825A42E7B85061168F3E8Bd4710A",
-      "0x0c6bC4b50E2e4245042043fC16790B1f17f1F08F",
-      "0x9DaB8DD31f7A5f964e98014bBC58c2C74364015d",
-      "0x4C30b26aeBfDa219B1866908780dA3392554E0B4"
+      "0xfe72Bfe4eF3E41C86D075Aa1A8707c2422384D6a",
+      "0x8788ec1062445eb98Edea61DfA8d0B8F5bfB6Da3",
+      "0xA67f59f4B3177422Ae054B255e5ccaC98477515E",
+      "0xDfAc1698E5912372dA487De765BB737fEf19331F",
+      "0xEB644A43662Dacc110E1EBD5415BEA68B6399829",
+      "0x9c8802Ae436E98242881Ac9e15B398fF5F4b517A",
+      "0x56ea184D2599235544f6a169D48BB2E94949a08F",
+      "0xcc3B31C61BAcaA18422bB16Fb10033E4e85C42cd",
+      "0xD03F73c44B84482298fd6911fBC7913135a40CD6",
+      "0xFD5dF6F4875551706115f18E0B2cF963DBFC6c2F",
+      "0x06a8b5D22f5D3830D676Cc12B330d6A40C0ebedf",
+      "0x4E760f0Fb66B1DB6391Cd5ec2Bcde16FCB25b41d",
+      "0x3572808339C93E77f871B87b720b90b802D03524",
+      "0x284d855b659253f61Cf1425f22830Ad9fD62b554",
+      "0xE5C8D5bd9C914D83639976A0D6ccb96d7442a599",
+      "0x182EB4a67b24542504CaBb7AC34243B8598213Dd"
     ],
     "routes": [
       {
         "kind": "erc8244",
-        "url": "https://0x0000005a9e52bd30867872dcb323bc78eb5cf919.w4eth.io/",
+        "url": "https://0x937bff44d6eeef798abb0088b6441843ea276dff.w4eth.io/",
         "serves": "exact"
       },
       {
         "kind": "erc4804",
-        "url": "https://0x0000005a9e52bd30867872dcb323bc78eb5cf919.1.w3link.io/",
+        "url": "https://0x937bff44d6eeef798abb0088b6441843ea276dff.1.w3link.io/",
         "serves": "modified",
         "note": "w3link injects its own script after <body>; the bytes it serves are not the bytes html() returns"
       },

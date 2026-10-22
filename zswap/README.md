@@ -111,8 +111,8 @@ re-sending 28 chunk addresses.
 v0.1 and serves the newest version that has existed for at least three days, so
 a release reaches it without anyone repointing anything, and a hijacked vote
 cannot move its readers in one transaction. Since 2026-10-20 its `current()` is
-the zSwapLink, and its `html()` is this page. A name that should always serve
-the newest zSwap points at the resolver; `zswap.wei` points at v0.3 directly
-today, set by its owner. Every version also stays reachable at its own address.
+the zSwapLink, and its `html()` is this page. `zswap.wei` points at the resolver
+(since 2026-10-23), so the name follows each DAO release on that delay. Every
+version also stays reachable at its own address.
 
 See [deploy/ZSWAP-8244.deployed.md](deploy/ZSWAP-8244.deployed.md).

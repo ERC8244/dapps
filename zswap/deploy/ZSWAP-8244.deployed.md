@@ -71,7 +71,9 @@ page byte for byte, and the manifest holds its w4eth route to that.
 
 ## Names and the resolver
 
-`zswap.wei` resolves (WNS) directly to the v0.3 contract, set by its owner.
+`zswap.wei` resolves (WNS) to zSwapResolver, set by its owner on 2026-10-23
+(it pointed directly at the v0.3 contract before). The name's owner can still
+repoint it; what the resolver serves follows the lineage and its three-day delay.
 
 `zSwapResolver` [`0x000000E7DAD6128683D1fb415e80B30c23dAb7AC`](https://etherscan.io/address/0x000000E7DAD6128683D1fb415e80B30c23dAb7AC#code)
 walks the lineage from v0.1 and serves the newest version that has stood for

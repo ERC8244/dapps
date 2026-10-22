@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>zSwap wallet modules</title>
+<style>
+:root{--bg:#fff;--fg:#0a0a0a;--mut:#666;--edge:#ddd}
+@media (prefers-color-scheme:dark){:root{--bg:#000;--fg:#f2f2f2;--mut:#999;--edge:#333}}
+body{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}
+main{max-width:420px;margin:0 auto;display:grid;gap:12px}
+button{font:inherit;padding:10px 14px;border-radius:999px;border:1px solid var(--fg);background:var(--fg);color:var(--bg);cursor:pointer}
+button.alt{background:transparent;color:var(--fg)}
+#qr{max-width:280px}
+#log{font:12px/1.5 ui-monospace,monospace;color:var(--mut);white-space:pre-wrap;word-break:break-all;border-top:1px solid var(--edge);padding-top:8px}
+</style>
+<main>
+  <h1>zSwap wallet modules</h1>
+  <p>Wallets in this browser (EIP-6963), plus WalletConnect configured from the onchain zEndpoints roster.</p>
+  <div id="wallets"></div>
+  <button id="wc">Connect with WalletConnect</button>
+  <div id="qr"></div>
+  <button id="sign" class="alt" hidden>Sign a message</button>
+  <div id="log"></div>
+</main>
+<script type="module">
+import {createClient, QR8} from "./walletconnect.js";
+import {toProvider} from "./provider.js";
+import {wallets, rescan} from "./wallets.js";
+import {endpoints} from "./registry.js";
+
+const RPC = "https://ethereum-rpc.publicnode.com";
+const $ = (id) => document.getElementById(id);
+const log = (s) => ($("log").textContent += s + "\n");
+let provider = null;
+
+setTimeout(() => {
+  rescan();
+  for (const w of wallets()) {
+    const b = document.createElement("button");
+    b.className = "alt";
+    b.textContent = w.info.name;
+    b.onclick = async () => use(w.provider, w.info.name);
+    $("wallets").append(b);
+  }
+}, 300);
+
+async function use(p, name) {
+  provider = p;
+  const [account] = await p.request({method: "eth_requestAccounts"});
+  log(`${name}: ${account} on chain ${parseInt(await p.request({method: "eth_chainId"}), 16)}`);
+  $("sign").hidden = false;
+}
+
+$("wc").onclick = async () => {
+  const [relay] = await endpoints(RPC, "wc");
+  const [projectId] = await endpoints(RPC, "wcpid");
+  log(`relay ${relay}, project ${projectId} (from zEndpoints)`);
+  const client = createClient({relay});
+  const {uri, done} = await client.pair(projectId, {name: "zSwap modules demo", description: "", url: location.origin, icons: []});
+  const m = QR8.build(uri);
+  let d = "";
+  for (let r = 0; r < m.size; r++) for (let c = 0; c < m.size; c++) if (m.modules[r][c]) d += `M${c} ${r}h1v1h-1z`;
+  $("qr").innerHTML = `<svg viewBox="-4 -4 ${m.size + 8} ${m.size + 8}" style="width:100%;background:#fff"><path fill="#000" d="${d}"/></svg>`;
+  log("scan the code with a mobile wallet");
+  const session = await done;
+  $("qr").innerHTML = "";
+  const read = async (method, params) => {
+    const r = await fetch(RPC, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({jsonrpc: "2.0", id: 1, method, params})});
+    return (await r.json()).result;
+  };
+  await use(toProvider(client, session, {read}), "WalletConnect");
+};
+
+$("sign").onclick = async () => {
+  const [account] = await provider.request({method: "eth_accounts"});
+  const msg = "0x" + [...new TextEncoder().encode("hello from zSwap's wallet modules")].map((b) => b.toString(16).padStart(2, "0")).join("");
+  log("signature " + await provider.request({method: "personal_sign", params: [msg, account]}));
+};
+</script>
+</html>

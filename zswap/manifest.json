@@ -1,0 +1,79 @@
+{
+  "name": "zswap",
+  "title": "zSwap \u2014 the onchain DEX",
+  "description": "Swap, provide liquidity, trade orders, send, launch and pay privately on Ethereum, Base and Robinhood Chain. Routes are built by onchain quoters and settle through zRouter; the page is one hand-written HTML file stored as 28 data contracts, with its own WalletConnect client.",
+  "page": "dapp/page.html",
+  "bytes": 666463,
+  "sha256": "b2a2bc648ec0237e3f8da7af86492c757be28da42ddeacecaf68df5f8f25f478",
+  "chunks": {
+    "artifact": "zSwap",
+    "count": 28
+  },
+  "deployment": {
+    "chainId": 1,
+    "contract": "0x0a0Be4271Ca53f0002800a323Dee65A6B31CD507",
+    "pageSha256": "b2a2bc648ec0237e3f8da7af86492c757be28da42ddeacecaf68df5f8f25f478",
+    "dao": "0x5E58BA0e06ED0F5558f83bE732a4b899a674053E",
+    "chunkContracts": [
+      "0xA31cc12D1061b9e7eA0354Bd83c912cE6517aa9C",
+      "0xd9dc621bC7a5FFFfbaE5ae318b0d02e5cC6dF246",
+      "0x8495e5FbFABFDE1D601E253f75436D5AB1459b5E",
+      "0xefc3eAC71cF71aD216049E8c62cf2D16dbcc69bc",
+      "0x4EF02899181746BdF46Ee15826Da59EF04E97050",
+      "0x649bB3e04717F4B9b47F2ceB05827E4f27a03f6F",
+      "0xc21EDe19A8bFaAA6CBA1b5a07e54Fcb4041D4291",
+      "0x8DD29A08289F47806C42a50bFFDb99ecCc3af0f1",
+      "0x4d6aaf190CE25418f3CBeB4154C64cA57e047E50",
+      "0x276f22d54e898503754cc5EcE9e60458892B3B2D",
+      "0x20d8B819b0aCe6A279FD94007125FA98DFb76335",
+      "0x71C6B699B6bc6ff5D3AB4BAC2d624F26d258ECAE",
+      "0xf51C9D22a4DF008fD409747E4fD5fAC58ff5d8E6",
+      "0x662fA39bD8db1cc38b2DDB55FE3e9c091C610614",
+      "0xd411d8E20316e075A54422f3647a2082A8B093f5",
+      "0xa61793d87f6C4CE4A45B82dD8E0383Ce00a618b9",
+      "0x0F1e813516A80cFBA3E86E6c32b384Fda77b54C7",
+      "0x93a12a1C6c2c2a27e5D58cFA1A995C6Cb0ebCB38",
+      "0x8e11aA7345192A1522FF8B6898e510b70093790E",
+      "0x8Ec6D2b571a7D69Ff682b1cc5C36d66202CeFea6",
+      "0xb37522048cA942F681eEB6E36Da2A2bf058F3288",
+      "0x6999FCddf55bf3793aE13fD568f202aDDe4F08cB",
+      "0x80578583280336BE8725bcd77dB38dDAd19D4eA7",
+      "0x2D2dA6d1cDAB7a73844b0B0B8cB1Da4e06D3bf55",
+      "0xBb04c25C629cEaaf7eaF1A1132F218452b9924E3",
+      "0xfd7255Aeab05687B61335F73A00F7B6C9E1374D4",
+      "0x21d663b62Bb20a2B3c222C7b2a17B11d1158A73c",
+      "0xC2c3B453d9b43Bd37721C1a5e676Ad849B8d6fBB"
+    ],
+    "routes": [
+      {
+        "kind": "wns",
+        "url": "https://zswap.wei.limo/",
+        "serves": "exact"
+      },
+      {
+        "kind": "erc8244",
+        "url": "https://0x0a0be4271ca53f0002800a323dee65a6b31cd507.w4eth.io/",
+        "serves": "exact"
+      },
+      {
+        "kind": "erc4804",
+        "url": "https://0x0a0be4271ca53f0002800a323dee65a6b31cd507.1.w3link.io/",
+        "serves": "exact",
+        "note": "zSwap answers resolveMode() \"5219\", so w3link serves request() as-is"
+      },
+      {
+        "kind": "erc8244",
+        "url": "https://0x000000791be31e1f70f2ffa9d32ee3c7bb6e8ba9.w4eth.io/",
+        "serves": "exact",
+        "note": "zSwapLink 0x000000791BE31E1F70f2FFA9d32eE3C7bb6E8ba9, v0.2's lineage successor, relays html() to this release"
+      },
+      {
+        "kind": "erc8244",
+        "url": "https://0x000000e7dad6128683d1fb415e80b30c23dab7ac.w4eth.io/",
+        "serves": "resolver",
+        "note": "zSwapResolver serves the newest lineage version that has stood for three days; today that is the zSwapLink, which relays this release"
+      }
+    ],
+    "resolver": "0x000000E7DAD6128683D1fb415e80B30c23dAb7AC"
+  }
+}

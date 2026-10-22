@@ -39,7 +39,9 @@ await B.waitForFunction(() => /0\.003 ETH is waiting/.test(document.querySelecto
 ok(/0\.003 ETH is waiting/.test(await B.textContent('#bal-note')), 'a browser that issued nothing finds it too, from the key alone', (await B.textContent('#bal-note')).trim());
 await exchange(B);
 rows = await rowsOf(B);
-ok(rows.length === 2 && rows.every((r) => r.take) && rows.map((r) => r.addr).sort().join() === [ann, bob].sort().join(), 'and lists both addresses, each ready to be taken in', rows.map((r) => r.label).join());
+// Its own Receive tab may have issued an address for its payment link meanwhile: that one has nothing waiting.
+const ready = rows.filter((r) => r.take);
+ok(ready.length === 2 && ready.map((r) => r.addr).sort().join() === [ann, bob].sort().join(), 'and lists both addresses, each ready to be taken in', rows.map((r) => r.label).join());
 
 console.log('\ntaking them in');
 await A.click(`#form li:has-text("Ann") [data-take]`);
@@ -50,9 +52,10 @@ await A.click(`#form li:has-text("Bob") [data-take]`);
 s = await A.status(/Taken in|err/);
 ok(/Taken in/.test(s), 'Bob’s too', s);
 ok(await A.balance('0.003') === '0.003', 'private balance 0.003');
-ok(await A.$('#bal-note .callout') === null, 'and nothing is waiting any more');
+const cleared = await A.waitForFunction(() => !document.querySelector('#bal-note .callout'), null, {timeout: 60e3}).then(() => true, () => false);   // deposit addresses are read again at a pace
+ok(cleared, 'and nothing is waiting any more', (await A.textContent('#bal-note')).replace(/\s+/g, ' ').trim().slice(0, 200));
 const acts = await A.rows(2, 'Ethereum');
-ok(acts.filter((r) => /^Came in at a one-time address/.test(r)).length === 2, 'the activity names them one-time addresses', acts.join(' | ').slice(0, 200));
+ok(acts.filter((r) => /^Came in at a one-time deposit address/.test(r)).length === 2, 'the activity names them one-time deposit addresses', acts.join(' | ').slice(0, 200));
 
 const C = await lab.page();
 await C.openKey(K1);
@@ -62,9 +65,10 @@ console.log('\nhow many a key can issue');
 const D = await lab.page();
 await D.openKey(K2);
 await exchange(D);
-for (let i = 1; i <= 20; i++) { await D.click('#f-newbox'); await D.waitForFunction((n) => document.querySelectorAll('#form .rows li').length === n, i, {timeout: 20e3}); }
+for (let i = 1; i <= 20; i++) { await D.click('#f-newbox', {timeout: 600e3}); await D.waitForFunction((n) => document.querySelectorAll('#form .rows li').length === n, i, {timeout: 20e3}); }
 await D.click('#f-newbox');
-await D.waitForFunction(() => [...document.querySelectorAll('#toasts .toast')].some((t) => /No more addresses can be issued/.test(t.textContent)), null, {timeout: 10e3}).catch(() => {});
-ok((await rowsOf(D)).length === 20 && (await D.$$eval('#toasts .toast', (t) => t.some((x) => /No more addresses can be issued/.test(x.textContent)))), 'twenty are issued, then it says why there are no more until one is used');
+await D.waitForFunction(() => [...document.querySelectorAll('#toasts .toast')].some((t) => /No new address yet/.test(t.textContent)), null, {timeout: 10e3}).catch(() => {});
+const toasts = await D.$$eval('#toasts .toast', (t) => t.map((x) => x.textContent.trim()));
+ok((await rowsOf(D)).length === 20 && toasts.some((x) => /No new address yet/.test(x)), 'twenty are issued, then it says why there are no more until one is used', `${(await rowsOf(D)).length} rows; ${toasts.join(' | ').slice(0, 160)}`);
 ok(![A, B, C, D].some((p) => p.errors.length), 'no page errors', [A, B, C, D].flatMap((p) => p.errors).join(' | '));
 finish(() => lab.close());

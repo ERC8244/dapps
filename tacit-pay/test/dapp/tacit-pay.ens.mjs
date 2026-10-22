@@ -7,8 +7,16 @@ import {startFork, ok, finish, hexKey} from './fork-lib.mjs';
 
 const {namehash, AbiCoder, id} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
 const NAME = 'ens.eth', REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
-// The wallet on the page is the name's owner (impersonated on the fork), so the page can publish to it.
-const OWNER = '0xb6E040C9ECAaE172a89bD561c5F73e1C48d28cd9';
+// The wallet on the page is the name's owner (impersonated on the fork), so the page can publish to it. Who owns a real
+// name changes, so the owner is read from the registry as the test starts.
+const ownerOf = async () => {
+  const body = JSON.stringify({jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{to: REGISTRY, data: '0x02571be3' + namehash(NAME).slice(2)}, 'latest']});
+  for (const u of ['https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org']) {
+    try { const r = (await (await fetch(u, {method: 'POST', headers: {'content-type': 'application/json'}, body})).json()).result; if (/^0x[0-9a-f]{64}$/i.test(r || '')) return '0x' + r.slice(-40); } catch {}
+  }
+  throw new Error(`could not read who owns ${NAME}`);
+};
+const OWNER = await ownerOf();
 const lab = await startFork(['ethereum'], {account: OWNER.toLowerCase()});
 const eth = lab.fork('ethereum');
 const coder = AbiCoder.defaultAbiCoder();

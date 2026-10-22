@@ -1,18 +1,17 @@
-/* External Ethereum wallets against the real dapp/page.html, with the chain unplugged as in the page test: wallets
+/* External Ethereum wallets against the deployed page, with the chain unplugged as in the page test: wallets
    that announce themselves (EIP-6963) and a bare window.ethereum, the picker and the wallet remembered from it, a
    refused or already-open request, the two signatures of a first sign-in and the one of a later visit, wallets that
    cannot hold a key, an account switch and a locked wallet, and a chain the wallet must switch to, or add, before
    anything is proved.
 
    Usage: node test/dapp/tacit-pay.wallets.mjs        (PLAYWRIGHT=<path to playwright-core> if not installed here) */
-import fs from 'node:fs';
 import http from 'node:http';
 import {createRequire} from 'node:module';
 import {Wallet, Signature} from 'ethers';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 
 let failures = 0;
 const ok = (cond, msg, extra) => {
@@ -109,6 +108,8 @@ async function open(wallets) {
       if (mode === 'v01') return sig.serialized.slice(0, 130) + (sig.v - 27).toString(16).padStart(2, '0');
       return sig.serialized;
     });
+    // WalletConnect's relay is out of reach here: a socket that cannot open.
+    await ctx.addInitScript(`window.WebSocket = class { constructor() { setTimeout(() => this.onerror && this.onerror(new Event('error')), 30); } close() {} send() {} };`);
     await ctx.addInitScript(`window.__WALLETS = ${JSON.stringify(wallets)};`);
     await ctx.addInitScript(WALLET);
   }
@@ -142,7 +143,9 @@ console.log('one wallet: a first sign-in, then a later visit');
 {
   const p = await open([ALPHA]);
   ok(await label(p) === 'Sign in', 'nothing is asked of the wallet on arrival', (await log(p)).join());
-  await signInFromHeader(p);
+  await p.click('#wallet');
+  await shot(p, 'signin-one-wallet');
+  await p.click('#sheet-wallet [data-in="eth"]');
   ok(await opened(p), 'the wallet opens the key');
   ok((await log(p)).filter((x) => x === '0:personal_sign').length === 2, 'a first sign-in asks for the signature twice', (await log(p)).join());
   ok(/once more|again/i.test(await says(p)), 'and says why it asks again', await says(p));
@@ -150,7 +153,7 @@ console.log('one wallet: a first sign-in, then a later visit');
   await p.click('#tabs [data-tab="receive"]');
   ok(await p.textContent('#form .addr code') === ONE_TACIT1, 'it is the key every Tacit app derives for that account');
   await p.reload(); await p.waitForTimeout(400);
-  ok(await label(p) === short(ALPHA.account), 'a later visit shows the connected account without asking', `${await label(p)} ${(await log(p)).join()}`);
+  ok(await label(p) === `Sign in · ${short(ALPHA.account)}`, 'a later visit shows the connected account, as a way to sign in, without asking', `${await label(p)} ${(await log(p)).join()}`);
   ok(!(await log(p)).includes('0:eth_requestAccounts'), 'by asking what is already connected, not by requesting', (await log(p)).join());
   await p.click('#wallet');
   ok(new RegExp(`Continue with ${short(ALPHA.account).replace('…', '.')}`, 'i').test(await p.textContent('#sheet-wallet [data-in="eth"]')), 'and offers to continue with that account');
@@ -167,7 +170,7 @@ console.log('two wallets: the picker, and the wallet chosen there');
   await signInFromHeader(p);
   ok(await until(p, () => document.querySelector('#sheet-pick')?.open), 'two wallets bring up the picker');
   await shot(p, 'picker');
-  ok((await p.$$eval('#pick-body button', (b) => b.map((x) => x.textContent.trim()))).join() === 'Alpha,Beta', 'listing each by name');
+  ok((await p.$$eval('#pick-body button', (b) => b.map((x) => x.textContent.trim().replace(/a wallet app$/, '')))).join() === 'Alpha,Beta,WalletConnect', 'listing each by name, and WalletConnect for a wallet app');
   await p.keyboard.press('Escape');
   ok(await settled(p), 'closing it puts the button back');
   ok(!(await bad(p)).length, 'without an error', (await bad(p)).join());
@@ -182,7 +185,7 @@ console.log('two wallets: the picker, and the wallet chosen there');
   ok(/Beta/.test(await p.textContent('#sheet-wallet')) && (await p.textContent('#sheet-wallet')).toLowerCase().includes(short(BETA.account)), 'the sheet names the wallet and account that pay gas', await p.textContent('#sheet-wallet'));
   await p.click('#sheet-wallet [data-close]');
   await p.reload(); await p.waitForTimeout(400);
-  ok(await label(p) === short(BETA.account), 'a later visit comes back to the wallet chosen', `${await label(p)} ${(await log(p)).join()}`);
+  ok(await label(p) === `Sign in · ${short(BETA.account)}`, 'a later visit comes back to the wallet chosen', `${await label(p)} ${(await log(p)).join()}`);
   await p.click('#wallet'); await p.click('#sheet-wallet [data-in="eth"]');
   ok(await opened(p), 'and signs in with it');
   ok(!(await p.$('#sheet-pick[open]')) && (await log(p)).every((x) => !/^0:/.test(x)), 'without the picker', (await log(p)).join());
@@ -239,10 +242,11 @@ console.log('a bare window.ethereum, and none at all');
   const p = await open([]);
   await p.click('#wallet');
   await shot(p, 'nowallet');
-  ok(/no ethereum wallet/i.test(await p.textContent('#sheet-wallet')), 'with no wallet, the sheet says so before anything is pressed', await p.textContent('#sheet-wallet'));
+  ok(/no wallet in this browser/i.test(await p.textContent('#sheet-wallet')), 'with no wallet, the sheet says so before anything is pressed', await p.textContent('#sheet-wallet'));
   await p.click('#sheet-wallet [data-in="eth"]');
-  ok(await settled(p), 'pressing it anyway');
-  ok(/wallet app|extension/i.test(await sayText(p)), 'says where a wallet can be found', await sayText(p));
+  ok(await until(p, () => document.querySelector('#sheet-wc')?.open) || await settled(p), 'pressing it anyway opens the WalletConnect sheet (or says why it cannot)');
+  ok(await until(p, () => !document.querySelector('#sheet-wc')?.open) && await settled(p), 'which closes when the relay cannot be reached');
+  ok(/WalletConnect relay could not be reached/.test(await sayText(p)), 'and says so', await sayText(p));
   ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
   await p.context().close();
 }
@@ -296,7 +300,7 @@ console.log('the chain, before anything is proved');
   await p.click('#chains [data-chain="4663"]');
   await p.click('#tabs [data-tab="shield"]');
   await p.click('#f-go');
-  await until(p, () => /Wallet/.test(document.querySelector('#f-max')?.textContent || ''));
+  await until(p, () => /Wallet|Switch wallet/.test(document.querySelector('#f-max')?.textContent || ''));
   await p.fill('#f-samt', '0.01'); await p.fill('#f-sto', PAYEE);
   await p.click('#f-go');
   await until(p, () => /could not be downloaded|proving key/i.test(document.querySelector('#status').textContent), null, 30e3);
@@ -305,6 +309,27 @@ console.log('the chain, before anything is proved');
   ok(await p.evaluate(() => window.__added?.chainName === 'Robinhood Chain' && window.__added?.nativeCurrency?.symbol === 'ETH' && /^https:\/\//.test(window.__added?.rpcUrls?.[0])), 'with the chain’s name, currency and a node');
   const s = await says(p);
   ok(s.indexOf('Robinhood Chain') >= 0 && (s.search(/proving|proving key/i) < 0 || s.indexOf('Robinhood Chain') < s.search(/proving|proving key/i)), 'all before the proof is started', s);
+  ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
+  await p.context().close();
+}
+
+console.log('\nconnected on Shield, then Receive');
+{
+  const p = await open([ALPHA]);
+  await p.click('#tabs [data-tab="shield"]');
+  await p.click('[data-from="wallet"]').catch(() => {});
+  await p.click('#f-conn');
+  await until(p, () => !document.querySelector('#f-conn'));
+  const before = (await log(p)).join();
+  await p.click('#tabs [data-tab="receive"]');
+  await p.waitForTimeout(500);
+  ok((await log(p)).join() === before, 'opening Receive asks the wallet nothing', (await log(p)).join());
+  ok(/Continue with 0xf39f…2266/.test(await p.textContent('#form [data-in="eth"]')), 'it offers to continue with the account already connected');
+  await p.click('#form [data-in="eth"]');
+  ok(await opened(p), 'which opens the key');
+  const l = await log(p);
+  ok(l.filter((x) => x === '0:eth_requestAccounts').length === 1, 'without asking the wallet to connect again', l.join());
+  ok(l.filter((x) => x === '0:personal_sign').length === 2, 'only the signatures of a first sign-in', l.join());
   ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
   await p.context().close();
 }

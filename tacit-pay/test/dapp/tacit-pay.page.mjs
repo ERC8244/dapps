@@ -1,19 +1,18 @@
-/* Runs the real dapp/page.html in Chromium with the chain unplugged: every JSON-RPC call is answered here by a chain
+/* Runs the deployed page in Chromium with the chain unplugged: every JSON-RPC call is answered here by a chain
    with nothing in its pool, and every relay is down. What it checks is what the page computes and shows on its own:
    the document is self-contained and pins its one module, a Tacit key opens to the addresses the specification's
    vectors give, an Ethereum wallet's signature opens the key every Tacit app derives from it, the deposit address
    is shown only once the router agrees with it, and payment links round-trip.
 
    Usage: node test/dapp/tacit-pay.page.mjs        (PLAYWRIGHT=<path to playwright-core> if not installed here) */
-import fs from 'node:fs';
 import http from 'node:http';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
-import {Wallet, AbiCoder, namehash, id} from 'ethers';
+import {Wallet, AbiCoder, namehash, id, getAddress} from 'ethers';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 const text = HTML.toString('utf8');
 
 let failures = 0;
@@ -44,15 +43,15 @@ const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(text)?
 ok(csp.includes(`'sha256-${createHash('sha256').update(module).digest('base64')}'`), 'the CSP pins the one module by its hash');
 const style = /<style>([\s\S]*?)<\/style>/.exec(text)?.[1] ?? '', tags = text.replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
 ok(!/<script[^>]+src=|<link[^>]+href="(?!data:)|<img[^>]+src="(?!data:)/i.test(tags) && !/@import|url\((?!["']?data:)/i.test(style), 'nothing is loaded by URL: no script src, no stylesheet, no remote image or url()');
-ok(/<script type="text\/x-prover" id="prover">/.test(text) && /function makeProver/.test(text), 'the prover is in the document, for its workers');
+ok(/<script type="text\/x-prover" id="prover"[^>]*>/.test(text) && /function makeProver/.test(text), 'the prover is in the document, for its workers');
 ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b') && text.includes('02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1'), 'it pins the ceremony’s proving key and witness program by SHA-256');
 
 // Each chain a hundred blocks past the pool's deployment with nothing in the pool: enough for the page to read, and
 // a router that names BOX0 as the deposit address.
-const seen = new Set(), DOWN = new Set();
+const seen = new Set(), DOWN = new Set(), CALLS = [], NOLOGS = new Set();
 const TIP = {base: 51864114, robinhood: 73991761, ethereum: 26069345};
-// A tacit1 record with only the pool lane (flags 0x04), as a name may publish.
-const POOLONLY = b32m('tacit', [0, 0x04, ...Array(66).fill(0), ...unb32(DEV_TACIT1).slice(-97)]);
+// A tacit1 record with the Bitcoin and pool lanes and no Ethereum-side key (flags 0x05), as a name may publish.
+const POOLONLY = b32m('tacit', [0, 0x05, ...unb32(DEV_TACIT1).slice(2)]);
 const WNS = '0x0000000000696760e15f265e828db644a0c242eb', GNS = '0x9d51d507bc7264d4fe8ad1cf7fe191933a0a81d6', ENSREG = '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e';
 const R_DIRECT = '0x' + '11'.repeat(20), R_WILD = '0x' + '22'.repeat(20), R_OFF = '0x' + '33'.repeat(20);
 // ENS: the resolver set on a name's own node, a parent's resolver that answers for its subnames, and one that answers off-chain.
@@ -66,13 +65,19 @@ const RECORDS = {
   [namehash('friend.wei')]: () => DEV_TACIT1,           // someone else's
   [namehash('blank.wei')]: () => '',                    // registered, nothing published
   [namehash('old.wei')]: () => 'tacit1qqpsxr8grjvk4asyvl',
+  [namehash('mine.wei')]: () => DEV_TACIT1,             // read only after the reader sets their own node
+  [namehash('later.wei')]: () => DEV_TACIT1,
   [namehash('split.wei')]: (host) => ({'ethereum-rpc.publicnode.com': TACIT1, 'mainnet.gateway.tenderly.co': DEV_TACIT1, 'eth.drpc.org': BP1}[host] ?? 'tacit1qq'),
 };
 const coder = AbiCoder.defaultAbiCoder();
 const PAYEE = '0xC1D6F3AC3dFd66bb264f732CB5581DE3E232CC21', PAYEE2 = '0x3e407f4158440F1e5a9E6BA98b0198AEA6d837E3';
+// A token the token list does not hold, with six decimals, as its own contract reports them.
+const TOKEN = '0x' + '7a'.repeat(20);
 const POINTS = {[namehash('bob.wei')]: PAYEE, [namehash('bob.gwei')]: PAYEE2, [namehash('direct.eth')]: PAYEE, [namehash('sub.parent.eth')]: PAYEE2, [namehash('zero.wei')]: '0x' + '00'.repeat(20), [namehash('pool.wei')]: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9'};
 const ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12', ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288';
 const answer = (host, {method, params}) => {
+  // The nodes a reader sets under Endpoints are asked their chain before they are saved: this one for Base, that one for Ethereum.
+  if (method === 'eth_chainId') return host === 'example.org' ? '0x2105' : '0x1';
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
   if (to === ZRPC && data === '0xd77e4c79') return coder.encode(['string[]'], [['https://registry-eth.example', 'http://insecure.example', 'https://ethereum-rpc.publicnode.com']]);
   if (to === ZEND && data.startsWith('0xc03c2d74')) return coder.encode(['string[][]'], [[['https://registry-base.example'], ['https://registry-rh.example'], ['https://registry-logs.example']]]);
@@ -92,7 +97,10 @@ const answer = (host, {method, params}) => {
   }
   if (to === R_OFF) throw {rpcError: {code: 3, message: 'execution reverted', data: '0x556f1830' + '00'.repeat(32)}};
   if (method === 'eth_blockNumber') return '0x' + TIP[/base/.test(host) ? 'base' : /robinhood/.test(host) ? 'robinhood' : 'ethereum'].toString(16);
-  if (method === 'eth_getLogs') return [];
+  if (method === 'eth_getLogs') { if (NOLOGS.has(host)) throw {rpcError: {code: -32005, message: 'logs are not served on this plan'}}; return []; }
+  if (to === TOKEN && data === '0x313ce567') return coder.encode(['uint8'], [6]);
+  if (to === TOKEN && data === '0x95d89b41') return coder.encode(['string'], ['TUSD']);
+  if (to === TOKEN && data === '0x06fdde03') return coder.encode(['string'], ['Test USD']);
   if (method === 'eth_call' && params[0].data.startsWith(id('nextIndex()').slice(0, 10))) return '0x' + '00'.repeat(32);
   if (method === 'eth_getBalance') return params[0].toLowerCase() === '0x000000c2a20657ce25f2ba99737933d031afbee9' ? '0x' + (1234n * 10n ** 18n).toString(16) : '0x0';
   if (method === 'eth_getCode') return '0x6080';
@@ -105,6 +113,7 @@ const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard
 await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   const req = route.request(), url = new URL(req.url());
   seen.add(url.host);
+  if (req.method() === 'POST') try { for (const x of [].concat(JSON.parse(req.postData() || '{}'))) CALLS.push([url.host, x.method, x.params?.[0]?.data || '']); } catch {}
   if (DOWN.has(url.host)) return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"down"}'});
   if (req.method() === 'POST' && !/onrender\.com$/.test(url.host)) {
     const body = JSON.parse(req.postData() || '{}');
@@ -114,9 +123,11 @@ await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"offline"}'});
 });
 await ctx.exposeFunction('__sign', (hex) => DEV.signMessage(Buffer.from(hex.slice(2), 'hex')));
-await ctx.addInitScript(`window.ethereum = { on() {}, request: async ({ method, params }) => {
+await ctx.addInitScript(`let chain = '0x1'; window.ethereum = { on() {}, request: async ({ method, params }) => {
   if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [${JSON.stringify(DEV.address.toLowerCase())}];
-  if (method === 'eth_chainId') return '0x1';
+  if (method === 'eth_chainId') return chain;
+  if (method === 'wallet_switchEthereumChain') { chain = params[0].chainId; return null; }
+  if (method === 'eth_getBalance') return '0x' + (123n * 10n ** 15n).toString(16);
   if (method === 'eth_getCode') return '0x';
   if (method === 'personal_sign') return window.__sign(params[0]);
   throw new Error('not in this test: ' + method);
@@ -317,11 +328,68 @@ await p.waitForFunction(() => /points to this address/.test(document.querySelect
 await p.fill('#f-ramt', '0.5'); await p.fill('#f-rfor', 'rent');
 await p.click('#f-rchains [data-rs="base"]');
 const link = await p.textContent('#f-rlink');
-ok(/#pay=ross\.wei&n=[0-9a-f]{64}&ns=[0-9a-f]{128}&amount=0\.5&chain=base&for=rent$/.test(link), 'the link carries the name, a signed deposit address, amount, chain and note', link);
+ok(/#pay=ross\.wei&n=[0-9a-f]{64}&ns=[0-9a-f]{128}&amount=0\.5&chain=base&chains=base&for=rent$/.test(link), 'the link carries the name, a signed deposit address, amount, the one chain offered (as a restriction) and note', link);
 await p.click('#f-rchains [data-rs="any"]');
 ok(!/chain=/.test(await p.textContent('#f-rlink')), 'and offers every chain unless one is picked');
 ok(await p.isVisible('#f-qr svg'), 'with a QR code of it');
 await shot('receive');
+
+console.log('links that ask for a token');
+const TOKC = getAddress(TOKEN), BADSUM = PAYEE.replace('C1D6', 'c1D6');
+const closeReq = async () => { if (await p.$('#req-x')) await p.click('#req-x'); await p.waitForSelector('#req', {state: 'hidden', timeout: 10e3}).catch(() => {}); };
+for (const [hash, why, says] of [
+  [`pay=${PAYEE}&token=usdc&chain=base`, /names its token in a way this page does not read/, 'a token named any way but by its address'],
+  [`pay=${PAYEE}&token=${'0x' + '00'.repeat(20)}&chain=base`, /names its token/, 'the zero address as its token'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&n=12`, /has parts this page does not read/, 'a field a token link does not have'],
+  [`pay=${PAYEE}&token=${TOKEN}&token=${TOKEN}&chain=base`, /has parts this page does not read/, 'a field given twice'],
+  [`pay=${PAYEE}&token=${TOKEN}&amount=5`, /does not say which chain/, 'no chain'],
+  [`pay=${TACIT1}&token=${TOKEN}&chain=base`, /Tacit address, which takes only private ETH/, 'a Tacit address as where it arrives'],
+  [`pay=${BADSUM}&token=${TOKEN}&chain=base`, /does not name an address this page reads/, 'an address whose capitals do not match its checksum'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=1e3`, /amount is not one this page reads/, 'an amount with an exponent'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=-1`, /amount is not one this page reads/, 'a negative amount'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=1.1234567`, /not one TUSD can be paid in/, 'more decimals than the token has'],
+  [`pay=${PAYEE}&token=${TOKEN}&chain=base&amount=0`, /not one TUSD can be paid in/, 'an amount of nothing'],
+  [`pay=${PAYEE}&token=${'0x' + '7b'.repeat(20)}&chain=base`, /is not a token on Base/, 'an address that is not a token there'],
+]) { const t = await card(hash); ok(why.test(t) && !(await p.$('#req-pay')), `refused with a plain sentence: ${says}`, t.slice(0, 140)); }
+let tk = await card(`pay=bob.wei&token=${TOKEN}&amount=12.5&chain=base&for=invoice`);
+ok(/bob\.wei/.test(tk) && tk.includes(PAYEE) && /12\.5 TUSD/.test(tk) && /on Base/.test(tk) && /“invoice”/.test(tk), 'a token link shows whom it pays, in full, the amount in the token, the chain and the note', tk.slice(0, 160));
+ok(tk.includes(TOKC) && /TUSD · Test USD/.test(tk), 'and the token by its full address, with the symbol and name its contract reports');
+ok(/not on the token list/.test(tk) && await p.$eval('#req-pay', (b) => b.disabled), 'a token the list does not hold is confirmed before it can be paid');
+await p.click('#req-tokok');
+ok(await p.$eval('#req-pay', (b) => !b.disabled && /Pay from my private balance/.test(b.textContent)), 'then it is paid from the private balance');
+await p.click('#req-pay');
+await p.waitForSelector('#f-wamt');
+ok((await p.inputValue('#f-wto')) === 'bob.wei' && (await p.inputValue('#f-wamt')) === '12.5' && /TUSD/.test(await p.textContent('#f-tok')) && await p.$eval('#form [data-unit="tok"]', (b) => b.getAttribute('aria-selected') === 'true'), 'which opens Withdraw as a swap into the token, to the name, for the amount, in the token');
+ok(/Amount to arrive, at least/.test(await p.textContent('#form')), 'the amount reading as the least that arrives');
+await p.fill('#f-wamt', '1.1234567');
+ok(await p.waitForFunction(() => /TUSD has 6 decimals/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 10e3}).then(() => true, () => false), 'an amount past the token’s decimals is refused there too, not rounded');
+await p.click('#form [data-unit="eth"]');
+ok(/Amount of ETH to swap/.test(await p.textContent('#form')) && !(await p.inputValue('#f-wamt')), 'and the ETH unit takes back an amount in ETH');
+await closeReq();
+await p.click('#tabs [data-tab="receive"]');
+await p.evaluate(() => { const d = document.querySelector('#f-ropts'); if (d) d.open = true; });
+await p.click('#f-tok3');
+await p.fill('#f-toksq3', TOKEN);
+await p.waitForSelector(`#f-tokl3 [data-tk="${TOKC}"]`, {timeout: 20e3});
+await p.click(`#f-tokl3 [data-tk="${TOKC}"]`);
+await p.waitForSelector('#f-rto');
+ok(!(await p.$('#f-rname')) && !(await p.$('#f-rchains')) && /names one chain/.test(await p.textContent('#form')), 'asking for a token, the link names where it arrives, on the chain chosen at the top');
+await p.fill('#f-rto', TACIT1);
+ok(/Tacit address/.test(await p.textContent('#f-rto-note')) && !(await p.textContent('#f-rlink')), 'a Tacit address is not where a token arrives');
+await p.fill('#f-rto', PAYEE); await p.fill('#f-ramt', '1.1234567');
+ok(!(await p.isHidden('#f-rerr')) && /up to 6 decimals/.test(await p.textContent('#f-rerr')) && !(await p.textContent('#f-rlink')), 'nor is an amount past the token’s decimals');
+await p.fill('#f-ramt', '12.5'); await p.fill('#f-rfor', 'invoice');
+await p.waitForFunction(() => /token=/.test(document.querySelector('#f-rlink')?.textContent || ''), null, {timeout: 10e3}).catch(() => {});
+const tlink = await p.textContent('#f-rlink');
+ok(new RegExp(`#pay=${PAYEE}&token=${TOKC}&amount=12\\.5&chain=[a-z]+&for=invoice$`).test(tlink), 'the link carries the address, the token, the amount in the token, one chain and the note', tlink);
+await p.fill('#f-rto', 'bob.wei');
+ok(await p.waitForFunction((a) => document.querySelector('#f-rto-note')?.textContent.includes(a) && /#pay=bob\.wei&token=/.test(document.querySelector('#f-rlink')?.textContent || ''), PAYEE, {timeout: 20e3}).then(() => true, () => false), 'a name is shown with the address it points to, and goes into the link as the name');
+tk = await card((await p.textContent('#f-rlink')).split('#')[1]);
+ok(/bob\.wei/.test(tk) && /12\.5 TUSD/.test(tk) && !/not on the token list/.test(tk) && await p.$eval('#req-pay', (b) => !b.disabled), 'the link opens as the request it was made for; a token added before is not asked about again', tk.slice(0, 160));
+await closeReq();
+await p.click('#f-tok3');
+await p.click('#f-tokl3 [data-tk=""]');
+ok(!!(await p.$('#f-rname')) && /#pay=ross\.wei/.test(await p.textContent('#f-rlink')), 'and Private ETH puts the link back as it was');
 
 console.log('an Ethereum wallet');
 await p.click('#wallet'); await p.click('#w-lock'); await p.click('#sheet-wallet [data-close]');
@@ -346,14 +414,54 @@ DOWN.clear();
 console.log('endpoints');
 await p.click('#settings-open');
 await p.fill('#e-rpc-8453', 'https://example.org/rpc');
+await p.fill('#e-rpc-1', 'https://own-eth.example/rpc');
 await p.click('#e-save');
-ok(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1'))).rpc[8453][0] === 'https://example.org/rpc', 'a reader’s own node is saved');
+await p.waitForFunction(() => localStorage.getItem('tacit-pay-endpoints-v1'), null, {timeout: 10e3});
+const saved = JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')));
+ok(saved.rpc[8453][0] === 'https://example.org/rpc' && saved.rpc[1][0] === 'https://own-eth.example/rpc', 'a reader’s own node is saved, one field per chain');
+const isName = ([, m, d]) => m === 'eth_call' && d.startsWith('0x59d1d43c');
+let mark = CALLS.length;
+t = await card('pay=mine.wei&amount=0.01');
+let asked = CALLS.slice(mark).filter(isName).map(([h]) => h);
+ok(t.includes('mine.wei') && t.includes(SHORT) && asked.length && asked.every((h) => h === 'own-eth.example'), 'with your own Ethereum node set, a name is read only through it', [...new Set(asked)].join(' '));
+const closeCard = async () => { if (await p.$('#req-x')) await p.click('#req-x'); await p.waitForSelector('#req', {state: 'hidden', timeout: 10e3}).catch(() => {}); };
+await closeCard();
+NOLOGS.add('own-eth.example');
+mark = CALLS.length;
+await p.evaluate(() => document.querySelector('#rebuild')?.closest('details')?.setAttribute('open', ''));
+await p.click('#rebuild');
+await p.waitForFunction(() => !/Rebuilding|Reading/.test(document.querySelector('#activity')?.textContent || ''), null, {timeout: 60e3}).catch(() => {});
+await p.waitForTimeout(1500);
+const ETH_PUBLIC = /^(ethereum-rpc\.publicnode\.com|mainnet\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|registry-eth\.example|registry-logs\.example)$/;
+const later = CALLS.slice(mark), pub = later.filter(([h]) => ETH_PUBLIC.test(h));
+ok(pub.length && pub.every(([, m]) => m === 'eth_getLogs') && later.some(([h, m]) => h === 'own-eth.example' && m === 'eth_call'), 'when your node does not serve the pool’s logs, only those are read through Ethereum’s public nodes; your deposit addresses and the rest stay with your node', [...new Set(pub.map(([h, m]) => `${h}:${m}`))].join(' '));
+NOLOGS.clear();
+DOWN.add('own-eth.example');
+mark = CALLS.length;
+t = await card('pay=later.wei&amount=0.01');
+asked = CALLS.slice(mark).filter(isName).map(([h]) => h);
+ok(!t.includes(SHORT) && /Your own node did not answer/.test(t) && asked.every((h) => h === 'own-eth.example'), 'but a name is never read through them: the page says your node did not answer', [...new Set(asked)].join(' ') + ' | ' + t.slice(0, 120));
+DOWN.clear();
+await closeCard();
 await p.click('#settings-open');
 await p.click('#e-reset');
 ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')))) === '{}', 'and the defaults come back');
 
-const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keeper(-base|-robinhood)?\.onrender\.com|example\.org|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.io|[a-z0-9]+\.ipfs\.dweb\.link)$/.test(h));
-ok(!hosts.length, 'it talks only to its listed nodes, relays and proving-key mirrors', hosts.join(' '));
+console.log('a wallet that is connected but has not signed in');
+{
+  const q = await ctx.newPage();
+  q.on('pageerror', (e) => errors.push(String(e)));
+  await q.goto(`http://127.0.0.1:${server.address().port}/`);
+  await q.waitForFunction(() => /^Sign in · 0x/.test(document.querySelector('#wallet-label')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'the header reads as an action with the wallet’s address: Sign in · 0x…'), () => ok(false, 'the header reads as an action with the wallet’s address', document.querySelector ? '' : ''));
+  await q.click('#chains [data-chain="8453"]');
+  await q.waitForFunction(() => /Switch wallet to Base/.test(document.querySelector('#f-max')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'with the wallet on another chain, its balance is a button that says to switch'), () => ok(false, 'with the wallet on another chain, its balance is a button that says to switch'));
+  await q.click('#f-max');
+  await q.waitForFunction(() => /Wallet\s+0\.123\s+ETH/.test(document.querySelector('#f-max')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'pressing it moves the wallet to Base and the balance shows'), () => ok(false, 'pressing it moves the wallet to Base and the balance shows'));
+  await q.close();
+}
+
+const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keepers\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
+ok(!hosts.length, 'it talks only to its listed nodes, relays, proving-key mirrors and the nodes of the key’s onchain copy', hosts.join(' '));
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');

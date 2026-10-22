@@ -22,6 +22,13 @@ ok(parseEth('0.123456789012345678') === 123456789012345678n, 'eighteen decimals 
 ok(parseEth('0.1234567890123456789') === null, 'a nineteenth is refused, not rounded');
 ok(parseEth(' 0.5 ') === 5n * 10n ** 17n && parseEth(undefined) === null && parseEth(null) === null, 'spaces are trimmed; nothing is not an amount');
 
+console.log('\namounts in a token');
+const parseUnits = vm.runInNewContext(`${cut('function parseEth(', '\nfor (const ev of')}\n${cut('function parseUnits(', '\n// Arrow keys')}\nparseUnits`, {BigInt, String});
+for (const [t, d, want] of [
+  ['1.5', 6, 1500000n], ['0.000001', 6, 1n], ['1,234.5', 6, 1234500000n], ['0', 6, 0n], ['3', 0, 3n], ['3.0', 0, 3n], ['0.1', 18, 10n ** 17n], ['1', 24, 10n ** 24n],
+  ['0.0000001', 6, null], ['3.5', 0, null], ['1e3', 6, null], ['-1', 6, null], ['', 6, null], ['1', 37, null],
+]) ok(parseUnits(t, d) === want, `${JSON.stringify(t)} with ${d} decimals → ${want == null ? 'not an amount' : want}`, String(parseUnits(t, d)));
+
 console.log('\nthe ID of an address');
 const sha256 = (u) => new Uint8Array(createHash('sha256').update(u).digest());
 const utf8 = (s) => new TextEncoder().encode(s), cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
@@ -58,7 +65,8 @@ ok(combinePlan(5n * 10n ** 12n, [W, 2n * W]) === null && combinePlan(5n * 10n **
 const cp = combinePlan(5n * 10n ** 12n, [4n * W, W, W, W, W]);
 ok(cp.parts === 5 && cp.steps === 4 && cp.cost === 20n * 10n ** 12n && cp.after === 8n * W - 20n * 10n ** 12n, 'five parts take four steps, each paying the fee once', JSON.stringify({...cp, cost: String(cp.cost), after: String(cp.after)}));
 ok(combinePlan(null, [W, W, W]).cost === 0n && combinePlan(0n, [W, W, W]).steps === 2, 'with no fee known yet, or none (the wallet pays the gas), the steps still count');
-ok(combinePlan(2n * W, [W, W, W]) === null && combinePlan(W, [W, W, W]).after === W, 'and it is not offered when the fees would eat the balance');
+ok(combinePlan(2n * W, [W, W, W]) === null && combinePlan(W / 2n, [W, W, W]).after === 2n * W, 'and it is not offered when the fees would eat the balance');
+ok(combinePlan(W, [W, W, W]) === null && combinePlan(W, [2n * W, 2n * W, 2n * W, W]).parts === 3, 'a part worth no more than one step\'s fee is left out: combining it would cost what it holds');
 
 console.log('\nwhy an amount cannot be spent');
 {
@@ -87,9 +95,9 @@ console.log('\na log read that failed');
 const logFailure = vm.runInNewContext(`${cut('function logFailure(', '\nasync function getLogs(')}\nlogFailure`, {JSON, Math, Number, String});
 const err = (...msgs) => Object.assign(new Error(msgs[0]), {all: msgs.map((m) => Object.assign(new Error(m), {rpc: {data: ''}}))});
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-ok(same(logFailure(err('eth_getLogs is limited to a 2000 block range'), 50000), {step: 2000}), 'a node that names its range limit sets the window to it');
+ok(same(logFailure(err('eth_getLogs is limited to a 2000 block range'), 50000), {step: 2000, named: true}), 'a node that names its range limit sets the window to it');
 ok(same(logFailure(err('query exceeds max block range'), 50000), {step: 12500}), 'one that only says the range is too large narrows by a quarter');
-ok(same(logFailure(err('exceeded maximum block range: 10,000 blocks', 'rate limited'), 50000), {step: 10000}), 'the limit one node names wins over another node’s rate limit');
+ok(same(logFailure(err('exceeded maximum block range: 10,000 blocks', 'rate limited'), 50000), {step: 10000, named: true}), 'the limit one node names wins over another node’s rate limit');
 ok(same(logFailure(err('429 Too Many Requests'), 50000), {busy: true}), 'a rate limit is waited out, not narrowed');
 ok(same(logFailure(err('rate limit exceeded: try a smaller range'), 50000), {busy: true}), 'a rate limit is waited out even when it mentions ranges, unless a limit is named');
 ok(same(logFailure(err('response size exceeded'), 8), {step: 2}), 'a size complaint narrows by a quarter');

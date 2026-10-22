@@ -12,9 +12,10 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | piece | path |
 | --- | --- |
 | page source | `dapp/page.html` |
+| deployed page | `dapp/page.min.html`: the source with its comments and spacing taken out by `../scripts/strip.mjs` (run by `deploy/repin.sh`), the file the manifest pins and the chunks hold |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
-| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs` (below) |
+| tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs`, `.strip.mjs`, `.scan.mjs`, `.privateswap.mjs` (below) |
 | local preview | `../scripts/serve.mjs` (shared) |
 
 ## What it does
@@ -35,7 +36,9 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
   that need a few parts combined do it by themselves.
 - **Withdraw** any part to an address or to a name: a `.wei`, `.gwei` or `.eth` name is read to the Ethereum address it points
   to (its address record, not its Tacit one), shown in full beside the name, and read again just before the withdrawal, which
-  is not sent if the name has moved.
+  is not sent if the name has moved. A withdrawal that arrives as a token takes its amount in ETH or in the token: in the
+  token it is the least that arrives, and the page finds the ETH whose route pays at least that, shows it, and holds the
+  swap to that minimum; what the route buys above it arrives too.
 - **Receive.** The unified `tacit1…` address, and payment links that carry it or a `.wei`, `.gwei` or `.eth` name, on any chain
   (next section), with a QR code, that anyone with a wallet can pay.
 - **Activity**, rebuilt from the key and the chain: what came in, what went out, with fees.
@@ -67,6 +70,23 @@ the wallet is moved to the chain chosen first (and the chain added when the wall
 amount show on chain; whom they paid does not. The link stays in the address bar until it is dismissed or paid, so a
 reload, or a wallet app handing the page back, keeps the request. A payer who holds a Tacit key can pay from their
 private balance instead, and `chains=` offers the payer only some chains.
+
+**A link that asks for a token** names where it arrives, the token and one chain:
+
+```
+#pay=<0x… or a name>&token=<the token's address>&amount=<in the token>&chain=<ethereum|base|robinhood>&for=<note>
+```
+
+`amount` and `for` are optional. It is paid from the payer's private balance: Withdraw opens set to the token, the
+address and the amount, as the least that arrives, and the route, its minimum and the fee show before anything is sent.
+Nothing on chain ties the payment to the payer; the address and the amount show on chain, as any token payment does.
+The page reads the token from its own contract on that chain (its decimals, symbol and name) and from the token list;
+the link gives only its address, shown in full. A token the list does not hold is paid only once the payer confirms it
+is the one they were asked for (one added by address before needs no second confirmation). A name is read to the address
+it points to on that chain and read again before the payment. Such a link is read whole or not at all: another field, a
+field given twice, a token not given as an address, no chain, a Tacit address, or an amount the token cannot hold (past
+its decimals, nothing, or in another form) refuses it with a plain sentence, so nothing in it is dropped to pay something
+else. *Receive* makes one when a token is chosen under "Get paid in": it uses no deposit address.
 
 **The deposit address in a link.** A link made by *Receive* carries a deposit address of its own, one nobody else has
 been given and kept until it is paid. `n` is the key it derives from and `ns` is the payee's signature over it, made
@@ -113,12 +133,17 @@ saved state is sealed under the view key, the relay's event index is checked aga
 page to the chain's own logs, and an index that did that is not asked again that session), the unconfirmed tail counts only when
 the pool has held its root at that size, the head a read goes up to is the lower of two nodes' answers, and no nullifier is ever
 sent to ask whether it is spent. An index that leaves a memo out cannot hide a note from *Rebuild*, which reads the chain's logs alone. (A proof's public values do go to a node once,
-in the check against the pool's verifier just before the spend is sent.)
+in the check against the pool's verifier just before a spend the wallet sends; a relayed proof is not checked by the page.)
+
+**Added here:** shielding from a token (swapped for an exact amount of ETH through zRouter, in one transaction through
+the zap or to a deposit address the relay takes in), withdrawals that arrive as a token (an amount in ETH, or in the token
+as the least that arrives), payment links that ask for a token, paid from a private balance, private swaps (a token in and
+another out later, with the pool between, followed on a card), and moving a balance from Ethereum to Base or Robinhood
+Chain through their own bridges.
 
 **Left out:** passkey and Bitcoin-wallet sign-in (a passkey is bound to the origin that made it, and the Bitcoin path
 needs the main app), payment links that carry the money (`#gift=`, handed to the main site), payments held until
-they blend in, the privacy check, saved recipients, moving Ethereum balances
-to an L2 through its bridge, TAC points, payment proofs (`#proof=`, handed to the main site) and CSV export. Each has a home on tacit.finance; none is
+they blend in, the privacy check, saved recipients, TAC points, payment proofs (`#proof=`, handed to the main site) and CSV export. Each has a home on tacit.finance; none is
 needed to pay or be paid.
 
 **Rebuilt so nothing is fetched to run:**
@@ -129,7 +154,8 @@ needed to pay or be paid.
   WebAssembly that the page writes itself from a short generator (Montgomery multiplication over eight 32-bit limbs,
   the representation the proving key stores), so there is no binary blob in the document. The work is shared across
   up to six workers started from the document's own `<script type="text/x-prover">`. A proof takes about 7 s on a
-  laptop, and every proof is checked against the pool's verifier by `eth_call` before it is sent.
+  laptop. A proof the wallet sends is checked against the pool's verifier by `eth_call` through the wallet's node before it is sent;
+  one the relay sends is checked by the relay.
 - *Poseidon.* Its round constants and MDS matrices are generated in the page by the Grain LFSR, as the Poseidon
   reference does, instead of being stored (about 80 KB of tables).
 - *SHA-256, HMAC, Keccak-256, secp256k1, BabyJubJub, bech32m, ABI encoding, the QR code:* written out in the page.
@@ -138,7 +164,7 @@ needed to pay or be paid.
 
 The circuit's proving key (28.5 MB) and witness program (4.9 MB) are the one dependency too large for any contract.
 The page fetches them once, from tacit.finance or the ceremony bundle on IPFS
-(`bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy`, via Filebase, dweb.link or ipfs.io), uses them only if
+(`bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy`, via Filebase, ipfs.orbitor.dev or the Pinata gateway, or as a last resort its onchain copy on Base Sepolia), uses them only if
 their SHA-256 equals the pins the page carries (also readable from the contract as `PROVING_KEY_SHA256` and
 `WITNESS_PROGRAM_SHA256`), and keeps them in the browser. A reader can add a mirror, or load the two files from disk.
 
@@ -170,20 +196,22 @@ agree that the pool has held its root at that size, a chain that fails to read i
 head a read goes up to is the lower of two nodes' answers.
 
 **What the page keeps.** Besides the wallet's sealed state, a key's last balances, the block times of its activity, the
-one-time addresses it issued and the name it uses are sealed under the same view key: storage shows ciphertext only. The
+one-time addresses it issued, the name it uses, the private swaps it started and the tokens added by address are sealed
+under the same view key: storage shows ciphertext only. The chain last chosen and the wallet last connected are kept as
+they are. The
 page asks the Ethereum nodes to agree before it shows which contract serves it and whether a newer version exists.
 
 | it depends on | for | when it is down |
 | --- | --- | --- |
 | public JSON-RPC nodes, 2 to 4 per chain (replaceable under *Endpoints*) | every read and send, and names | the next node is tried; the page remembers the one that answered |
-| a wallet (EIP-1193, EIP-6963) | gas for wallet-sent spends and shielding | relayed spends and reading need none |
-| the proving key and witness program, 33 MB, from tacit.finance, Filebase, dweb.link or ipfs.io, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
+| a wallet (EIP-1193, EIP-6963), or a wallet app joined by WalletConnect through `relay.walletconnect.org` | gas for wallet-sent spends and shielding | relayed spends and reading need none |
+| the proving key and witness program, 33 MB, from tacit.finance, Filebase, ipfs.orbitor.dev or the Pinata gateway, from its onchain copy on Base Sepolia, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
 | a relay (optional) | spends with no gas, deposit-address sweeps, a fast first read | the wallet route and chain logs |
 | a gateway to serve the page | getting the page | any ERC-8244 gateway, or `html()` from any node |
 
 There are no other scripts, fonts, images or stylesheets: the document pins its one module by hash. The proving key is
 the one dependency that is not a chain read. Rebuilding a wallet from chain logs alone leans on nodes that serve old
-logs: on Ethereum and Base, one public node each does (Tenderly's), plus Base's own with 2,000-block ranges, and
+logs: on Ethereum and Base, one public node each does (Tenderly's), plus Base's own with 500-block ranges (Tenderly's Base node allows 1,000), and
 Robinhood Chain's own node. `test/dapp/tacit-pay.chains.mjs` measures this against the live nodes. A reader with an
 archive node of their own can set it under *Endpoints*.
 
@@ -192,11 +220,35 @@ archive node of their own can set it under *Endpoints*.
 - **Chain state:** public nodes per chain, which the reader can replace under *Endpoints*; transactions through the
   reader's wallet (EIP-1193, discovered with EIP-6963; a wallet that only sets `window.ethereum` works too). A wallet
   still connected to the page is picked up on a later visit without a prompt, and is put on the chain (switched, or
-  added first) before a proof is started, not after it.
-- **Relays:** one per chain, for relayed spends, fee quotes, an index of pool events and watching deposit addresses.
-  The reader can point a chain at another relay or none. A relay the reader sets is held to the fee ceiling but not
+  added first) before a proof is started, not after it. A wallet app on a phone, or in another browser, joins by
+  WalletConnect (v2, written out in the page in what a browser has: X25519, Ed25519, HKDF and SHA-256 from WebCrypto, and a
+  ChaCha20-Poly1305 of its own): the page shows a code and a link, the wallet approves, and `relay.walletconnect.org` carries
+  messages sealed under a key only the two hold. The wallet signs and sends; every read (balances, fees, receipts) is asked of
+  the page's own nodes, as the wallet cannot answer them over the relay. The connection survives a reload of the tab and not a
+  new visit, as the signature that opens the key is asked of it.
+- **Relays:** one per chain, all served from `tacit-evm-pool-keepers.onrender.com/<chainId>/evm-pool/keeper`, for relayed
+  spends, fee quotes, an index of pool events and watching deposit addresses. The reader can point a chain at another relay
+  or none. A relay the reader sets is held to the fee ceiling but not
   to the default relay's address.
+- **The catch-up registry** (TacitEvmPoolCheckpoints, `0x00000000C3267616ED5E0DAA6F6490D109d6844D` on each chain, one
+  address through CreateX's CREATE2 under an open salt, so fixed by the registry's code): the pool's tree edge at a count, posted by anyone who has read
+  that far and kept only if the pool held its root. A key with nothing read yet starts from the newest point at once and
+  reads the history behind it in the background (the balance shows what is after the point first, and the older notes join
+  when that history is in); the page checks a point against the pool the same way it checks every page of the relay's
+  index, and passes a point whose block does not fit for the one before it, or for the pool's first block. With every
+  full read it also looks at the registry: once the newest point is 3,000 leaves behind what the device has read (the
+  keepers post at 2,000, so this shows only when they have not), the balance area offers to post a fresh one from the
+  wallet, one transaction with only gas in it; Activity → Catch-up points shows the same status and button at any time.
+  A chain without the registry is read from the pool's first block.
 - **Mirrors** for the proving key, as above.
+- **Swaps:** zQuoter (`0x000000bd2db80567c23e353ca95a251c573cbf9b`) finds routes and zRouter
+  (`0x000000000000FB114709235f1ccBFfb925F600e4`) runs them, for shielding from a token and withdrawing as one; the zap
+  (TacitEvmPoolZap, `0x0000008EbBF2323f95c4fBc18254f3D65C53998c`) shields from a token in one transaction; Permit2 takes a
+  signature approval for a token that has no permit of its own; the onchain token list (`0x0000006013dF75A31678B786061C2B54bf531524`)
+  names the tokens offered. Routes are asked of the page's nodes with a stand-in address in place of the reader's; the
+  estimates (Max on a token, what a private swap's ETH would buy now) are asked of the reader's wallet, whose node
+  already sees its payments.
+- **Bridges:** Base's L1StandardBridge and Robinhood Chain's inbox, for moving a balance there from Ethereum.
 
 The document pins its one module by hash in its Content-Security-Policy and allows connections only over HTTPS (and
 to `127.0.0.1` and `localhost`, for a reader's own node). A gateway that injects script, like w3link, is refused by
@@ -213,17 +265,20 @@ money goes. A reader who sets their own nodes under Endpoints uses those alone.
 ## Build
 
 Everything below is run from this directory. `forge` comes from Foundry; the browser tests need `npm i` at the repo
-root and a Chromium for playwright-core (`npx playwright-core install chromium`).
+root and a Chromium for playwright-core (`npx playwright-core install chromium`). The browser tests load the deployed page,
+`dapp/page.min.html`; `PAGE=dapp/page.html` runs them against the source.
 
 ```
 node ../scripts/chunk.mjs tacit-pay            # out/TacitPay8244.chunk1..N.creation.txt
 forge test --match-path test/TacitPay8244.t.sol
+node test/dapp/tacit-pay.strip.mjs             # the deployed page against its source: the same style rules, elements, text and pixels
 node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, names, endpoints, no network
 node test/dapp/tacit-pay.units.mjs             # amount parsing, an address's ID, how a failed log read is judged
 node test/dapp/tacit-pay.sig.mjs               # the page's signatures against an independent implementation
 node test/dapp/tacit-pay.engine.mjs            # the wallet engine on a chain in memory: merges, lagging nodes, an index that lies, batched reads
 node test/dapp/tacit-pay.artifacts.mjs         # the proving key and witness program: a file that is not the pinned one is never used
 node test/dapp/tacit-pay.unconfirmed.mjs       # a wallet payment the network never confirms is not sent a second time
+node test/dapp/tacit-pay.scan.mjs              # a long pool history (N=600 deposits) read in workers made from the page's own code
 node test/dapp/tacit-pay.ens.mjs               # a .eth name's text record, set on a fork of the real registry, read, shown and linked
 node test/dapp/tacit-pay.wallets.mjs           # external wallets: picker, refusals, account and chain changes, no network
 node test/dapp/tacit-pay.fork.mjs              # every flow on anvil forks of all three chains, proofs made in the page
@@ -231,6 +286,15 @@ node test/dapp/tacit-pay.links.mjs             # a real .wei name, a link, a pay
 node test/dapp/tacit-pay.relay.mjs             # a faithful relay, then relays that lie, stall, overcharge or leave events out
 node test/dapp/tacit-pay.index.mjs             # an event index that says "no events" is caught against the pool
 node test/dapp/tacit-pay.boxes.mjs             # one-time deposit addresses: issued, funded as by an exchange, found from the key, taken in
+node test/dapp/tacit-pay.privateswap.mjs       # a private swap: USDC in, a token added by address out, through the card; what is remembered; a lost plan
+node test/dapp/tacit-pay.ux.mjs                # how the page answers as it is used, chains in memory: forms, held payments, copies, Rebuild
+node test/dapp/tacit-pay.shieldtoken.mjs       # shielding from a token on a fork: MODE=permit|permit2|batch|approve|relay|relaybatch|box|weth; Max
+node test/dapp/tacit-pay.swapfork.mjs          # a withdrawal that arrives as a token, on a fork with the real router, zQuoter and zRouter; an amount in the token; a link that asks for one
+node test/dapp/tacit-pay.routes.mjs            # every route a token withdrawal can take, on every chain, run as the escrow runs it
+node test/dapp/tacit-pay.move.mjs              # a move to a rollup as the page encodes it, against the live router (one read-only call)
+node test/dapp/tacit-pay.movefork.mjs          # a move to Base on forks: the bridge deposit, then the relay takes it in on Base
+node test/dapp/tacit-pay.movefork-rh.mjs       # a move to Robinhood Chain on forks: the retryable ticket, then taken in there
+node test/dapp/tacit-pay.moveretry.mjs         # a refused move tried again near its deadline: built afresh, lands once
 KEEPER=… node test/dapp/tacit-pay.keeper.mjs   # the real relay server, from the repo's worker-relay, on a fork
 node test/dapp/tacit-pay.chains.mjs            # read-only: every node and relay the page ships, asked what the page asks
 node test/dapp/tacit-pay.live.mjs              # read-only against mainnet: nodes, relays, routers, the proving key
@@ -246,13 +310,15 @@ flow on all three chains and in WebKit, the tampered proofs refused, the proving
 
 ## Deploying
 
-From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the module's hash in the page's CSP, the page
-in `manifest.json` and in the forge test, and re-chunks), then `forge build`, then `forge test --match-path test/TacitPay8244.t.sol`.
+From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the prover block's hash in the module and the
+module's hash in the CSP, builds the deployed page `dapp/page.min.html` from the source and pins it the same way, puts its size
+and hash in `manifest.json` and in the forge test, and re-chunks), then `forge build`, then
+`forge test --match-path test/TacitPay8244.t.sol`.
 Never run `forge build --force` or `forge clean` between `repin.sh` and the deploy: they delete `out/`, where the chunk
 creation code and forge's artifact live.
 
 1. **Check the price.** `cast base-fee latest --rpc-url <rpc>`. The deploy is one transaction per chunk plus the wrapper, about
-   225 gas per page byte plus 1.6M in all (the 276,488-byte page: about 64M gas, 0.064 ETH at 1 gwei, 0.0064 ETH at 0.1 gwei).
+   225 gas per page byte plus 1.6M in all (the 339,809-byte page: about 78M gas, 0.078 ETH at 1 gwei, 0.0078 ETH at 0.1 gwei).
    Any funded account can deploy; the steward is set by the constructor. Set the wallet's priority fee low.
 2. **Deploy.** Build the address miner once, `cargo build --release --offline --manifest-path deploy/vanity/Cargo.toml`, then
    `node deploy/deploy-helper.mjs 8444`, open http://127.0.0.1:8444, connect a wallet on Ethereum mainnet and press
@@ -264,7 +330,7 @@ creation code and forge's artifact live.
    `deployment` block for the manifest. A closed tab resumes: what the browser remembers is checked against the chain on every
    connect. A transaction the wallet replaces or speeds up is found where it lands, not sent twice. It stops, sending nothing
    more, if the wallet leaves mainnet. Do not use a profile that ran an earlier rehearsal without pressing *Forget progress*.
-3. **Check it, from anywhere.** `node deploy/check-deployment.mjs <rpc> <wrapper> dapp/page.html` reads every chunk's code and
+3. **Check it, from anywhere.** `node deploy/check-deployment.mjs <rpc> <wrapper> dapp/page.min.html` reads every chunk's code and
    `html()` and `PAGE_HASH()` back from the chain and compares them with the page, byte for byte. Then
    `ETH_RPC_URL=<rpc> node ../scripts/verify.mjs tacit-pay` after adding the `deployment` block to `manifest.json`.
    To read the page back by hand (`cast` prints the string JSON-quoted, so unquote it):
@@ -281,10 +347,12 @@ Browse at `https://<addr>.w4eth.io/` (ERC-8244) or `https://<addr>.1.w3link.io/`
 policy keeps from running its injected script), and at `https://anon.wei.limo/`. The wrapper answers every `request()` with
 `Cache-Control: public, max-age=300`: a name can be pointed at a successor, so the page is cached for minutes, not a year.
 
-**Releasing a new version.** Edit the page, `sh deploy/repin.sh`, `forge build`. Deploy only the new chunks (the helper deploys a
-first version; for a successor deploy each chunk from `out/` with `cast send --create`). Build the wrapper's creation code
-with `previous` set to the current tip, the same steward and the new page hash, and call `<tip>.deployNext(initcode, salt)`
-from the steward with a gas limit of 2,000,000 (it uses about 1.6M). Run step 3 against the new wrapper, then `setAddr` to it.
+**Releasing a new version.** Edit the page, `sh deploy/repin.sh`, `forge build`, then `node deploy/deploy-next-helper.mjs 8799`
+and open http://127.0.0.1:8799 with the steward's wallet: it finds the live tip through `latest()`, deploys only the chunks
+whose bytes changed (an unchanged chunk is reused at its address, checked against mainnet), and calls
+`<tip>.deployNext(initcode, salt)` with the wrapper's creation code (`previous` the tip, the same steward, the new page hash)
+and a gas limit of 2,000,000 (generation 2's used 1,718,451). Run step 3 against the new wrapper, then `setAddr` to it. To
+verify a successor's source (step 4), its second constructor argument is the previous version's address, not zero.
 To go back, `setAddr` to the old one: every version serves its own bytes forever. Only the newest version can append.
 
 ## Stewardship and the name

@@ -48,7 +48,8 @@
       {
         "kind": "wns",
         "url": "https://zswap.wei.limo/",
-        "serves": "exact"
+        "serves": "resolver",
+        "note": "zswap.wei points at zSwapResolver, which serves the newest lineage version that has stood for three days"
       },
       {
         "kind": "erc8244",

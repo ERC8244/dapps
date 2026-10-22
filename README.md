@@ -10,7 +10,7 @@ nothing to keep running.
 | [poidhverse](poidhverse/) | 296,949 B, 13 chunks | [`0x27f3C5fe…De3a4`](https://etherscan.io/address/0x27f3C5fe79c092D663710d555Bb358cdc2dDe3a4#code) | https://poidhverse.wei.limo/ |
 | [fwa](fwa/) | 214,280 B, 9 chunks | [`0xa6F1Ab97…6AF7`](https://etherscan.io/address/0xa6F1Ab97F43a3f9dE6245101619c852d1e526AF7#code) | https://fwa.wei.limo/ |
 | [stamped](stamped/) | 369,688 B HTML / 111,895 B stored, 5 chunks | [`0xcBb240f5…8c310`](https://etherscan.io/address/0xcBb240f5B0fE63b7d961d50BA820d962aD88c310#code) | https://stamped.wei.limo/ |
-| [tacit-pay](tacit-pay/) | 276,658 B, 12 chunks | [`0x0000005a…F919`](https://etherscan.io/address/0x0000005a9E52BD30867872DCb323bc78Eb5cF919) | https://anon.wei.limo/ |
+| [tacit-pay](tacit-pay/) | 382,215 B, 16 chunks | [`0x937BFF44…6DFF`](https://etherscan.io/address/0x937BFF44d6EeeF798AbB0088b6441843eA276DFF#code) | https://anon.wei.limo/ |
 | [zswap](zswap/) | 666,463 B, 28 chunks | [`0x0a0Be427…D507`](https://etherscan.io/address/0x0a0Be4271Ca53f0002800a323Dee65A6B31CD507#code) | https://zswap.wei.limo/ |
 
 ## The shape
@@ -23,6 +23,7 @@ later: the manifests already are the catalogue.
 <dapp>/
   manifest.json   identity, the page's pinned size and hash, chunking, deployment
   dapp/page.html  the full readable page — one file, no build step
+  dapp/page.min.html  optional: the same page with its comments and spacing taken out, deployed in its place
   dapp/page.html.gz  optional exact compressed artifact returned by html()
   src/            the wrapper contract that serves it
   test/           the page the repo has == the page html() returns
@@ -36,11 +37,20 @@ nothing to bundle and nothing to pin except the file itself. When `html()`
 returns compressed bytes, the exact compressed artifact is kept beside the full
 HTML and is the file pinned by the manifest.
 
+A manifest may also name a `source` beside its `page`. The page is then built
+from the source by `scripts/strip.mjs`: comments go, and so does the whitespace
+between tokens, which leaves every name, string and number as written. Each
+script must parse to the same syntax tree as the source's before the page is
+written. The built page is what the manifest pins and the chunks hold; the
+source stays the file people read and edit. tacit-pay's 480 KB source is
+deployed as 340 KB, 14 chunks instead of 20.
+
 ## The commands
 
 One set, at the root, driven by the manifest — not a copy per dapp.
 
 ```sh
+node scripts/strip.mjs  <dapp>          # <source> -> <page>, for a manifest that names a source
 node scripts/chunk.mjs  <dapp>          # -> <dapp>/out/*.creation.txt
 node scripts/serve.mjs  <dapp> [port]   # localhost, real wallet, real transactions
 node scripts/verify.mjs <dapp>          # the deployment, against the chain

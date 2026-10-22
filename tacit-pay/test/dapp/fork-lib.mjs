@@ -1,4 +1,4 @@
-/* Shared by the fork tests: the real dapp/page.html in Chromium over anvil forks of the chains' real pools, with a
+/* Shared by the fork tests: the deployed page in Chromium over anvil forks of the chains' real pools, with a
    wallet that sends from a development account, and relays that are down or are a mock whose behaviour a test sets.
    Every proof is made in the page by its own prover and accepted by the deployed pool.
 
@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {config, text as PAGE_TEXT} from './page-config.mjs';
+import {config, html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
@@ -32,12 +32,15 @@ const FORK_FROM = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https
 // The first development account, as a plain account: on real chains it carries delegation code.
 export const ACCT = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266';
 const TRANSACT = new Interface(['function transact(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1)']);
+const ROUTER_CALL = new Interface(['function withdrawAndCall((uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1) t, ((address target, uint256 value, address token, uint256 amount, bool push, bytes data)[] calls, address[] outTokens, uint256[] minOuts, address to, address refund, uint64 deadline, uint256 nonce) intent)']);
 
 export const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 /** Forks `names` (chain keys), serves the page, and returns the harness. `relay` is the mock relay's state, or null for
  *  relays that are down: { mode, fee, relayer, quote, events, calls }. */
-export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = []} = {}) {
+// `realCalls`: contracts whose eth_call reads are answered by the chain itself rather than the fork (read-only contracts
+// whose state a fork would fetch slot by slot, such as a token list or a quoter); everything else is the fork's.
+export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = [], realCalls = [], batch = false} = {}) {
   const forks = {};
   for (const name of names) {
     const c = CHAINS.find((x) => x.key === name);
@@ -68,7 +71,6 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   }
   const byHost = new Map();
   for (const f of Object.values(forks)) for (const u of f.c.rpc) byHost.set(new URL(u).host, f);
-  const HTML = Buffer.from(PAGE_TEXT);
   const server = http.createServer((q, r) => { r.writeHead(200, {'content-type': 'text/html; charset=utf-8'}); r.end(HTML); }).listen(0);
   const browser = await chromium.launch();
   const cors = {'access-control-allow-origin': '*'};
@@ -98,9 +100,11 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
       if (relay.mode === 'error') return json(route, 500, {error: 'relay busy'});
       if (relay.mode === 'nowhere') return json(route, 200, {txHash: '0x' + hexKey()});
       if (relay.mode === 'other') return json(route, 200, {txHash: relay.other});
-      const t = body.tx;
-      const data = TRANSACT.encodeFunctionData('transact', [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, BigInt(t.extAmount), t.relayer, BigInt(t.fee), t.memo0, t.memo1]);
-      try { return json(route, 200, {txHash: await f.rpc('eth_sendTransaction', [{from: t.relayer, to: POOL, data, gas: '0x7a1200'}])}); }
+      const t = body.tx, args = [t.pA, t.pB, t.pC, t.publicInputs, t.recipient, BigInt(t.extAmount), t.relayer, BigInt(t.fee), t.memo0, t.memo1];
+      // A call intent goes through the router (withdrawAndCall), as the relay sends it; anything else to the pool.
+      const i = body.call, data = i ? ROUTER_CALL.encodeFunctionData('withdrawAndCall', [args, [i.calls.map((c) => [c.target, BigInt(c.value), c.token, BigInt(c.amount), !!c.push, c.data]), i.outTokens, i.minOuts.map(BigInt), i.to, i.refund, BigInt(i.deadline), BigInt(i.nonce)]])
+        : TRANSACT.encodeFunctionData('transact', args);
+      try { return json(route, 200, {txHash: await f.rpc('eth_sendTransaction', [{from: t.relayer, to: i ? ROUTER : POOL, data, gas: '0x' + (i ? 3_000_000 : 8_000_000).toString(16)}])}); }
       catch (e) { return json(route, 400, {error: e.message}); }
     }
     return json(route, 404, {error: 'unknown'});
@@ -109,18 +113,57 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   // Logs before the fork are the chain's own: asked of its real node, which serves long ranges and is not the bottleneck
   // a fork's upstream is; logs after it come from anvil. A range that crosses the fork is asked of both.
   const REAL = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https://mainnet.base.org', robinhood: 'https://rpc.mainnet.chain.robinhood.com'};
-  const post = async (url, req) => (await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req)})).json();
+  // A public node drops a connection or answers with a page that is not JSON now and then: the request is made again.
+  const post = async (url, req, tries = 3) => {
+    for (let i = 1; ; i++) {
+      try { return await (await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req)})).json(); }
+      catch (e) { if (i >= tries) throw e; await new Promise((ok) => setTimeout(ok, 500 * i)); }
+    }
+  };
+  // Base's public nodes serve short ranges (Tenderly 1,000 blocks, Base's own 500): before Base's fork the lab serves up to
+  // 10,000 a request, read as 1,000-block parts from Tenderly a few at a time, and a part Tenderly refuses from Base's own
+  // node in halves.
+  async function baseLogs(req, q, from, to) {
+    const ask = (url, a, b) => post(url, {...req, params: [{...q, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16)}]}).catch((e) => ({error: {code: -32000, message: e.message}}));
+    const bad = (x) => x.error || !Array.isArray(x.result), spans = [], out = [];
+    if (to - from >= 10_000) return {error: {code: -32005, message: 'the fork lab serves at most 10000 blocks a request'}};
+    for (let a = from; a <= to; a += 1000) spans.push([a, Math.min(to, a + 999)]);
+    for (let i = 0; i < spans.length; i += 5) {
+      const got = await Promise.all(spans.slice(i, i + 5).map(async ([a, b]) => {
+        const t = await ask('https://base.gateway.tenderly.co', a, b), m = Math.min(b, a + 499);
+        if (!bad(t)) return t;
+        const h = await Promise.all([ask(REAL.base, a, m), m < b ? ask(REAL.base, m + 1, b) : {result: []}]);
+        return h.find(bad) || {result: h.flatMap((x) => x.result)};
+      }));
+      if (got.some(bad)) return got.find(bad);
+      out.push(...got.flatMap((x) => x.result));
+    }
+    return {result: out};
+  }
   async function logs(f, req) {
     const q = req.params[0], tip = Number(BigInt(await f.rpc('eth_blockNumber')));
     const num = (x, d) => (x == null || x === 'latest' || x === 'pending' ? d : x === 'earliest' ? 0 : Number(BigInt(x)));
     const from = num(q.fromBlock, tip), to = num(q.toBlock, tip), hex = (n) => '0x' + n.toString(16);
     const parts = [];
-    if (from <= f.forkBlock) parts.push(post(REAL[f.c.key], {...req, params: [{...q, fromBlock: hex(from), toBlock: hex(Math.min(to, f.forkBlock))}]}));
+    if (from <= f.forkBlock) parts.push(f.c.key === 'base' ? baseLogs(req, q, from, Math.min(to, f.forkBlock)) : post(REAL[f.c.key], {...req, params: [{...q, fromBlock: hex(from), toBlock: hex(Math.min(to, f.forkBlock))}]}));
     if (to > f.forkBlock) parts.push(post(f.url, {...req, params: [{...q, fromBlock: hex(Math.max(from, f.forkBlock + 1)), toBlock: hex(to)}]}));
     const out = await Promise.all(parts), bad = out.find((x) => x.error || !Array.isArray(x.result));
     return JSON.stringify(bad ? {jsonrpc: '2.0', id: req.id, error: bad.error || {code: -32000, message: 'not a log list'}} : {jsonrpc: '2.0', id: req.id, result: out.flatMap((x) => x.result)});
   }
   const nodes = Object.fromEntries(Object.values(forks).map((f) => [f.c.chainId, f.c.rpc[0]]));
+  const realSet = new Set(realCalls.map((a) => a.toLowerCase()));
+  // Reads at a recent block, which a node with no archive serves; Base's own endpoint limits bursts more tightly. A quote
+  // heavier than the first node allows a call (a token with many pools) is asked of the next.
+  const REAL_CALLS = {ethereum: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co'], base: ['https://base-rpc.publicnode.com', 'https://base.gateway.tenderly.co'], robinhood: [REAL.robinhood]};
+  // A node that cannot be reached at all is passed over like one that answers with an error.
+  const realCall = async (key, body) => {
+    let t;
+    for (const u of REAL_CALLS[key]) {
+      t = await fetch(u, {method: 'POST', headers: {'content-type': 'application/json'}, body}).then((r) => r.text(), (e) => JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}));
+      if (!/"error"\s*:/.test(t)) break;
+    }
+    return t;
+  };
   async function newContext() {
     const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
     await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -130,12 +173,13 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         let t;
         try {
           const req = JSON.parse(body || '{}');
-          t = req.method === 'eth_getLogs' ? await logs(f, req) : await (await fetch(f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
+          const real = !Array.isArray(req) && req.method === 'eth_call' && realSet.has(String(req.params?.[0]?.to || '').toLowerCase());
+          t = req.method === 'eth_getLogs' ? await logs(f, req) : real ? await realCall(f.c.key, body) : await (await fetch(f.url, {method: 'POST', headers: {'content-type': 'application/json'}, body})).text();
         }
         catch (e) { t = JSON.stringify({jsonrpc: '2.0', id: JSON.parse(body || '{}').id ?? 1, error: {code: -32000, message: `fork: ${e.message}`}}); }
         return route.fulfill({status: 200, contentType: 'application/json', headers: cors, body: t}).catch(() => {});
       }
-      if (/tacit-evm-pool-keeper/.test(u.host)) return relayRoute(route);
+      if (/tacit-evm-pool-keepers?/.test(u.host)) return relayRoute(route);
       if (/\/(transact\.wasm|transact_final\.zkey)$/.test(u.pathname)) {
         if (process.env.OFFLINE) return route.abort();
         if (!process.env.ARTIFACTS) return route.continue();
@@ -157,6 +201,25 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
         if (method === 'eth_chainId') return chain;
         if (method === 'wallet_switchEthereumChain') { if (!NODES[Number(params[0].chainId)]) throw Object.assign(new Error('Unrecognized chain ID'), { code: 4902 }); chain = params[0].chainId; return null; }
         if (method === 'eth_sendTransaction') return call('eth_sendTransaction', [{ ...params[0], from: ACCT }]);
+        // EIP-5792, when the test says the wallet batches: the calls are sent in order and each must land.
+        if (method === 'wallet_getCapabilities') { if (!${JSON.stringify(batch)}) throw Object.assign(new Error('Method not found'), { code: -32601 }); return { [chain]: { atomic: { status: 'supported' } } }; }
+        if (method === 'wallet_sendCalls') {
+          if (!${JSON.stringify(batch)}) throw Object.assign(new Error('Method not found'), { code: -32601 });
+          const hashes = [];
+          for (const c of params[0].calls) {
+            const h = await call('eth_sendTransaction', [{ from: ACCT, to: c.to, data: c.data, value: c.value || '0x0' }]);
+            hashes.push(h);
+            let r = null; for (let i = 0; i < 60 && !r; i++) { r = await call('eth_getTransactionReceipt', [h]); if (!r) await new Promise((ok) => setTimeout(ok, 250)); }
+            if (r?.status !== '0x1') break;
+          }
+          const id = '0x' + hashes.at(-1).slice(2, 34);
+          (window.__batches ||= {})[id] = hashes;
+          return { id };
+        }
+        if (method === 'wallet_getCallsStatus') {
+          const receipts = await Promise.all(window.__batches[params[0]].map((h) => call('eth_getTransactionReceipt', [h])));
+          return { status: receipts.every((r) => r?.status === '0x1') ? 200 : 500, receipts };
+        }
         return call(method, params || []);
       } };
       if (!sessionStorage.getItem('seeded')) {
@@ -192,7 +255,8 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
       },
       async lockKey() { await p.click('#wallet'); await p.click('#w-lock'); await p.click('#sheet-wallet [data-close]'); },
       async status(re, ms = 900e3) {
-        await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#status').textContent) || document.querySelector('#status .err'), re.source, {timeout: ms});
+        try { await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#status').textContent) || document.querySelector('#status .err'), re.source, {timeout: ms}); }
+        catch (e) { throw new Error(`${e.message} waiting for ${re}; the status line says: ${(await p.textContent('#status').catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 300)}`); }
         return (await p.textContent('#status')).trim();
       },
       async balance(want, ms = 180e3) {

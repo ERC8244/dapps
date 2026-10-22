@@ -1,4 +1,4 @@
-/* How the real dapp/page.html answers as it is used, with the chain unplugged: three chains kept in memory (a pool that
+/* How the deployed page answers as it is used, with the chain unplugged: three chains kept in memory (a pool that
    takes deposits and spends, Multicall3, the router's deposit addresses), a relay that quotes and indexes, and a wallet
    in the page that can be slow or never answer. What it checks: a button that cannot be pressed says why, Enter moves
    through a form and presses its button from the last field, a new relay fee or a read that changed nothing does not
@@ -13,10 +13,10 @@ import http from 'node:http';
 import {createRequire} from 'node:module';
 import {Wallet, Interface, AbiCoder, id} from 'ethers';
 import {lib} from './engine-mock.mjs';
+import {html as HTML} from './page-config.mjs';
 
 const require = createRequire(import.meta.url);
 const {chromium} = require(process.env.PLAYWRIGHT || 'playwright-core');
-const HTML = fs.readFileSync(new URL('../../dapp/page.html', import.meta.url));
 const {poolKeys, sealNote, poolAsset, incTree, hex, T_TRANSACT, receiveBoxAddress} = lib;
 
 let failures = 0;
@@ -99,6 +99,8 @@ const WALLET = `(() => {
       if (method === 'eth_chainId') return st.chain;
       if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') { st.chain = params[0].chainId; p.emit('chainChanged', st.chain); return null; }
       if (method === 'eth_getCode') return '0x';
+      // Reads the page sends through the wallet are answered by the chain the wallet is on, as a wallet's node would.
+      if (['eth_call', 'eth_getBalance', 'eth_getTransactionReceipt', 'eth_blockNumber'].includes(method)) return window.__read(parseInt(st.chain, 16), method, params);
       if (method === 'personal_sign') return window.__sign(params[0]);
       if (method === 'eth_sendTransaction') return window.__send(parseInt(st.chain, 16), params[0]);
       throw Object.assign(new Error('not in this test: ' + method), { code: 4200 });
@@ -116,7 +118,7 @@ async function open(C, {hash = '', modes = null, viewport = {width: 1100, height
     const req = route.request(), url = new URL(req.url());
     if (process.env.ARTIFACTS && /\/(transact\.wasm|transact_final\.zkey)$/.test(url.pathname)) return route.fulfill({status: 200, headers: cors, body: fs.readFileSync(`${process.env.ARTIFACTS}/${url.pathname.split('/').pop()}`)});
     if (/onrender\.com$/.test(url.host)) {
-      const cid = /-base/.test(url.host) ? 8453 : /-robinhood/.test(url.host) ? 4663 : 1, n = C[cid], path = url.pathname.replace(/^\/evm-pool\/keeper/, '');
+      const cid = Number(/^\/(\d+)\/evm-pool\/keeper/.exec(url.pathname)?.[1] || 1), n = C[cid], path = url.pathname.replace(/^\/\d+\/evm-pool\/keeper/, '');
       const json = (status, body) => route.fulfill({status, contentType: 'application/json', headers: cors, body: JSON.stringify(body)});
       if (n.relayDelay) await new Promise((r) => setTimeout(r, n.relayDelay));
       if (!n.relayUp) return json(503, {error: 'offline'});
@@ -134,6 +136,7 @@ async function open(C, {hash = '', modes = null, viewport = {width: 1100, height
     return route.fulfill({status: 503, headers: cors, body: '{}'});
   });
   await ctx.exposeFunction('__sign', (h) => DEV.signMessage(Buffer.from(h.slice(2), 'hex')));
+  await ctx.exposeFunction('__read', (cid, method, params) => (C[cid] ? answer(C[cid], {method, params}) : null));
   await ctx.exposeFunction('__send', (cid, tx) => {
     if (tx.to.toLowerCase() !== POOL.toLowerCase()) return C[cid].transfer(tx.to, BigInt(tx.value || 0));
     const d = iface.decodeFunctionData('transact', tx.data);
@@ -229,12 +232,12 @@ C[8453].relayDelay = 0;
 console.log('copies, Rebuild, deposit addresses');
 await p.click('#tabs [data-tab="receive"]');
 await until(p, () => document.querySelector('#f-qr svg'), null, 30e3);
-await p.click('#form [data-copy^="bp1"]');
-ok(await until(p, () => document.querySelector('#form [data-copy^="bp1"]').textContent === 'copied', null, 2e3), 'a copy is confirmed on its own button', await p.textContent('#form [data-copy^="bp1"]'));
+await p.click('#form [data-copy^="tacit1"]');
+ok(await until(p, () => document.querySelector('#form [data-copy^="tacit1"]').textContent === 'copied', null, 2e3), 'a copy is confirmed on its own button', await p.textContent('#form [data-copy^="tacit1"]'));
 ok(await p.evaluate(() => { const t = [...document.querySelectorAll('#toasts .toast')].pop(), r = t?.getBoundingClientRect(); return !!t && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== t; }), 'its toast is for screen readers only');
-ok(/^bp1/.test(await p.evaluate(() => navigator.clipboard.readText())), 'and the address is on the clipboard');
+ok(/^tacit1/.test(await p.evaluate(() => navigator.clipboard.readText())), 'and the address is on the clipboard');
 await p.waitForTimeout(1800);
-ok(await p.textContent('#form [data-copy^="bp1"]') === 'copy bp1…', 'the button reads as before a moment later', await p.textContent('#form [data-copy^="bp1"]'));
+ok(await p.textContent('#form [data-copy^="tacit1"]') === 'copy', 'the button reads as before a moment later', await p.textContent('#form [data-copy^="tacit1"]'));
 await p.evaluate(() => { document.querySelector('#activity details').open = true; });
 C[8453].relayDelay = 800;
 await p.click('#rebuild');

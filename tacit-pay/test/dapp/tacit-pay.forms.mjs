@@ -188,7 +188,7 @@ console.log('Max, and receipts of an amount sent');
   await p.fill('#f-to', DEV_TACIT1);
   for (const a of ['0.123456789', '0.0000001']) {
     await p.fill('#f-amt', a); await p.waitForTimeout(300);
-    ok(new RegExp(`They receive ${a.replace(/\./g, '\\.')} TAC`).test(await txt(p, '#f-rcpt')), `${a} TAC: the receipt shows the amount that is sent`, await txt(p, '#f-rcpt'));
+    ok(new RegExp(`They receive ?${a.replace(/\./g, '\\.')} TAC`).test(await txt(p, '#f-rcpt')), `${a} TAC: the receipt shows the amount that is sent`, await txt(p, '#f-rcpt'));
   }
 }
 

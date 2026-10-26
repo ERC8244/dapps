@@ -63,14 +63,15 @@ function answer(n, {method, params = []}) {
   if (method === 'eth_getBlockByNumber') return {number: params[0], timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16)};
   if (method === 'eth_getLogs') {
     const f = params[0], from = parseInt(f.fromBlock, 16), to = parseInt(f.toBlock, 16);
-    return n.logs.filter((l) => l.address.toLowerCase() === f.address.toLowerCase() && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to && (f.topics || []).every((t, i) => !t || t === l.topics[i]));
+    return n.logs.filter((l) => [].concat(f.address).some((x) => x.toLowerCase() === l.address.toLowerCase()) && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to && (f.topics || []).every((t, i) => !t || (Array.isArray(t) ? t.includes(l.topics[i]) : t === l.topics[i])));
   }
   if (method === 'eth_call') {
     const to = params[0].to.toLowerCase(), data = params[0].data, sel = data.slice(0, 10);
     if (to === MULTICALL.toLowerCase()) {
       const [calls] = iface.decodeFunctionData('aggregate3', data);
       return iface.encodeFunctionResult('aggregate3', [calls.map((c) => c.target.toLowerCase() === POOL.toLowerCase() ? [true, coder.encode(['uint256'], [n.size])]
-        : [true, coder.encode(['uint256'], [n.balances.get(iface.decodeFunctionData('getEthBalance', c.callData)[0].toLowerCase()) ?? 0n])])]);
+        : c.callData.startsWith(iface.getFunction('getEthBalance').selector) ? [true, coder.encode(['uint256'], [n.balances.get(iface.decodeFunctionData('getEthBalance', c.callData)[0].toLowerCase()) ?? 0n])]
+        : (() => { try { return [true, answer(n, {method: 'eth_call', params: [{to: c.target, data: c.callData}]})]; } catch { return [false, '0x']; } })())]);
     }
     if (to === POOL.toLowerCase() && sel === id('nextIndex()').slice(0, 10)) return coder.encode(['uint256'], [n.size]);
     if (to === POOL.toLowerCase() && sel === id('rootSize(bytes32)').slice(0, 10)) return coder.encode(['uint256'], [n.roots.get(String(BigInt('0x' + data.slice(10)))) ?? 0n]);
@@ -245,11 +246,11 @@ await p.waitForTimeout(400);
 ok(await p.evaluate(() => document.querySelector('#rebuild').disabled && document.querySelector('#rebuild').getAttribute('aria-busy') === 'true'), 'Rebuild stays busy while the list is drawn again');
 ok(await until(p, () => !document.querySelector('#rebuild').disabled, null, 60e3), 'and comes back when done');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('#form [data-from="exchange"]');
+await p.click('#f-tok'); await p.click('#form [data-from="exchange"]');
 await until(p, () => document.querySelector('#f-check'));
 await p.click('#f-check');
 ok(await p.evaluate(() => !!document.querySelector('#status .spin') && document.querySelector('#f-check').disabled), 'checking for arrivals shows at once, and cannot be pressed twice');
-ok(await until(p, () => /waiting at your deposit/.test(document.querySelector('#status').textContent)), 'then says what it found');
+ok(await until(p, () => /waiting on (Ethereum|Base|Robinhood)/.test(document.querySelector('#status').textContent)), 'then says what it found');
 C[8453].relayDelay = 0;
 const issued = () => p.$$eval('#form .rows li', (x) => x.length);
 const before = await issued();

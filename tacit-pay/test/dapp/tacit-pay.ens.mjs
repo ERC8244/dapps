@@ -69,7 +69,7 @@ console.log('\nthe payee builds a link with it');
 await A.click('#tabs [data-tab="receive"]');
 await A.evaluate(() => { document.querySelector('#f-ropts').open = true; });
 await A.fill('#f-rname', NAME);
-await A.waitForFunction(() => /points to this address|different Tacit address|has not published/.test(document.querySelector('#f-rname-note')?.textContent || ''), null, {timeout: 60e3});
+await A.waitForFunction(() => /points to this address|different Tacit address|has no Tacit address/.test(document.querySelector('#f-rname-note')?.textContent || ''), null, {timeout: 60e3});
 ok(/points to this address/.test(await A.textContent('#f-rname-note')), 'the page checks it against the open key', (await A.textContent('#f-rname-note')).trim());
 await A.waitForFunction((n) => new RegExp(`#pay=${n.replace('.', '\\.')}&n=`).test(document.querySelector('#f-rlink')?.textContent || ''), NAME, {timeout: 600e3});
 ok(true, 'and the link carries the name');

@@ -1,8 +1,9 @@
-/* The deployed page is dapp/page.html with its comments and spacing taken out (scripts/strip.mjs, run by
-   deploy/repin.sh). This checks in Chromium that what the browser builds from the two is the same: with scripts off,
-   the same style rules as the browser reads them, the same elements with the same computed styles and boxes, the same
-   text and the same pixels, in light and dark, at a phone's width and a desktop's. The scripts are checked as the page
-   is written (each parses to the same syntax tree as the source), and the other browser tests run the deployed page.
+/* The deployed page is dapp/page.html with its comments and spacing taken out and its scripts minified (scripts/strip.mjs,
+   run by deploy/repin.sh). This checks in Chromium that what the browser builds from the two is the same: with scripts
+   off, the same style rules as the browser reads them, the same elements with the same computed styles and boxes, the
+   same text and the same pixels, in light and dark, at a phone's width and a desktop's. The scripts are checked as the
+   page is written (each must parse, read no name its source does not, and keep the names its first part defines), and
+   the other browser tests run the deployed page.
 
    Usage: node test/dapp/tacit-pay.strip.mjs        (PLAYWRIGHT=<path to playwright-core> if not installed here) */
 import http from 'node:http';

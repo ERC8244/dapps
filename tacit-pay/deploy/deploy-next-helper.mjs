@@ -126,7 +126,7 @@ const save = () => localStorage.setItem(KEY, JSON.stringify(st));
 // Whether every chunk slot 0..ALL_RUNTIMES.length-1 is filled: checked by index, not by scanning st.chunks itself,
 // since an array with holes answers "does any filled slot fail this test" wrong for the holes themselves.
 const allChunksIn = () => Array.from({ length: ALL_RUNTIMES.length }, (_, i) => i).every((i) => st.chunks[i]);
-const $ = (s) => document.querySelector(s), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const $ = (s) => document.querySelector(s), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), esc = (s) => String(s).replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';');
 // A wallet's own RPC node can answer "rate limit exceeded" under a burst of reads; that is backed off and retried
 // here, rather than left to abort whatever called it.
 async function rpc(method, params = []) {
@@ -164,7 +164,7 @@ askWallets();
 const installed = () => (WALLETS.length ? WALLETS : window.ethereum?.request ? [{ info: { name: 'Browser wallet', rdns: 'window.ethereum' }, provider: window.ethereum }] : []);
 function pickWallet(list) {
   return new Promise((resolve) => {
-    $('#pick').innerHTML = list.map((w, i) => '<button type="button" data-i="' + i + '">' + ((w.info.icon || '').indexOf('data:image') === 0 ? '<img src="' + w.info.icon + '" alt="">' : '') + '<span>' + w.info.name + '</span></button>').join('');
+    $('#pick').innerHTML = list.map((w, i) => '<button type="button" data-i="' + i + '">' + ((w.info.icon || '').indexOf('data:image') === 0 ? '<img src="' + esc(w.info.icon) + '" alt="">' : '') + '<span>' + esc(w.info.name) + '</span></button>').join('');
     $('#pick').hidden = false;
     document.querySelectorAll('#pick [data-i]').forEach((b) => b.onclick = () => { $('#pick').hidden = true; $('#pick').innerHTML = ''; resolve(list[b.dataset.i]); });
   });
@@ -217,7 +217,7 @@ async function create(data, label, landed) {
   await preflight(label, gas);
   paint('confirm ' + label + ' in your wallet');
   const h = await nudged(rpc('eth_sendTransaction', [{ from, data, gas, nonce: '0x' + nonce.toString(16) }]), label);
-  paint(label + ': waiting for <code>' + h + '</code>');
+  paint(label + ': waiting for <code>' + esc(h) + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
     if (r) { if (r.status !== '0x1' || !r.contractAddress) throw new Error(label + ' reverted in ' + h); NONCE_FLOOR = nonce + 1; return r.contractAddress; }
@@ -238,7 +238,7 @@ async function viaCreateX(i) {
   const nonce = await nextNonce();
   paint('confirm ' + label + ' in your wallet');
   const h = await nudged(rpc('eth_sendTransaction', [{ from, to: CREATEX, data: plan.data, gas, nonce: '0x' + nonce.toString(16) }]), label);
-  paint(label + ': waiting for <code>' + h + '</code>');
+  paint(label + ': waiting for <code>' + esc(h) + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
     if (r && r.status !== '0x1') throw new Error(label + ' reverted in ' + h);
@@ -258,7 +258,7 @@ async function viaWrapper(data, expected) {
   const nonce = await nextNonce();
   paint('confirm the next generation in your wallet');
   const h = await nudged(rpc('eth_sendTransaction', [{ from, to: OLD_WRAPPER, data, gas, nonce: '0x' + nonce.toString(16) }]), 'the next generation');
-  paint('the next generation: waiting for <code>' + h + '</code>');
+  paint('the next generation: waiting for <code>' + esc(h) + '</code>');
   for (;;) {
     const r = await rpc('eth_getTransactionReceipt', [h]);
     if (r && r.status !== '0x1') throw new Error('deployNext reverted in ' + h);
@@ -302,7 +302,7 @@ $('#connect').onclick = async () => {
     $('#who').textContent = w.info.name + ' · ' + from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the rest of the deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
     $('#go').disabled = false;
     paint();
-  } catch (e) { paint('<span class="err">' + (e.message || e) + '</span>'); }
+  } catch (e) { paint('<span class="err">' + esc(e.message || e) + '</span>'); }
 };
 $('#reset').onclick = () => { if (confirm('Forget the addresses deployed so far? (They stay on chain.)')) { st = { chunks: Object.assign(new Array(ALL_RUNTIMES.length), REUSED) }; save(); paint(); } };
 $('#go').onclick = async () => {
@@ -335,7 +335,7 @@ $('#go').onclick = async () => {
       { kind: 'erc8244', url: 'https://' + st.next.toLowerCase() + '.w4eth.io/', serves: 'exact' },
       { kind: 'erc4804', url: 'https://' + st.next.toLowerCase() + '.1.w3link.io/', serves: 'modified', note: "w3link injects its own script, which the page's CSP refuses; the bytes it serves are not the bytes html() returns" },
       { kind: 'wns', url: 'https://anon.wei.limo/', serves: 'exact' } ] }, null, 2);
-  } catch (e) { paint('<span class="err">' + (e.message || e) + '</span>'); }
+  } catch (e) { paint('<span class="err">' + esc(e.message || e) + '</span>'); }
   $('#go').disabled = false;
 };
 // The name: WNS setAddr(tokenId, next) from the wallet that owns it, simulated first, then read back.
@@ -351,14 +351,14 @@ $('#name').onclick = async () => {
     catch { throw new Error('Only the wallet that owns ' + NAME + ' can point it. Switch to that account in your wallet and press again.'); }
     say('confirm in your wallet');
     const h = await nudged(rpc('eth_sendTransaction', [{ from, to: WNS, data }]), 'pointing ' + NAME, (el) => $('#named').appendChild(el));
-    say('waiting for <code>' + h + '</code>');
+    say('waiting for <code>' + esc(h) + '</code>');
     let r = null;
     for (let i = 0; i < 200 && !r; i++) { r = await rpc('eth_getTransactionReceipt', [h]); if (!r) await sleep(3000); }
     if (!r || r.status !== '0x1') throw new Error('The transaction did not go through: ' + h);
     const now = '0x' + (await rpc('eth_call', [{ to: WNS, data: '0x4f896d4f' + word(TOKEN) }, 'latest'])).slice(-40);
     if (now.toLowerCase() !== st.next.toLowerCase()) throw new Error(NAME + ' resolves to ' + now + ', not the next generation.');
     say('<span class="ok">' + NAME + ' now points at ' + st.next + '.</span> Check https://' + NAME + '.limo/ in a minute.');
-  } catch (e) { say('<span class="err">' + (e.message || e) + '</span>'); }
+  } catch (e) { say('<span class="err">' + esc(e.message || e) + '</span>'); }
   $('#name').disabled = false;
 };
 paint();

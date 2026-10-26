@@ -12,7 +12,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
 import {Wallet} from 'ethers';
-import {html as HTML} from './page-config.mjs';
+import {html as HTML, text} from './page-config.mjs';
 import {startRelay} from './wc-relay-mock.mjs';
 
 const require = createRequire(import.meta.url);
@@ -32,7 +32,8 @@ const ONE = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d
 const TWO = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
 const ONE_TACIT1 = /ONE_TACIT1 = '(tacit1[^']+)'/.exec(fs.readFileSync(new URL('./tacit-pay.wallets.mjs', import.meta.url), 'utf8'))[1];
 const OFFICIAL = 'wss://relay.walletconnect.org';
-const PROJECT = /WC_PROJECT\s*=\s*'([0-9a-f]{32})'/.exec(String(HTML))[1];
+// The project ID as the source names it (the deployed page's names are shortened).
+const PROJECT = /WC_PROJECT\s*=\s*'([0-9a-f]{32})'/.exec(text)[1];
 
 // The page as served: its relay is the in-memory one, its module hash in the content policy follows, and the wallet it
 // binds is kept where the test can reach it.
@@ -40,10 +41,12 @@ function served(relayUrl) {
   let page = String(HTML);
   if (LIVE) return page;
   const m = /<script type="module">([\s\S]*?)<\/script>/.exec(page);
-  const mod = m[1].replaceAll(OFFICIAL, relayUrl).replace(/function bind\(w,\s*a\)\s*\{/, (head) => head + 'window.__bound=w;');
-  if (mod === m[1]) throw new Error('the page does not carry the relay or the bind function');
+  // bind() as the source writes it, or minified (its names shortened, its first line still reading the wallet's provider).
+  let hooked = false;
+  const mod = m[1].replaceAll(OFFICIAL, relayUrl).replace(/function bind\(w,\s*a\)\s*\{|function [\w$]+\(([\w$]+),[\w$]+\)\{(?=const [\w$]+=\1\.provider;)/, (head, w) => { hooked = true; return `${head}window.__bound=${w || 'w'};`; });
+  if (mod === m[1] || !hooked) throw new Error('the page does not carry the relay or the bind function');
   const hash = crypto.createHash('sha256').update(mod).digest('base64');
-  return page.replace(m[1], () => mod).replace(/script-src 'sha256-[^']+'/, `script-src 'sha256-${hash}'`).replaceAll(OFFICIAL, relayUrl);
+  return page.replace(m[1], () => mod).replace(/script-src 'sha256-[^']+'/, `script-src 'sha256-${hash}'`).replaceAll(OFFICIAL, relayUrl).replace('connect-src ', `connect-src ${relayUrl} `);
 }
 
 const TIP = {base: 51864114, robinhood: 73991761, ethereum: 26069345};
@@ -205,6 +208,7 @@ console.log('\nthe wallet ends the connection');
   await w.wallet.disconnect({topic: w.session.topic, reason: {code: 6000, message: 'User disconnected.'}});
   ok(await until(p, () => /ended the connection/.test(document.querySelector('#toasts')?.textContent || '')), 'the page says so');
   ok(await p.evaluate(() => sessionStorage.getItem('tacit-pay-wc-v1')) === null, 'and forgets the session');
+  ok(/^Sign in/.test(await label(p)) && /signed out/.test(await p.textContent('#toasts')), 'and signs out the key the wallet opened', await label(p));
   await p.click('#wallet');
   ok(!(await p.textContent('#sheet-wallet')).includes('Continue with'), 'the sign-in no longer names the account', (await p.textContent('#sheet-wallet')).slice(0, 80));
   ok(!p.errors.length, 'no page errors', p.errors.join(' '));

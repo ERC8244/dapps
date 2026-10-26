@@ -77,14 +77,15 @@ if (MODE === 'permit2') {
 await p.openKey(hexKey());
 console.log(`\nshield exactly 0.005 ETH from ${SYM} (${MODE})`);
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="wallet"]');
-if (await p.$('#f-conn')) await p.click('#f-conn');
+if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
 await p.waitForSelector('#f-tok', {timeout: 60e3});
+// Into private ETH, picked first (a token with a pool of its own would otherwise go into that pool).
+await p.click('#f-pv'); await p.click('[data-pv="eth"]');
 await p.click('#f-tok');
 await p.waitForSelector(`[data-tk="${TOKEN}"]`, {timeout: 120e3});
 await p.click(`[data-tk="${TOKEN}"]`);
 await p.waitForFunction((s) => new RegExp(`Swap ${s} and shield`).test(document.querySelector('#f-go')?.textContent || '') || /Enter an amount/.test(document.querySelector('#f-go')?.textContent || ''), SYM, {timeout: 60e3});
-ok(/Pay with/.test(await p.textContent('#form')), `the form now pays with ${SYM}`);
+ok(new RegExp(`From\\s*${SYM}`).test(await p.textContent('#f-flow')) && /Private ETH/.test(await p.textContent('#f-flow')), `the form now pays with ${SYM}, into private ETH`);
 await p.waitForFunction(() => /\d/.test(document.querySelector('#f-tb')?.textContent || ''), null, {timeout: 60e3});
 const held = await bal(), raw = (x) => (x ? BigInt(Math.ceil(Number(x) * 10 ** Math.min(DEC, 15))) * 10n ** BigInt(Math.max(0, DEC - 15)) : -1n);
 await p.click('#f-max');

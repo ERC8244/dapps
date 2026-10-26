@@ -35,12 +35,11 @@ for (const [id, name] of [[1, 'Ethereum'], [8453, 'Base'], [4663, 'Robinhood']])
   await p.waitForFunction(() => /Sent by the relay, no gas needed · fee/.test(document.querySelector('#form .route')?.textContent || ''), null, {timeout: 120e3}).catch(() => {});
   ok(/fee [\d.]+ ETH/.test(await p.textContent('#form .route')), `${name}: the relay’s quote passes the page’s checks`, (await p.textContent('#form .route')).trim().slice(0, 60));
   await p.click('#tabs [data-tab="shield"]');
-  await p.click('[data-from="exchange"]');
+  await p.click('#f-tok'); await p.click('[data-from="exchange"]');
   await p.waitForSelector('#form .addr code', {timeout: 120e3}).catch(() => {});
   ok((await p.textContent('#form .addr code').catch(() => '')) === BOX0, `${name}: the router confirms the deposit address`);
-  await p.click('[data-from="wallet"]');
 }
-await p.click('#device-load');
+await p.evaluate(() => document.querySelector('#device-load').click());
 await p.waitForFunction(() => /ready/.test(document.querySelector('#device').textContent) || document.querySelector('#device .err'), null, {timeout: 600e3});
 ok(/ready/.test(await p.textContent('#device')), 'the proving key comes from a mirror, matches its hash and loads into the prover', (await p.textContent('#device .err').catch(() => '')) || '');
 ok(!errors.length, 'no page errors', errors.join(' | '));

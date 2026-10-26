@@ -5,6 +5,8 @@
 
    Usage: node test/dapp/tacit-pay.points.mjs                                                                       */
 import {mkNode, mkWallet, depositTo, lib, POOL, CHECKPOINTS} from './engine-mock.mjs';
+import {mockRelay} from './relay-mock.mjs';
+import {AbiCoder} from 'ethers';
 
 let failures = 0;
 const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x ? '  ' + x : '')); if (!c) failures++; };
@@ -52,6 +54,78 @@ console.log('a wallet with nothing read starts at the point');
   ok(slots.length === 1, 'the second state is gone from storage once joined', `${slots.length} slot(s)`);
   const again = mkWallet(node, {points: true, store}).W, s3 = await again.sync();
   ok(s3.balance === 8n * E / 10n && again.older() === null, 'a wallet opened from the stored state has everything, nothing left to read', `${s3.balance}`);
+}
+
+console.log('\na point far behind in blocks, with nothing after it');
+{
+  // The pool's newest point holds every leaf, and the chain has gone on 700,000 blocks since (a fast chain's day): the read
+  // finds the pool's count unchanged at the head and reads no log for those blocks.
+  const node = mkNode(), keys = lib.poolKeys(new Uint8Array(32).fill(7));
+  for (let i = 0; i < 10; i++) depositTo(node, other, E / 100n, 101 + i);
+  depositTo(node, keys, E / 10n, 150);
+  node.tip = 160; node.postPoint({block: 160});
+  node.tip = 700_160;
+  const {W} = mkWallet(node, {points: true, store: mkStore()}), s = await W.sync();
+  ok(node.logReads.filter((b) => b > 160 && b <= 700_160 - 3).length === 0, 'the 700,000 blocks after the point are not read (only the last few, not yet confirmed, as every read does)', `log reads after the point from ${node.logReads.filter((b) => b > 160).join(', ')}`);
+  ok(await settled(W) && W.summary().balance === E / 10n, 'and the older history still brings the note from before the point', String(W.summary().balance));
+  depositTo(node, keys, E / 20n, 700_200); node.tip = 700_300;
+  await W.sync(null, true);
+  ok(W.summary().balance === E / 10n + E / 20n, 'a payment after that is read as before', String(W.summary().balance));
+}
+
+console.log('\na spend elsewhere that inserts no leaf');
+for (const points of [false, 'hub']) {
+  // A whole note withdrawn with no change (as tacit.finance sends one) spends this key's note and leaves the pool's
+  // count where it was: the read still finds it, now, after a later leaf, after a rescan, and on another device.
+  const node = mkNode(), keys = lib.poolKeys(new Uint8Array(32).fill(7)), h32 = (x) => '0x' + BigInt(x).toString(16).padStart(64, '0');
+  for (let i = 0; i < 5; i++) depositTo(node, other, E / 100n, 101 + i);
+  depositTo(node, keys, E, 110);
+  node.tip = 120;
+  if (points) node.postPoint({block: 112});
+  const {W} = mkWallet(node, {points, store: mkStore()});
+  await W.sync(); await settled(W);
+  const nf = W.notes()[0].nf;
+  node.spent.add(BigInt(nf));
+  const data = AbiCoder.defaultAbiCoder().encode(['bytes32', 'bytes32', 'uint256', 'bytes32', 'address', 'int256', 'address', 'uint256', 'bytes', 'bytes'], [h32(0n), h32(0n), node.size, h32(node.tree.root), DEST, -E, '0x' + '00'.repeat(20), 0n, '0x', '0x']);
+  node.logs.push({address: POOL, topics: [lib.T_TRANSACT, h32(nf), h32(0n)], data, blockNumber: '0x' + (125).toString(16), transactionHash: '0x' + (++node.txn).toString(16).padStart(64, '0'), logIndex: '0x0'});
+  node.tip = 140;
+  const s = await W.sync(undefined, true);
+  depositTo(node, other, E / 100n, 150); node.tip = 160;
+  const s2 = await W.sync(undefined, true);
+  await W.rescan(); await settled(W);
+  const W2 = mkWallet(node, {points}).W; await W2.sync(); await settled(W2);
+  ok(s.balance === 0n && s2.balance === 0n && W.summary().balance === 0n && W2.summary().balance === 0n, `${points ? 'from the hub’s point' : 'from the first block'}: the note shows as spent, then, after a later leaf, after a rescan and on a new device`, [s.balance, s2.balance, W.summary().balance, W2.summary().balance].join(' '));
+  W.stop(); W2.stop();
+}
+
+console.log('\nthe catch-up hub, which names the pool in each call');
+{
+  const {node} = world();
+  const {W} = mkWallet(node, {points: 'hub', store: mkStore()}), s = await W.sync();
+  ok(s.balance === 5n * E / 10n && node.logReads[0] === 211 && node.hubReads > 0 && !node.pointReads, 'a pool whose points the hub keeps starts at the hub’s point, asking only the hub', `first log read from ${node.logReads[0]}, ${node.hubReads} hub reads`);
+  ok(await settled(W) && W.summary().balance === 8n * E / 10n, 'and reads the history behind it as with the registry');
+  const n2 = world().node; n2.hub = false;
+  const W2 = mkWallet(n2, {points: 'hub', store: mkStore()}).W, s2 = await W2.sync();
+  ok(s2.balance === 8n * E / 10n && Math.min(...n2.logReads) === 100 && W2.newestPoint() === false, 'a hub not yet deployed (no code) is read as no registry: the pool is read from its first block', `${s2.balance}, from ${Math.min(...n2.logReads)}`);
+}
+
+console.log('\nthe relay’s own point, when the registry’s newest is far behind');
+for (const lie of [false, true]) {
+  const node = mkNode(), keys = lib.poolKeys(new Uint8Array(32).fill(7)), KEEPER = 'https://relay.test/evm-pool/keeper';
+  for (let i = 0; i < 10; i++) depositTo(node, other, E / 100n, 101 + i);
+  node.tip = 120; const old = node.postPoint({block: 120});
+  for (let i = 0; i < 600; i++) depositTo(node, other, E / 100n, 130 + Math.floor(i / 20));
+  node.tip = 185;
+  const e = node.tree.edge(), low = Math.log2(e.size & -e.size);
+  depositTo(node, keys, E / 10n, 200);
+  node.tip = 300;
+  const relay = mockRelay(node, () => ({}));
+  relay.point = {chainId: 1, pool: POOL, size: e.size, block: 185, filled: e.filled.map((x, i) => '0x' + (lie && i === low ? x ^ 1n : x).toString(16))};
+  const {W} = mkWallet(node, {points: true, keeper: KEEPER, store: mkStore()});
+  const s = await W.sync();
+  relay.restore();
+  if (!lie) ok(node.logReads[0] === 186 && s.balance === E / 10n && e.size >= old + 1000, 'a wallet starts from the relay’s point, which the pool vouches for, and finds what came after it', `first read ${node.logReads[0]}, points ${old} → ${e.size}, ${s.balance}`);
+  else ok(node.logReads[0] === 121 && s.balance === E / 10n, 'an edge the pool never held, from the relay, is passed over for the registry’s point', `first read ${node.logReads[0]}, ${s.balance}`);
 }
 
 console.log('\nthe older history goes on from where a visit stopped');

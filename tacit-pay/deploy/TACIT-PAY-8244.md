@@ -12,7 +12,7 @@ shielded ETH pool, which is deployed at the same addresses on all three chains:
 | piece | path |
 | --- | --- |
 | page source | `dapp/page.html` |
-| deployed page | `dapp/page.min.html`: the source with its comments and spacing taken out by `../scripts/strip.mjs` (run by `deploy/repin.sh`), the file the manifest pins and the chunks hold |
+| deployed page | `dapp/page.min.html`: the source minified by `../scripts/strip.mjs` with terser at the version the repo's `package.json` pins (run by `deploy/repin.sh`; the manifest's `"minify": true`), the file the manifest pins and the chunks hold. The module's first part, which the scan workers run on their own, keeps its names as written. |
 | wrapper | `src/TacitPay8244.sol` |
 | chunker | `../scripts/chunk.mjs` (shared) |
 | tests | `test/TacitPay8244.t.sol`; in `test/dapp/`: `tacit-pay.page.mjs`, `.units.mjs`, `.sig.mjs`, `.engine.mjs`, `.unconfirmed.mjs`, `.artifacts.mjs`, `.ens.mjs`, `.wallets.mjs`, `.fork.mjs`, `.links.mjs`, `.relay.mjs`, `.index.mjs`, `.boxes.mjs`, `.keeper.mjs`, `.chains.mjs`, `.live.mjs`, `.strip.mjs`, `.scan.mjs`, `.privateswap.mjs` (below) |
@@ -271,11 +271,12 @@ root and a Chromium for playwright-core (`npx playwright-core install chromium`)
 ```
 node ../scripts/chunk.mjs tacit-pay            # out/TacitPay8244.chunk1..N.creation.txt
 forge test --match-path test/TacitPay8244.t.sol
-node test/dapp/tacit-pay.strip.mjs             # the deployed page against its source: the same style rules, elements, text and pixels
+node test/dapp/tacit-pay.strip.mjs             # the deployed page against its source, scripts off: the same style rules, elements, text and pixels
 node test/dapp/tacit-pay.page.mjs              # the page alone: vectors, sign-in, links, names, endpoints, no network
 node test/dapp/tacit-pay.units.mjs             # amount parsing, an address's ID, how a failed log read is judged
 node test/dapp/tacit-pay.sig.mjs               # the page's signatures against an independent implementation
 node test/dapp/tacit-pay.engine.mjs            # the wallet engine on a chain in memory: merges, lagging nodes, an index that lies, batched reads
+node test/dapp/tacit-pay.ahead.mjs             # a payment proved while its form is filled in: sent at the press when the queue has not moved, else proved again
 node test/dapp/tacit-pay.artifacts.mjs         # the proving key and witness program: a file that is not the pinned one is never used
 node test/dapp/tacit-pay.unconfirmed.mjs       # a wallet payment the network never confirms is not sent a second time
 node test/dapp/tacit-pay.scan.mjs              # a long pool history (N=600 deposits) read in workers made from the page's own code
@@ -289,6 +290,7 @@ node test/dapp/tacit-pay.boxes.mjs             # one-time deposit addresses: iss
 node test/dapp/tacit-pay.privateswap.mjs       # a private swap: USDC in, a token added by address out, through the card; what is remembered; a lost plan
 node test/dapp/tacit-pay.ux.mjs                # how the page answers as it is used, chains in memory: forms, held payments, copies, Rebuild
 node test/dapp/tacit-pay.shieldtoken.mjs       # shielding from a token on a fork: MODE=permit|permit2|batch|approve|relay|relaybatch|box|weth; Max
+node test/dapp/tacit-pay.tokenpools.mjs        # the USDC and USDT pools on a fork: a permit shield, a relayed send and withdrawal in USDC, an approval shield in USDT
 node test/dapp/tacit-pay.swapfork.mjs          # a withdrawal that arrives as a token, on a fork with the real router, zQuoter and zRouter; an amount in the token; a link that asks for one
 node test/dapp/tacit-pay.routes.mjs            # every route a token withdrawal can take, on every chain, run as the escrow runs it
 node test/dapp/tacit-pay.move.mjs              # a move to a rollup as the page encodes it, against the live router (one read-only call)
@@ -311,7 +313,8 @@ flow on all three chains and in WebKit, the tampered proofs refused, the proving
 ## Deploying
 
 From `tacit-pay/`, after any edit to `dapp/page.html`: `sh deploy/repin.sh` (pins the prover block's hash in the module and the
-module's hash in the CSP, builds the deployed page `dapp/page.min.html` from the source and pins it the same way, puts its size
+module's hash in the CSP, builds the deployed page `dapp/page.min.html` from the source (minified, so `npm i` at the repo root
+first) and pins it the same way, puts its size
 and hash in `manifest.json` and in the forge test, and re-chunks), then `forge build`, then
 `forge test --match-path test/TacitPay8244.t.sol`.
 Never run `forge build --force` or `forge clean` between `repin.sh` and the deploy: they delete `out/`, where the chunk

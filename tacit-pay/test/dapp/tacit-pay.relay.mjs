@@ -34,7 +34,7 @@ await p.chain(name);
 
 console.log(`${c.full}: a balance to spend, shielded from the wallet`);
 await p.click('#tabs [data-tab="shield"]');
-await p.click('#f-conn');
+await p.click('#f-go');
 await p.waitForSelector('#f-max');
 await p.fill('#f-samt', '0.02');
 await p.click('#f-go');
@@ -137,7 +137,7 @@ ok(/not shown this payment yet/.test(s) && !/Sent 0/.test(s), 'is not taken for 
 ok(/held for it/.test(await held(/held for it/)), 'the notes it spends are held, and the balance says so', (await p.textContent('#bal-note')).replace(/\s+/g, ' ').trim().slice(0, 160));
 relay.mode = 'send';
 await p.click('#status [data-retry="relay"]');
-s = await p.status(/It landed|It is settled|err/);
+s = await p.status(/It landed|It is no longer held|err/);
 ok(/It landed/.test(s), 'tried again from the same notes, a faithful relay then sends it', s);
 toK1.push(11n * 10n ** 14n); bal -= 11n * 10n ** 14n + 5n * E12;
 ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
@@ -156,7 +156,7 @@ if (!process.env.FAST) {
   ok(told && await p.isDisabled('#f-go'), 'a new payment from the same balance is told it is held, and waits', (await p.textContent('#f-rcpt')).trim().slice(0, 140));
   relay.mode = 'send';
   await p.click('#bal-note [data-retry="relay"]');
-  s = await p.status(/It landed|It is settled|err/);
+  s = await p.status(/It landed|It is no longer held|err/);
   ok(/It landed/.test(s), 'until it is tried again and lands', s);
   toK1.push(12n * 10n ** 14n); bal -= 12n * 10n ** 14n + 5n * E12;
   ok(await p.balance(eth(bal)) === eth(bal), `balance ${eth(bal)}`);
@@ -187,7 +187,7 @@ ok(/did not take this payment/.test(s) && !/relay busy/.test(s), 'it is told in 
 ok(await p.$('#status [data-retry="self"]') !== null, 'with the wallet offered');
 const sends1 = await walletSends();
 await p.click('#status [data-retry="self"]');
-s = await p.status(/It landed|It is settled|err/);
+s = await p.status(/It landed|It is no longer held|err/);
 ok(/It landed/.test(s), 'the wallet sends it, from the same notes', s);
 tx = await f.rpc('eth_getTransactionByHash', [await txOf()]);
 ok(tx.from.toLowerCase() === ACCT && await walletSends() === sends1 + 1, 'from the payer’s own account, no fee to the relay');

@@ -66,7 +66,8 @@ function answer(n, {method, params = []}) {
     if (to === MULTICALL.toLowerCase()) {
       const [calls] = iface.decodeFunctionData('aggregate3', data);
       return iface.encodeFunctionResult('aggregate3', [calls.map((c) => c.target.toLowerCase() === POOL.toLowerCase() ? [true, coder.encode(['uint256'], [n.size])]
-        : c.callData.startsWith(iface.getFunction('getEthBalance').selector) ? [true, coder.encode(['uint256'], [n.balances.get(iface.decodeFunctionData('getEthBalance', c.callData)[0].toLowerCase()) ?? 0n])] : [false, '0x'])]);
+        : c.callData.startsWith(iface.getFunction('getEthBalance').selector) ? [true, coder.encode(['uint256'], [n.balances.get(iface.decodeFunctionData('getEthBalance', c.callData)[0].toLowerCase()) ?? 0n])]
+        : (() => { try { return [true, answer(n, {method: 'eth_call', params: [{to: c.target, data: c.callData}]})]; } catch { return [false, '0x']; } })())]);
     }
     if (to === POOL.toLowerCase() && sel === id('nextIndex()').slice(0, 10)) return coder.encode(['uint256'], [n.size]);
     if (to === POOL.toLowerCase() && sel === id('rootSize(bytes32)').slice(0, 10)) return coder.encode(['uint256'], [n.roots.get(String(BigInt('0x' + data.slice(10)))) ?? 0n]);

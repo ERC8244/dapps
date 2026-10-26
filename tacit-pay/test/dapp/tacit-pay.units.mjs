@@ -27,6 +27,7 @@ const parseUnits = vm.runInNewContext(`${cut('function parseEth(', '\nfor (const
 for (const [t, d, want] of [
   ['1.5', 6, 1500000n], ['0.000001', 6, 1n], ['1,234.5', 6, 1234500000n], ['0', 6, 0n], ['3', 0, 3n], ['3.0', 0, 3n], ['0.1', 18, 10n ** 17n], ['1', 24, 10n ** 24n],
   ['0.0000001', 6, null], ['3.5', 0, null], ['1e3', 6, null], ['-1', 6, null], ['', 6, null], ['1', 37, null],
+  ['0.0000000000000000000001', 24, 100n], ['1.000000', 2, 100n], ['0.0000000000000000000000001', 24, null],
 ]) ok(parseUnits(t, d) === want, `${JSON.stringify(t)} with ${d} decimals → ${want == null ? 'not an amount' : want}`, String(parseUnits(t, d)));
 
 console.log('\nthe ID of an address');
@@ -57,6 +58,15 @@ for (const n of ['alice', 'alice.com', '.wei', 'alice..wei', 'alice.wei.', 'Alic
 ok(nm.looksName('alice.com') && !nm.looksName('tacit1qq') && !nm.looksName('a b.wei'), 'anything with a dot and no spaces is read as a name, so its refusal can say why');
 ok(/\.base\.eth are not supported/.test(nm.nameHint('x.base.eth')) && /ends in \.wei, \.gwei or \.eth/.test(nm.nameHint('x.com')), 'and the refusal names the .base.eth case apart');
 ok(nm.noteOf('a\u202Eb\nc\td') === 'ab c d' && nm.noteOf('\u200Bx\u200F') === 'x' && nm.noteOf('  rent  ') === 'rent' && nm.noteOf('y'.repeat(80)).length === 60 && nm.noteOf(null) === '', 'a note loses control and invisible formatting characters, collapses spaces, and keeps 60 characters');
+
+ok(nm.noteOf('a' + '\u0301'.repeat(40) + 'b') === 'a\u0301\u0301b' && nm.noteOf('caf\u00e9 e\u0301') === 'caf\u00e9 e\u0301', 'marks stacked past two on one letter go, and ordinary accents stay');
+
+console.log('\nfigures that say what something holds');
+{
+  const fmt = vm.runInNewContext(`${cut('function fmt(', '\nconst ethStr')}\n${cut('const group =', '\n')}\nfmt`, {BigInt, String});
+  ok(fmt(999_999_500_000_000_000n) === '1' && fmt(999_999_500_000_000_000n, 6, true) === '0.999999', 'a holding is cut, not rounded up to read as enough');
+  ok(fmt(12_345_500_000_000_000n, 6, true) === '0.012345' && fmt(12_345_500_000_000_000n) === '0.012346', 'and the most a spend takes is never shown above what it is');
+}
 
 console.log('\ncombining a balance held in parts');
 const combinePlan = vm.runInNewContext(`${cut('function combinePlan(', '\nfunction maxSpend(')}\ncombinePlan`, {BigInt, Number});
@@ -104,6 +114,9 @@ ok(same(logFailure(err('response size exceeded'), 8), {step: 2}), 'a size compla
 ok(logFailure(err('response size exceeded'), 1) === null, 'at one block there is nothing narrower to try');
 ok(logFailure(err('execution reverted'), 50000) === null, 'an unrelated error is passed on');
 ok(same(logFailure(new Error('too many results, limit 10000'), 4000), {step: 1000}), 'a single error, not a list of them, is read the same way');
+ok(same(logFailure(err('eth_getLogs is limited to a 1,000 range', 'request limit reached', '429 Too Many Requests'), 50000, 50000), {busy: true}), 'a step a node served before, failing with one busy, is waited out: the node that names a small cap is not taken as the cap');
+ok(same(logFailure(err('eth_getLogs is limited to a 1,000 range', 'request limit reached'), 50000, 10000), {step: 1000, named: true}), 'a step wider than any served still takes the named cap');
+ok(same(logFailure(err('ranges over 10000 blocks are not supported on free plan'), 50000), {step: 12500}), 'a free plan’s number is not taken as a cap (its node refuses far less): the range narrows instead');
 
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

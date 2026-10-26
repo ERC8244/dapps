@@ -3,7 +3,7 @@
    it subscribes (a socket that dropped before acknowledging gets it again); the sender is not sent its own. `drop()` closes
    every socket, as a network does. The login (?auth=<JWT>) is checked for its shape. */
 import {createRequire} from 'node:module';
-const require = createRequire('/Users/z/tacit-wallet/build/package.json');
+const require = createRequire(process.env.WC_SDK || '/Users/z/tacit-wallet/build/package.json');
 const {WebSocketServer} = require('ws');
 
 export async function startRelay() {

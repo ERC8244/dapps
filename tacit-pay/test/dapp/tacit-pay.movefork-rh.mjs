@@ -17,8 +17,7 @@ await p.openKey(hexKey());
 
 console.log('shield from the wallet');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="wallet"]');
-if (await p.$('#f-conn')) await p.click('#f-conn');
+if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
 await p.waitForSelector('#f-max');
 await p.fill('#f-samt', '0.05');
 await p.click('#f-go');
@@ -27,7 +26,7 @@ await p.balance('0.05');
 
 console.log('\nmove 0.01 ETH to Robinhood Chain through the relay');
 await p.click('#tabs [data-tab="withdraw"]');
-await p.click('#form [data-mv="4663"]');
+await p.click('#tabs [data-tab="swap"]'); await p.click('#f-pv2'); await p.click('[data-pv="chain:4663"]');
 await p.fill('#f-wamt', '0.01');
 await p.waitForFunction(() => /Moves to Robinhood Chain/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 180e3});
 const receipt = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' ');
@@ -61,7 +60,7 @@ for (let i = 0; i < 40 && !rr; i++) { rr = await fr.rpc('eth_getTransactionRecei
 ok(rr?.status === '0x1' && BigInt(rr.gasUsed) <= t.gasLimit, 'the redemption fits the ticket’s gas and pays the new address', `gas ${rr ? BigInt(rr.gasUsed) : '?'} of ${t.gasLimit}`);
 await p.chain('robinhood');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="exchange"]');
+await p.click('#f-tok'); await p.click('[data-from="exchange"]');
 await p.waitForSelector('#f-check', {timeout: 120e3});
 await p.click('#f-check');
 await p.waitForSelector('[data-take]', {timeout: 180e3});

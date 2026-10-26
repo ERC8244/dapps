@@ -14,7 +14,7 @@ if (a < 0 || end < 3) throw new Error('page layout changed: makePoolWallet');
 // The engine's messages write amounts with the page's own formatting, which the page defines further down.
 const f0 = mod.indexOf('const group ='), f1 = mod.indexOf('\nconst ethStr', f0);
 if (f0 < 0 || f1 < 0) throw new Error('page layout changed: fmt');
-const body = `${mod.slice(0, end)}\n${mod.slice(f0, f1)}\nexport { sealState, openState, slotOf, headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, edgeRoot, treeFromEdge, rootFromPath, secp, getLogs, H, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress };\n`;
+const body = `${mod.slice(0, end)}\n${mod.slice(f0, f1)}\nexport { sealState, openState, slotOf, headOf, jsonRpc, aggregate, makePoolWallet, poolKeys, sealNote, poolAsset, incTree, edgeRoot, treeFromEdge, rootFromPath, secp, getLogs, H, hex, unhex, T_TRANSACT, T_RECEIVED, leafOf, receiveRho, receiveKeys, receiveBoxAddress, paymentKey };\n`;
 const file = path.join(os.tmpdir(), `tacit-pay-engine-${createHash('sha256').update(body).digest('hex').slice(0, 12)}.mjs`);
 fs.writeFileSync(file, body);
 export const lib = await import(file);
@@ -23,6 +23,9 @@ const {makePoolWallet, poolKeys, sealNote, poolAsset, incTree, hex, T_TRANSACT, 
 export const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', MULTICALL = '0xcA11bde05977b3631167028862bE2a173976CA11';
 // The catch-up registry (TacitEvmPoolCheckpoints), as the page names it.
 export const CHECKPOINTS = /const CHECKPOINTS = '(0x[0-9a-fA-F]{40})'/.exec(mod)[1];
+// The catch-up hub, which keeps points for any pool it is asked about (here the same points, for POOL only); `hub: false`
+// on the node leaves it with no code.
+export const HUB = /const CHECKPOINT_HUB = '(0x[0-9a-fA-F]{40})'/.exec(mod)[1];
 const iface = new Interface(['function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[] returnData)', 'function getEthBalance(address) view returns (uint256)']);
 const coder = AbiCoder.defaultAbiCoder();
 const h32 = (x) => '0x' + BigInt(x).toString(16).padStart(64, '0');
@@ -70,7 +73,7 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
       const f = params[0], from = parseInt(f.fromBlock, 16), to = parseInt(f.toBlock, 16);
       node.logReads.push(from);
       if (node.logDelay) { const ms = node.logDelay(from, to); if (ms) await new Promise((r) => setTimeout(r, ms)); }
-      return node.logs.filter((l) => l.address.toLowerCase() === f.address.toLowerCase() && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to && (!f.topics || f.topics.every((t, i) => !t || (Array.isArray(t) ? t.includes(l.topics[i]) : t === l.topics[i]))));
+      return node.logs.filter((l) => [].concat(f.address).some((x) => x.toLowerCase() === l.address.toLowerCase()) && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to && (!f.topics || f.topics.every((t, i) => !t || (Array.isArray(t) ? t.includes(l.topics[i]) : t === l.topics[i]))));
     }
     if (method === 'eth_call') {
       const {to, data} = params[0], sel = data.slice(0, 10), size = node.sizeAt(params[1]);
@@ -88,6 +91,13 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
         node.pointReads = (node.pointReads || 0) + 1;
         if (sel === id('latest()').slice(0, 10)) return coder.encode(['uint256'], [node.points.latest]);
         if (sel === id('pointAt(uint256)').slice(0, 10)) { const p = node.points.at.get(Number(BigInt('0x' + data.slice(10)))); return coder.encode(['uint256', 'uint256', 'bytes32[32]'], p ? [p.block, p.prev, p.filled.map(h32)] : [0, 0, Array(32).fill(h32(0n))]); }
+      }
+      if (to.toLowerCase() === HUB.toLowerCase()) {
+        if (node.hub === false) return '0x';
+        node.hubReads = (node.hubReads || 0) + 1;
+        const ours = BigInt('0x' + data.slice(10, 74)) === BigInt(POOL);
+        if (sel === id('latest(address)').slice(0, 10)) return coder.encode(['uint256'], [ours ? node.points.latest : 0]);
+        if (sel === id('pointAt(address,uint256)').slice(0, 10)) { const p = ours && node.points.at.get(Number(BigInt('0x' + data.slice(74)))); return coder.encode(['uint256', 'uint256', 'bytes32[32]'], p ? [p.block, p.prev, p.filled.map(h32)] : [0, 0, Array(32).fill(h32(0n))]); }
       }
       if (to.toLowerCase() === POOL.toLowerCase()) {
         if (sel === id('nextIndex()').slice(0, 10)) return coder.encode(['uint256'], [size]);
@@ -107,9 +117,9 @@ export function mkNode({deployBlock = 100, multicall = true} = {}) {
   return node;
 }
 
-export function mkWallet(node, {keeper = null, confirmations = 3, deployBlock = 100, vote, head, key = new Uint8Array(32).fill(7), prove = null, points = false, store = null} = {}) {
+export function mkWallet(node, {keeper = null, confirmations = 3, deployBlock = 100, vote, head, key = new Uint8Array(32).fill(7), prove = null, points = false, store = null, refundBase} = {}) {
   const keys = poolKeys(key);
-  const chain = {chainId: 1, pool: POOL, router: ROUTER, rpc: node.rpc, deployBlock, confirmations, keeper, vote, head, points: points ? CHECKPOINTS : null};
+  const chain = {chainId: 1, pool: POOL, router: ROUTER, rpc: node.rpc, deployBlock, confirmations, keeper, vote, head, points: points === 'hub' ? HUB : points ? CHECKPOINTS : null, hub: points === 'hub', refundBase};
   const W = makePoolWallet({chain, keys, prove, store, signer: null, feed: !!keeper});
   return {W, keys, chain};
 }
@@ -139,8 +149,9 @@ export function fakeSweep(node, keys, i, value, block) {
 const FR = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const TXI = new Interface(['function transact(uint256[2] pA,uint256[2][2] pB,uint256[2] pC,uint256[11] publicInputs,address recipient,int256 extAmount,address relayer,uint256 fee,bytes memo0,bytes memo1)']);
 /** Wallets that spend for real on the chain in memory: a prover that returns the witness's public signals, and a signer that
- *  applies transact() the way the pool does (root, insertion index, nullifiers, the public amount). */
-export function mkWorld() {
+ *  applies transact() the way the pool does (root, insertion index, nullifiers, the public amount). `onProve(input, still)`
+ *  sees each proof asked for. */
+export function mkWorld({onProve = null} = {}) {
   const node = mkNode();
   node.tip = 130;
   const apply = (data, value = 0n) => {
@@ -167,7 +178,7 @@ export function mkWorld() {
   const base = node.rpc;
   const rpc = async (m, p) => (m === 'eth_call' && p[0].to.toLowerCase() === POOL.toLowerCase() && p[0].data.startsWith(TXI.getFunction('transact').selector)) ? '0x' : base(m, p);
   rpc.batch = base.batch;
-  const prove = async (input) => ({proof: {pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['5', '6']}, publicSignals: [input.root, input.oldRoot, input.newRoot, input.startIndex, input.publicAmount, input.extDataHash, input.asset, input.nf[0], input.nf[1], input.outLeaf[0], input.outLeaf[1]].map(String)});
+  const prove = async (input, chain, still) => (onProve?.(input, still), {proof: {pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['5', '6']}, publicSignals: [input.root, input.oldRoot, input.newRoot, input.startIndex, input.publicAmount, input.extDataHash, input.asset, input.nf[0], input.nf[1], input.outLeaf[0], input.outLeaf[1]].map(String)});
   // `keeper`: a relay's base URL, answered by whatever the test puts in globalThis.fetch (`relayed` applies what it sends).
   const wallet = (seed, {send = null, keeper = null, points = false, store = null} = {}) => {
     const keys = poolKeys(new Uint8Array(32).fill(seed));

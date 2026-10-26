@@ -59,7 +59,7 @@ ok(Number(info.chainId) === 1 && info.pool.toLowerCase() === POOL.toLowerCase(),
 const fund = async (page, key, amount) => {
   const addr = await page.openKey(key);
   await page.click('#tabs [data-tab="shield"]');
-  if (await page.$('#f-conn')) await page.click('#f-conn');
+  if (/^Connect a wallet$/.test((await page.textContent('#f-go')).trim())) await page.click('#f-go');
   await page.waitForSelector('#f-max');
   await page.fill('#f-samt', amount);
   await page.click('#f-go');

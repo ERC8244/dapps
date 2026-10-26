@@ -43,7 +43,12 @@ const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(text)?
 ok(csp.includes(`'sha256-${createHash('sha256').update(module).digest('base64')}'`), 'the CSP pins the one module by its hash');
 const style = /<style>([\s\S]*?)<\/style>/.exec(text)?.[1] ?? '', tags = text.replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
 ok(!/<script[^>]+src=|<link[^>]+href="(?!data:)|<img[^>]+src="(?!data:)/i.test(tags) && !/@import|url\((?!["']?data:)/i.test(style), 'nothing is loaded by URL: no script src, no stylesheet, no remote image or url()');
-ok(/<script type="text\/x-prover" id="prover"[^>]*>/.test(text) && /function makeProver/.test(text), 'the prover is in the document, for its workers');
+// The workers' code is in the document; the module (which the CSP pins) pins the prover block, and the part of itself the
+// scan workers run, by their hashes.
+const prover = /<script type="text\/x-prover" id="prover"[^>]*>([\s\S]*?)<\/script>/.exec(text)?.[1] ?? '', scanEnd = /\bH ?= ?\(?(\w+)\)? ?=> ?poseidon\(\1\);?/.exec(module);
+const pinned = (s) => module.includes(createHash('sha256').update(s).digest('hex'));
+ok(prover.length > 5000 && pinned(prover), 'the prover is in the document, for its workers, pinned by the module');
+ok(!!scanEnd && pinned(module.slice(0, scanEnd.index + scanEnd[0].length)), 'and so is the part of the module the scan workers run');
 ok(text.includes('40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b') && text.includes('02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1'), 'it pins the ceremony’s proving key and witness program by SHA-256');
 
 // Each chain a hundred blocks past the pool's deployment with nothing in the pool: enough for the page to read, and
@@ -76,11 +81,14 @@ const TOKEN = '0x' + '7a'.repeat(20);
 const POINTS = {[namehash('bob.wei')]: PAYEE, [namehash('bob.gwei')]: PAYEE2, [namehash('direct.eth')]: PAYEE, [namehash('sub.parent.eth')]: PAYEE2, [namehash('zero.wei')]: '0x' + '00'.repeat(20), [namehash('pool.wei')]: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9'};
 const ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12', ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288';
 const answer = (host, {method, params}) => {
-  // The nodes a reader sets under Endpoints are asked their chain before they are saved: this one for Base, that one for Ethereum.
-  if (method === 'eth_chainId') return host === 'example.org' ? '0x2105' : '0x1';
+  // The nodes a reader sets under Endpoints are asked their chain before they are saved, and a registry entry before its first
+  // read: these for Base and Robinhood, the rest (registry-wrong.example, listed for Base, among them) for Ethereum.
+  if (method === 'eth_chainId') return ['example.org', 'registry-base.example'].includes(host) ? '0x2105' : host === 'registry-rh.example' ? '0x1237' : '0x1';
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
   if (to === ZRPC && data === '0xd77e4c79') return coder.encode(['string[]'], [['https://registry-eth.example', 'http://insecure.example', 'https://ethereum-rpc.publicnode.com']]);
-  if (to === ZEND && data.startsWith('0xc03c2d74')) return coder.encode(['string[][]'], [[['https://registry-base.example'], ['https://registry-rh.example'], ['https://registry-logs.example']]]);
+  if (to === ZEND && data.startsWith('0xc03c2d74')) return coder.encode(['string[][]'], [[['https://registry-wrong.example', 'https://registry-base.example'], ['https://registry-rh.example'], ['https://registry-logs.example'], [], [],
+    ['https://registry-keepers.example'], ['http://insecure.example', 'https://registry-keepers.example/base'], ['https://registry-keepers.example/?x=1', 'https://registry-keepers.example/rh/'],
+    ['https://registry-mirror.example/ipfs/x', 'https://registry-mirror.example/evm-pool/'], ['wss://relay.walletconnect.org/path', 'wss://relay.walletconnect.org'], ['NOT-AN-ID', '0123456789abcdef0123456789abcdef'], ['http://insecure.example', 'https://registry-copy.example']]]);
   if ([WNS, GNS, R_DIRECT].includes(to) && data.startsWith('0x59d1d43c')) {
     const rec = RECORDS['0x' + data.slice(10, 74)];
     return coder.encode(['string'], [rec ? rec(host) : '']);
@@ -98,6 +106,15 @@ const answer = (host, {method, params}) => {
   if (to === R_OFF) throw {rpcError: {code: 3, message: 'execution reverted', data: '0x556f1830' + '00'.repeat(32)}};
   if (method === 'eth_blockNumber') return '0x' + TIP[/base/.test(host) ? 'base' : /robinhood/.test(host) ? 'robinhood' : 'ethereum'].toString(16);
   if (method === 'eth_getLogs') { if (NOLOGS.has(host)) throw {rpcError: {code: -32005, message: 'logs are not served on this plan'}}; return []; }
+  // A token's decimals, symbol, name and supply, read in one Multicall3 call: the test token answers them, any other
+  // address answers nothing, as an account without code does.
+  if (to === '0xca11bde05977b3631167028862be2a173976ca11' && data.startsWith('0x82ad56cb')) {
+    const [calls] = coder.decode(['(address,bool,bytes)[]'], '0x' + data.slice(10));
+    if (calls.every(([, , d]) => ['0x313ce567', '0x95d89b41', '0x06fdde03', '0x18160ddd'].includes(d))) {
+      return coder.encode(['(bool,bytes)[]'], [calls.map(([t, , d]) => [true, t.toLowerCase() === TOKEN ? answer(host, {method, params: [{to: t, data: d}]}) : '0x'])]);
+    }
+  }
+  if (to === TOKEN && data === '0x18160ddd') return coder.encode(['uint256'], [10n ** 12n]);
   if (to === TOKEN && data === '0x313ce567') return coder.encode(['uint8'], [6]);
   if (to === TOKEN && data === '0x95d89b41') return coder.encode(['string'], ['TUSD']);
   if (to === TOKEN && data === '0x06fdde03') return coder.encode(['string'], ['Test USD']);
@@ -115,7 +132,7 @@ await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   seen.add(url.host);
   if (req.method() === 'POST') try { for (const x of [].concat(JSON.parse(req.postData() || '{}'))) CALLS.push([url.host, x.method, x.params?.[0]?.data || '']); } catch {}
   if (DOWN.has(url.host)) return route.fulfill({status: 503, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: '{"error":"down"}'});
-  if (req.method() === 'POST' && !/onrender\.com$/.test(url.host)) {
+  if (req.method() === 'POST' && !/onrender\.com$|^registry-keepers\.example$/.test(url.host)) {
     const body = JSON.parse(req.postData() || '{}');
     const reply = (b) => { try { return {jsonrpc: '2.0', id: b.id, result: answer(url.host, b)}; } catch (e) { if (e.rpcError) return {jsonrpc: '2.0', id: b.id, error: e.rpcError}; throw e; } };
     return route.fulfill({status: 200, contentType: 'application/json', headers: {'access-control-allow-origin': '*'}, body: JSON.stringify(Array.isArray(body) ? body.map(reply) : reply(body))});
@@ -134,7 +151,7 @@ await ctx.addInitScript(`let chain = '0x1'; window.ethereum = { on() {}, request
 } };`);
 const p = await ctx.newPage();
 const errors = [];
-p.on('pageerror', (e) => errors.push(String(e)));
+p.on('pageerror', (e) => errors.push(String(e.stack || e)));
 p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
 await p.goto(`http://127.0.0.1:${server.address().port}/`);
 await p.waitForTimeout(400);
@@ -154,7 +171,7 @@ ok(await p.isVisible('#f-qr svg'), 'and a QR code of the payment link, once the 
 await p.waitForFunction(() => [...document.querySelectorAll('#chains small')].every((s) => /0 ETH/.test(s.textContent)), null, {timeout: 30e3}).catch(() => {});
 ok((await p.$$eval('#chains small', (x) => x.map((e) => e.textContent))).join() === '0 ETH,0 ETH,0 ETH', 'an empty pool reads as 0 on each chain');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="exchange"]');
+await p.click('#f-tok'); await p.click('[data-from="exchange"]');
 await p.waitForSelector('#form .addr code', {timeout: 30e3});
 ok((await p.textContent('#form .addr code')) === BOX0, 'the deposit address is the vector, shown once the router agrees');
 
@@ -321,14 +338,14 @@ await p.fill('#f-rname', 'friend.wei');
 await p.waitForFunction(() => /different Tacit address/.test(document.querySelector('#f-rname-note').textContent), null, {timeout: 20e3});
 ok(/#pay=tacit1/.test(await p.textContent('#f-rlink')) && !!(await p.$('#f-rpub')), 'one that points elsewhere is not used, and can be pointed here');
 await p.fill('#f-rname', 'blank.wei');
-await p.waitForFunction(() => /has not published/.test(document.querySelector('#f-rname-note').textContent), null, {timeout: 20e3});
+await p.waitForFunction(() => /has no Tacit address/.test(document.querySelector('#f-rname-note').textContent), null, {timeout: 20e3});
 ok(!!(await p.$('#f-rpub')), 'one with no record can have the address published to it');
 await p.fill('#f-rname', 'ross.wei');
 await p.waitForFunction(() => /points to this address/.test(document.querySelector('#f-rname-note').textContent), null, {timeout: 20e3});
 await p.fill('#f-ramt', '0.5'); await p.fill('#f-rfor', 'rent');
 await p.click('#f-rchains [data-rs="base"]');
 const link = await p.textContent('#f-rlink');
-ok(/#pay=ross\.wei&n=[0-9a-f]{64}&ns=[0-9a-f]{128}&amount=0\.5&chain=base&chains=base&for=rent$/.test(link), 'the link carries the name, a signed deposit address, amount, the one chain offered (as a restriction) and note', link);
+ok(/#pay=ross\.wei&n=[\w-]{43}&ns=[\w-]{86}&amount=0\.5&chains=base&for=rent$/.test(link), 'the link carries the name, a signed deposit address (in base64url), amount, the one chain offered (as a restriction) and note', link);
 await p.click('#f-rchains [data-rs="any"]');
 ok(!/chain=/.test(await p.textContent('#f-rlink')), 'and offers every chain unless one is picked');
 ok(await p.isVisible('#f-qr svg'), 'with a QR code of it');
@@ -391,6 +408,48 @@ await p.click('#f-tok3');
 await p.click('#f-tokl3 [data-tk=""]');
 ok(!!(await p.$('#f-rname')) && /#pay=ross\.wei/.test(await p.textContent('#f-rlink')), 'and Private ETH puts the link back as it was');
 
+console.log('a request for a private token, each pool on each chain');
+{
+  const POOLS = {1: [['TAC', '0xa1313eb9f3a445606d9583bcac3ebeb56a858279'], ['USDC', '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'], ['USDT', '0xdac17f958d2ee523a2206206994597c13d831ec7'], ['wstETH', '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0']],
+    8453: [['USDC', '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'], ['USDT', '0xfde4c96c8593536e31f229ea8f37b2ada2699bb2'], ['wstETH', '0xc1cba3fcea344f92d9239c08c0568f6f2f0ee452']],
+    4663: [['USDG', '0x5fc5360d0400a0fd4f2af552add042d716f1d168'], ['USDe', '0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34']]};
+  const KEYS = {1: ['ethereum', 'Ethereum'], 8453: ['base', 'Base'], 4663: ['robinhood', 'Robinhood Chain']};
+  const made = [], read = [];
+  for (const [cid, list] of Object.entries(POOLS)) {
+    const [key, full] = KEYS[cid];
+    await p.click(`#chains [data-chain="${cid}"]`);
+    for (const [sym, token] of list) {
+      if (await p.isHidden('#assets')) await p.click('#asset-pick');
+      await p.click(`#assets [data-asset="${token}"]`);
+      await p.click('#tabs [data-tab="receive"]');
+      await p.evaluate(() => { const d = document.querySelector('#f-ropts'); if (d) d.open = true; });
+      await p.fill('#f-ramt', '1.5'); await p.fill('#f-rfor', 'rent');
+      const link = await p.waitForFunction(([s]) => { const t = document.querySelector('#f-rlink')?.textContent || ''; return new RegExp(`asset=${s}&`, 'i').test(t) && new RegExp(`amount=1\\.5${s}&`, 'i').test(t) && t; }, [sym.toLowerCase()], {timeout: 20e3}).then((h) => h.jsonValue(), () => '');
+      made.push(link && (cid === '1' ? !/[&#]chains?=/.test(link) : new RegExp(`&chain=${key}&`).test(link)) && /&for=rent$/.test(link) ? null : `${sym}@${key}: ${link}`);
+      // Opened by someone else's link to the same token: the payee here is another key.
+      const t = await card(link.slice(link.indexOf('#') + 1).replace(/pay=[^&]+/, `pay=${DEV_TACIT1}`));
+      read.push(new RegExp(`1\\.5 ${sym}\\b`).test(t) && t.includes(`on ${full}`) && /rent/.test(t) ? null : `${sym}@${key}: ${t.slice(0, 160)}`);
+      await closeReq();
+      await p.fill('#f-ramt', ''); await p.fill('#f-rfor', '');
+    }
+    if (await p.isHidden('#assets')) await p.click('#asset-pick');
+    await p.click('#assets [data-asset=""]');
+  }
+  ok(made.every((x) => !x), 'Receive with a pool picked makes its link: the token, the amount and the note, and the chain unless it is Ethereum', made.filter(Boolean).join(' | '));
+  ok(read.every((x) => !x), 'and each link opens as the request for that token on that chain', read.filter(Boolean).join(' | '));
+  let t = await card(`pay=${DEV_TACIT1}&asset=0x833589fcd6edb6e08f4c7c32d4f71b54bda02913&amount=2&chain=8453`);
+  ok(/2 USDC/.test(t) && t.includes('on Base'), 'a link may name the token by its address, and the chain by its number', t.slice(0, 120));
+  await closeReq();
+  t = await card(`pay=${DEV_TACIT1}&asset=usdc&amount=2usdt`);
+  ok(/not one USDC can be paid in/.test(t), 'an amount naming another token is refused', t.slice(0, 120));
+  await closeReq();
+  t = await card(`pay=${DEV_TACIT1}&asset=eth&amount=0.2&chain=base`);
+  const rcs = await p.$$eval('#req [data-rc]', (x) => x.map((b) => b.textContent));
+  ok(/0\.2 ETH/.test(t) && /Base/.test(t) && rcs.every((x) => x.startsWith('Base')), 'and asset=eth asks for private ETH, on the one chain it names', `${t.slice(0, 160)} · ${rcs.join()}`);
+  await closeReq();
+  await p.click('#chains [data-chain="1"]');
+}
+
 console.log('an Ethereum wallet');
 await p.click('#wallet'); await p.click('#w-lock'); await p.click('#sheet-wallet [data-close]');
 await p.click('#form [data-in="eth"]');
@@ -401,18 +460,30 @@ ok((await p.textContent('#form .addr code')) === DEV_TACIT1, 'a wallet’s signa
 console.log('the onchain registry of public nodes');
 await p.waitForFunction(() => !!localStorage.getItem('tacit-pay-registry-v1'), null, {timeout: 20e3}).catch(() => {});
 const reg = JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-registry-v1') || 'null'));
-ok(!!reg && reg.rpc[1].includes('https://registry-eth.example') && reg.rpc[1].includes('https://registry-logs.example') && reg.rpc[8453][0] === 'https://registry-base.example' && reg.rpc[4663][0] === 'https://registry-rh.example', 'the registry’s lists are read at load, through the page’s own nodes, and kept', JSON.stringify(reg?.rpc));
+ok(!!reg && reg.rpc[1].includes('https://registry-eth.example') && reg.rpc[1].includes('https://registry-logs.example') && reg.rpc[8453].includes('https://registry-base.example') && reg.rpc[4663][0] === 'https://registry-rh.example', 'the registry’s lists are read at load, through the page’s own nodes, and kept', JSON.stringify(reg?.rpc));
 ok(!reg.rpc[1].includes('http://insecure.example') && reg.rpc[1].filter((u) => u === 'https://ethereum-rpc.publicnode.com').length === 1, 'an http entry is dropped');
+ok(reg.keepers?.[1] === 'https://registry-keepers.example' && reg.keepers?.[8453] === 'https://registry-keepers.example/base' && !reg.keepers?.[4663], 'the registry names the keepers’ host per chain, its first plain https host (no http, query or trailing slash)', JSON.stringify(reg.keepers));
+ok(JSON.stringify(reg.mirrors) === '["https://registry-mirror.example/evm-pool/"]' && reg.wc === 'wss://relay.walletconnect.org' && reg.wcpid === '0123456789abcdef0123456789abcdef', 'and the proving key’s mirrors (folders), the WalletConnect relay (a host) and its project id, each by its shape', JSON.stringify([reg.mirrors, reg.wc, reg.wcpid]));
+ok(JSON.stringify(reg.copies) === '["https://registry-copy.example"]', 'and the nodes of any chain holding the onchain copy, https only', JSON.stringify(reg.copies));
 ok(!seen.has('registry-base.example'), 'while the page’s own nodes answer, the registry’s are not asked');
 for (const h of ['mainnet.base.org', 'base.gateway.tenderly.co', 'base-rpc.publicnode.com', 'base.drpc.org']) DOWN.add(h);
 await p.click('#chains [data-chain="8453"]');
 await p.click('#bal-re');
-await p.waitForFunction(() => /0 ETH|^0$/.test(document.querySelector('#bal .v')?.textContent || '') && !document.querySelector('#bal .err'), null, {timeout: 30e3}).catch(() => {});
+await p.waitForFunction(() => /0 ETH|^0$/.test(document.querySelector('#bal .v')?.textContent || '') && !document.querySelector('#bal .err') && !/reading/.test(document.querySelector('#bal-re')?.textContent || ''), null, {timeout: 30e3}).catch(() => {});
 ok(seen.has('registry-base.example') && !(await p.$('#bal .err')), 'with every one of the page’s Base nodes down, the balance is read through a node the registry listed', (await p.textContent('#bal')).replace(/\s+/g, ' ').slice(0, 100));
+const wrong = CALLS.filter(([h]) => h === 'registry-wrong.example').map(([, m]) => m);
+ok(wrong.length === 1 && wrong[0] === 'eth_chainId', 'a registry entry that says it is on another chain is asked that once, and nothing after', wrong.join(' '));
 DOWN.clear();
+
+console.log('colours');
+const th = () => p.evaluate(() => [document.documentElement.dataset.theme || 'system', localStorage.getItem('tacit-pay-theme-v1'), document.querySelector('meta[name="color-scheme"]').content, getComputedStyle(document.body).backgroundColor].join('|'));
+const t0 = await th(); await p.click('#theme'); const t1 = await th(); await p.click('#theme'); const t2 = await th(); await p.click('#theme'); const t3 = await th();
+ok(t1 === 'light|light|light|rgb(232, 224, 204)' && t2 === 'dark|dark|dark|rgb(21, 19, 14)' && t3 === t0 && /^system\|\|light dark\|/.test(t3), 'the colours go from the system’s to light, to dark and back, kept in this browser alone', [t0, t1, t2, t3].join(' → '));
 
 console.log('endpoints');
 await p.click('#settings-open');
+const relayShown = (id) => p.getAttribute(`#e-relay-${id}`, 'placeholder');
+ok((await relayShown(1)).startsWith('https://registry-keepers.example/1/evm-pool/keeper') && (await relayShown(4663)).startsWith('https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper'), 'a chain’s relay is on the registry’s keepers host when it names one, and on the page’s own otherwise', `${await relayShown(1)} · ${await relayShown(4663)}`);
 await p.fill('#e-rpc-8453', 'https://example.org/rpc');
 await p.fill('#e-rpc-1', 'https://own-eth.example/rpc');
 await p.click('#e-save');
@@ -434,7 +505,7 @@ await p.waitForFunction(() => !/Rebuilding|Reading/.test(document.querySelector(
 await p.waitForTimeout(1500);
 const ETH_PUBLIC = /^(ethereum-rpc\.publicnode\.com|mainnet\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|registry-eth\.example|registry-logs\.example)$/;
 const later = CALLS.slice(mark), pub = later.filter(([h]) => ETH_PUBLIC.test(h));
-ok(pub.length && pub.every(([, m]) => m === 'eth_getLogs') && later.some(([h, m]) => h === 'own-eth.example' && m === 'eth_call'), 'when your node does not serve the pool’s logs, only those are read through Ethereum’s public nodes; your deposit addresses and the rest stay with your node', [...new Set(pub.map(([h, m]) => `${h}:${m}`))].join(' '));
+ok(pub.every(([, m]) => m === 'eth_getLogs') && later.some(([h, m]) => h === 'own-eth.example' && m === 'eth_call'), 'when your node does not serve the pool’s logs, only those are read through Ethereum’s public nodes; your deposit addresses and the rest stay with your node', [...new Set(pub.map(([h, m]) => `${h}:${m}`))].join(' '));
 NOLOGS.clear();
 DOWN.add('own-eth.example');
 mark = CALLS.length;
@@ -450,7 +521,7 @@ ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-
 console.log('a wallet that is connected but has not signed in');
 {
   const q = await ctx.newPage();
-  q.on('pageerror', (e) => errors.push(String(e)));
+  q.on('pageerror', (e) => errors.push(String(e.stack || e)));
   await q.goto(`http://127.0.0.1:${server.address().port}/`);
   await q.waitForFunction(() => /^Sign in · 0x/.test(document.querySelector('#wallet-label')?.textContent || ''), null, {timeout: 20e3}).then(() => ok(true, 'the header reads as an action with the wallet’s address: Sign in · 0x…'), () => ok(false, 'the header reads as an action with the wallet’s address', document.querySelector ? '' : ''));
   await q.click('#chains [data-chain="8453"]');
@@ -460,7 +531,7 @@ console.log('a wallet that is connected but has not signed in');
   await q.close();
 }
 
-const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|tacit-evm-pool-keepers\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org)$/.test(h));
+const hosts = [...seen].filter((h) => !/^(ethereum-rpc\.publicnode\.com|(base|mainnet)\.gateway\.tenderly\.co|eth\.drpc\.org|1rpc\.io|mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org|rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org|robinhood-rpc\.publicnode\.com|rpc\.mevblocker\.io|tacit-evm-pool-keepers\.onrender\.com|example\.org|own-eth\.example|registry-[a-z]+\.example|tacit\.finance|ipfs\.filebase\.io|ipfs\.orbitor\.dev|gateway\.pinata\.cloud|base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org|base-sepolia\.drpc\.org)$/.test(h));
 ok(!hosts.length, 'it talks only to its listed nodes, relays, proving-key mirrors and the nodes of the key’s onchain copy', hosts.join(' '));
 ok(!errors.length, 'no page errors', errors.join(' | '));
 await browser.close(); server.close();

@@ -14,4 +14,4 @@ export const cut = (from, to) => {
   if (a < 0 || b < 0) throw new Error('page layout changed: ' + from);
   return mod.slice(a, b);
 };
-export const config = vm.runInNewContext(`${cut('const POOL =', '\nconst CEREMONY')}\n${cut('const RELAYERS =', '\nconst MAX_RELAY_FEE')}\n${cut('const MAX_RELAY_FEE =', '\n')}\n({ POOL, ROUTER, VERIFIER, CHAINS, RELAYERS, MAX_RELAY_FEE })`);
+export const config = vm.runInNewContext(`const REG = { keepers: {} };\n${cut('const POOL =', '\nconst CEREMONY')}\n${cut('const RELAYERS =', '\nconst MAX_RELAY_FEE')}\n${cut('const MAX_RELAY_FEE =', '\n')}\n({ POOL, ROUTER, VERIFIER, CHAINS, RELAYERS, MAX_RELAY_FEE })`);

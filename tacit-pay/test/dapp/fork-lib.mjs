@@ -32,6 +32,7 @@ const FORK_FROM = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https
 // The first development account, as a plain account: on real chains it carries delegation code.
 export const ACCT = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266';
 const TRANSACT = new Interface(['function transact(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1)']);
+const DEPOSIT_BOX = new Interface(['function depositBoxOf((uint256 amount,uint256 outLeaf0,uint256 outLeaf1,bytes32 memo0Hash,bytes32 memo1Hash,address refund,uint64 deadline,uint256 nonce)) view returns (address)']);
 const ROUTER_CALL = new Interface(['function withdrawAndCall((uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1) t, ((address target, uint256 value, address token, uint256 amount, bool push, bytes data)[] calls, address[] outTokens, uint256[] minOuts, address to, address refund, uint64 deadline, uint256 nonce) intent)']);
 
 export const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
@@ -40,7 +41,8 @@ export const hexKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)
  *  relays that are down: { mode, fee, relayer, quote, events, calls }. */
 // `realCalls`: contracts whose eth_call reads are answered by the chain itself rather than the fork (read-only contracts
 // whose state a fork would fetch slot by slot, such as a token list or a quoter); everything else is the fork's.
-export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = [], realCalls = [], batch = false} = {}) {
+// `passthrough`: the chains read for real; by default every chain not forked here.
+export async function startFork(names, {relay = null, account = ACCT, endpoints = null, blockTime = 0, passthrough = null, realCalls = [], batch = false} = {}) {
   const forks = {};
   for (const name of names) {
     const c = CHAINS.find((x) => x.key === name);
@@ -76,26 +78,49 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   const cors = {'access-control-allow-origin': '*'};
   const json = (route, status, body) => route.fulfill({status, contentType: 'application/json', headers: cors, body: JSON.stringify(body)}).catch(() => {});
 
-  const passHosts = new Set(passthrough.flatMap((k) => CHAINS.find((c) => c.key === k).rpc.map((u) => new URL(u).host)));
+  const passHosts = new Set((passthrough ?? CHAINS.map((c) => c.key).filter((k) => !names.includes(k))).flatMap((k) => CHAINS.find((c) => c.key === k).rpc.map((u) => new URL(u).host)));
+  // The live keepers' read-only index and point, for a test with no index of its own: a forked chain's cut at its fork.
+  const LIVE_KEEPERS = 'https://tacit-evm-pool-keepers.onrender.com';
+  async function liveIndex(route, u) {
+    const m = /^\/(\d+)(?:-[a-z0-9]+)?\/evm-pool\/keeper\/(events|point)$/.exec(u.pathname);
+    if (!m) return false;
+    const f = Object.values(forks).find((x) => x.c.chainId === Number(m[1]));
+    const r = await fetch(`${LIVE_KEEPERS}${u.pathname}${u.search}`, {signal: AbortSignal.timeout(45_000)}).then(async (x) => [x.status, await x.json().catch(() => ({}))], () => [503, {error: 'down'}]);
+    let [status, body] = r;
+    if (status === 200 && f && m[2] === 'events' && Array.isArray(body.events)) body = {...body, through: Math.min(Number(body.through), f.forkBlock), events: body.events.filter((e) => Number(e.block) <= f.forkBlock)};
+    if (status === 200 && f && m[2] === 'point' && Number(body.block) > f.forkBlock) [status, body] = [404, {error: 'past the fork'}];
+    await json(route, status, body);
+    return true;
+  }
   async function relayRoute(route) {
     const req = route.request(), u = new URL(req.url());
-    const f = Object.values(forks).find((x) => x.c.relay && u.href.startsWith(x.c.relay));
-    const path = u.href.slice(f ? f.c.relay.length : 0).split('?')[0];
+    if (req.method() === 'GET' && !relay?.events && /\/(events|point)$/.test(u.pathname) && await liveIndex(route, u)) return;
+    // A token pool's own route (/<chain>-<id>/evm-pool/keeper) when `relay.pools` names it ({ pool, router, fee in the token }), else a chain's.
+    const tok = /^\/(\d+-[a-z0-9]+)\/evm-pool\/keeper/.exec(u.pathname), tp = tok && relay?.pools?.[tok[1]];
+    const f = tp ? Object.values(forks).find((x) => x.c.chainId === Number(tok[1].split('-')[0])) : Object.values(forks).find((x) => x.c.relay && u.href.startsWith(x.c.relay));
+    const base = tp ? `${u.origin}/${tok[1]}/evm-pool/keeper` : f?.c.relay, pool = tp?.pool || POOL;
+    const path = u.href.slice(base ? base.length : 0).split('?')[0];
     if (!relay || !f || relay.mode === 'down') return json(route, 503, {error: 'down'});
     const body = req.method() === 'POST' ? JSON.parse(req.postData() || '{}') : null;
     relay.calls.push({chain: f.c.key, path, body});
     if (path === '/quote') {
-      const q = {chainId: f.c.chainId, pool: POOL, relayer: RELAYERS[f.c.chainId], fee: String(relay.fee), ...relay.quote};
+      const q = {chainId: f.c.chainId, pool, relayer: RELAYERS[f.c.chainId], fee: String(tp ? tp.fee : relay.fee), ...(tp ? {} : relay.quote)};
       return json(route, 200, typeof relay.quote === 'function' ? relay.quote(q, f.c) : q);
     }
     if (path === '/events') return relay.events ? json(route, 200, relay.events(f.c, u)) : json(route, 503, {error: 'no index'});
     if (path === '/reserve') return relay.reserve === 'tail' ? json(route, 403, {error: 'reservations are paused for this connection'}) : json(route, 404, {error: 'no reservations'});
     if (path === '/head') {
-      const call = (d) => f.rpc('eth_call', [{to: POOL, data: d}, 'latest']);
+      const call = (d) => f.rpc('eth_call', [{to: pool, data: d}, 'latest']);
       const [root, size] = await Promise.all([call('0x' + HEAD_ROOT), call('0x' + HEAD_NEXT)]);
       return json(route, 200, {root: String(BigInt(root)), size: String(BigInt(size)), pending: [], tail: {root: String(BigInt(root))}});
     }
     if (path === '/cancel' || path === '/receive') return json(route, 200, {});
+    // A deposit intent, as a keeper takes one: answered with the box the router computes for it (it is completed by no one here).
+    if (path === '/deposit') {
+      const i = body.intent, data = DEPOSIT_BOX.encodeFunctionData('depositBoxOf', [[BigInt(i.amount), BigInt(i.outLeaf0), BigInt(i.outLeaf1), i.memo0Hash, i.memo1Hash, i.refund, BigInt(i.deadline), BigInt(i.nonce)]]);
+      const box = '0x' + (await f.rpc('eth_call', [{to: tp?.router || ROUTER, data}, 'latest'])).slice(26);
+      return json(route, 200, {box, kind: 'deposit', status: 'pending', reward: String(BigInt(i.amount) - BigInt(body.hint.outputs[0].v))});
+    }
     if (path === '/relay') {
       if (relay.mode === 'error') return json(route, 500, {error: 'relay busy'});
       if (relay.mode === 'nowhere') return json(route, 200, {txHash: '0x' + hexKey()});
@@ -104,7 +129,7 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
       // A call intent goes through the router (withdrawAndCall), as the relay sends it; anything else to the pool.
       const i = body.call, data = i ? ROUTER_CALL.encodeFunctionData('withdrawAndCall', [args, [i.calls.map((c) => [c.target, BigInt(c.value), c.token, BigInt(c.amount), !!c.push, c.data]), i.outTokens, i.minOuts.map(BigInt), i.to, i.refund, BigInt(i.deadline), BigInt(i.nonce)]])
         : TRANSACT.encodeFunctionData('transact', args);
-      try { return json(route, 200, {txHash: await f.rpc('eth_sendTransaction', [{from: t.relayer, to: i ? ROUTER : POOL, data, gas: '0x' + (i ? 3_000_000 : 8_000_000).toString(16)}])}); }
+      try { return json(route, 200, {txHash: await f.rpc('eth_sendTransaction', [{from: t.relayer, to: i ? tp?.router || ROUTER : pool, data, gas: '0x' + (i ? 3_000_000 : 8_000_000).toString(16)}])}); }
       catch (e) { return json(route, 400, {error: e.message}); }
     }
     return json(route, 404, {error: 'unknown'});

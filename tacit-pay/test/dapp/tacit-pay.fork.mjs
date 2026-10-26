@@ -24,7 +24,7 @@ await p.openKey(K0);
 if (process.env.OFFLINE) {
   console.log('no mirrors: the proving key from disk');
   await p.click('#settings-open'); await p.click('#sheet-settings [data-close]');
-  const [chooser] = await Promise.all([p.waitForEvent('filechooser'), p.click('#device-file')]);
+  const [chooser] = await Promise.all([p.waitForEvent('filechooser'), p.evaluate(() => document.querySelector('#device-file').click())]);
   await chooser.setFiles([`${process.env.ARTIFACTS}/transact.wasm`, `${process.env.ARTIFACTS}/transact_final.zkey`]);
   await p.waitForFunction(() => /ready/.test(document.querySelector('#device').textContent), null, {timeout: 300e3});
   ok(true, 'loaded from disk, checked against its pinned hashes');
@@ -36,9 +36,8 @@ for (const name of names) {
   console.log(`\n${c.full}`);
   await p.chain(name);
   await p.click('#tabs [data-tab="shield"]');
-  await p.click('[data-from="wallet"]');
   const wallet0 = await p.wallet();
-  if (await p.$('#f-conn')) await p.click('#f-conn');
+  if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
   await p.waitForSelector('#f-max');
   await p.fill('#f-samt', '0.01');
   let t0 = Date.now();
@@ -88,7 +87,7 @@ for (const name of names) {
   await p.openKey(K1);
   ok(await p.balance('0.0065') === '0.0065', 'the payee holds 0.004 + 0.001 + 0.0015');
   await p.click('#tabs [data-tab="shield"]');
-  await p.click('[data-from="exchange"]');
+  await p.click('#f-tok'); await p.click('[data-from="exchange"]');
   await p.waitForSelector('#form .addr code', {timeout: 60e3});
   const box = await p.textContent('#form .addr code');
   await f.rpc('eth_sendTransaction', [{from: ACCT, to: box, value: '0x' + eth(0.003).toString(16)}]);
@@ -99,7 +98,7 @@ for (const name of names) {
   ok(/Taken in/.test(s), 'takes in 0.003 sent to the deposit address', s);
   ok(await p.balance('0.0095') === '0.0095', 'which joins the private balance');
   const theirs = await p.rows(4, c.name);
-  ok(theirs.some((r) => /^Received privately \+0\.004 ETH/.test(r)) && theirs.filter((r) => /^Shielded in \+0\.001(5)? ETH/.test(r)).length === 2 && theirs.some((r) => /^Came in at your deposit address \+0\.003 ETH/.test(r)), 'activity names every payment', theirs.join(' | '));
+  ok(theirs.some((r) => /^Received privately \+0\.004 ETH/.test(r)) && theirs.filter((r) => /^Came in from a wallet \+0\.001(5)? ETH/.test(r)).length === 2 && theirs.some((r) => /^Came in at your deposit address \+0\.003 ETH/.test(r)), 'activity names every payment', theirs.join(' | '));
   await p.evaluate(() => { document.querySelector('#activity details').open = true; });
   await p.click('#rebuild');
   await p.waitForFunction(() => !document.querySelector('#rebuild')?.disabled, null, {timeout: 600e3});

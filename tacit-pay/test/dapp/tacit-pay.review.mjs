@@ -130,9 +130,12 @@ console.log('\nholds made again on the same notes, and holds taken back');
 console.log('\na destination whose code could not be read');
 {
   const code = cut('const CODES = new Map()', '// The receipt');
-  const mk = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', `${code}\nreturn { destGate, destNote };`)(
-    () => ['n1', 'n2'], () => async (m, p) => reads(p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}, {chainId: 8453}]);
+  // A token pool's contract or router (the page's TOKEN_POOLS): here one stand-in address.
+  const POOLC = '0x' + 'b0'.repeat(20);
+  const mk = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', 'poolAddr', `${code}\nreturn { destGate, destNote };`)(
+    () => ['n1', 'n2'], () => async (m, p) => reads(p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}, {chainId: 8453}], (c, a) => String(a).toLowerCase() === POOLC);
   const BASE = {chainId: 8453, full: 'Base'}, SAFE = '0x' + '5a'.repeat(20);
+  ok(/private pool’s own contract/.test(mk(async () => '0x').destNote(BASE, POOLC, () => {}, null, false).refuse || ''), 'a token pool’s own contract or router is refused as a destination, before any node is asked');
   const down = mk(async () => { throw new Error('rate limited'); });
   const e1 = await down.destGate(BASE, SAFE).then(() => null, (e) => e);
   ok(/Could not check that address on Base/.test(e1?.message || ''), 'with every node failing, the withdrawal is not sent unchecked', e1?.message || 'it went ahead');
@@ -142,8 +145,8 @@ console.log('\na destination whose code could not be read');
   const e3 = await live.destGate(BASE, '0x' + '11'.repeat(20)).then(() => null, (e) => e);
   ok(e3 === null, 'and an account goes ahead');
   // Ethereum cannot be read, the rollup can (the lab forks one chain only): an account on the rollup goes ahead, a contract there still asks.
-  const split = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', `${code}\nreturn { destGate };`)(
-    (c) => [c.chainId === 1 ? 'eth' : 'l2'], (u) => async (m, p) => reads(u, p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}, {chainId: 8453}]);
+  const split = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', 'poolAddr', `${code}\nreturn { destGate };`)(
+    (c) => [c.chainId === 1 ? 'eth' : 'l2'], (u) => async (m, p) => reads(u, p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}, {chainId: 8453}], () => false);
   const l2only = split(async (u, a) => { if (u === 'eth') throw new Error('ethereum down'); return a === SAFE ? '0x6080' : '0x'; });
   const e4 = await l2only.destGate(BASE, '0x' + '11'.repeat(20)).then(() => null, (e) => e);
   ok(e4 === null, 'with only Ethereum unreadable, an account on the rollup goes ahead', e4?.message || '');
@@ -156,7 +159,7 @@ console.log('\na destination whose code could not be read');
 
 console.log('\nan escrow the pool paid without running its calls');
 {
-  const code = cut('function escrowsLeft(c) {', '// Runs an escrow\'s calls from the wallet');
+  const code = cut('function escrowsLeft(c, p = null) {', '// Runs an escrow\'s calls from the wallet');
   const vault = {};
   const intent = (deadline) => ({deadline: String(deadline), refund: '0x' + '22'.repeat(20)});
   const mk = (rows, landed, balance) => {
@@ -209,7 +212,7 @@ console.log('\n"It was dropped: pay again" with a wallet that cannot be asked');
 console.log('\nwhat a failed check says');
 {
   const {id} = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
-  const errText = new Function('hex', 'selector', `${cut('const REVERTS =', 'const relayTrouble')}\nreturn errText;`)(lib.hex, (sig) => Buffer.from(id(sig).slice(2, 10), 'hex'));
+  const errText = new Function('hex', 'selector', `${cut('const LANDED_FIRST =', 'const relayTrouble')}\nreturn errText;`)(lib.hex, (sig) => Buffer.from(id(sig).slice(2, 10), 'hex'));
   const wouldFail = Object.assign(new Error('This would fail on chain (execution reverted), so nothing was sent.'), {rpc: {data: '0x'}});
   ok(/so nothing was sent/.test(errText(wouldFail)) && !/A node answered/.test(errText(wouldFail)), 'a precheck that would fail says so, not "A node answered with an error"', errText(wouldFail));
   const slip = Object.assign(new Error('execution reverted'), {rpc: {data: '0x7dd37f70'}});
@@ -222,7 +225,7 @@ console.log('\nwhat a shortfall and a large fee say');
 {
   const html = (st, ...v) => st.reduce((o, x, i) => o + x + (v[i] ?? ''), ''), kvRow = (k, v) => `[${k}: ${v}]`;
   const E18 = 10n ** 18n, eth = (x) => BigInt(Math.round(x * 1e9)) * 10n ** 9n;
-  const FMT = `${cut('function fmt(v, max = 6)', '\nfunction ')}\n${cut('const group =', '\nconst ')}`;
+  const FMT = `${cut('function fmt(v, max = 6, down = false)', '\nfunction ')}\n${cut('const group =', '\nconst ')}`;
   const mk = (most) => new Function('html', 'maxSpend', `${FMT}\n${cut('const withHeadroom', 'const heldHint')}\nreturn {shortSay, feeBig};`)(html, () => most);
   // The case that was reported: 0.001453 held, 0.000739 asked, a relay fee of 0.0013.
   const {shortSay, feeBig} = mk(eth(0.00013));

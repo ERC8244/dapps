@@ -108,10 +108,11 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tac
 <style>body{font:14px/1.6 ui-monospace,Menlo,monospace;max-width:760px;margin:40px auto;padding:0 16px}button{font:inherit;padding:8px 14px;margin:4px 0}code{overflow-wrap:anywhere}.ok{color:#0a7d3a}.err{color:#b8341d}li{margin:4px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f1e8;padding:12px}
 #pick{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}#pick button{display:flex;align-items:center;gap:8px}#pick img{width:20px;height:20px;border-radius:4px}</style></head><body>
 <h2>deploy tacit-pay: next generation</h2>
-<p>Page ${manifest.bytes.toLocaleString('en-US')} bytes, sha256 <code>${manifest.sha256}</code>, keccak <code>${pageHash}</code>. ${needsDeploy.length} of ${chunks.length} chunks changed since <code>${OLD_WRAPPER}</code>; the rest are reused at their live addresses. ${needsDeploy.length + 1} transactions on Ethereum mainnet, from the steward wallet <code>${STEWARD}</code>.</p>
+<p>Page ${manifest.bytes.toLocaleString('en-US')} bytes, sha256 <code>${manifest.sha256}</code>, keccak <code>${pageHash}</code>. ${needsDeploy.length} of ${chunks.length} chunks changed since <code>${OLD_WRAPPER}</code>; the rest are reused at their live addresses. From the steward wallet <code>${STEWARD}</code> on Ethereum mainnet: one transaction for the whole release (and ${NAME} pointed at it) from a wallet that can batch calls, else ${needsDeploy.length + 1} and one more for the name.</p>
 <p><button id="connect">Connect wallet</button> <span id="who"></span></p>
 <div id="pick" hidden></div>
 <p id="where"></p>
+<p><button id="one" hidden>Release in one transaction</button> <span id="onesay"></span></p>
 <p><button id="go" disabled>Deploy what is left</button> <button id="reset">Forget progress</button></p>
 <p><button id="name" hidden>Point ${NAME} at it</button> <span id="named"></span></p>
 <ol id="steps"></ol><pre id="out" hidden></pre>
@@ -301,6 +302,8 @@ $('#connect').onclick = async () => {
     const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
     $('#who').textContent = w.info.name + ' · ' + from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the rest of the deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
     $('#go').disabled = false;
+    if (await atomicOk()) { $('#one').hidden = false; $('#one').disabled = false; }
+    else $('#onesay').textContent = 'This wallet cannot batch calls, so the release goes one transaction at a time below.';
     paint();
   } catch (e) { paint('<span class="err">' + esc(e.message || e) + '</span>'); }
 };
@@ -324,19 +327,96 @@ $('#go').onclick = async () => {
       st.next = await viaWrapper(data, address);
       save();
     }
-    const call = async (sig, to) => rpc('eth_call', [{ to, data: sig }, 'latest']);
-    const [hash, prev, steward] = await Promise.all([call('0x5b700b59', st.next), call('0x247dfaa8', st.next), call('0x637eea19', st.next)]);
-    paint(hash.toLowerCase() === PAGE_HASH.toLowerCase() && prev.slice(-40).toLowerCase() === OLD_WRAPPER.slice(2).toLowerCase() && steward.slice(-40).toLowerCase() === STEWARD.slice(2).toLowerCase()
-      ? '<span class="ok">Done: the next generation commits to this page, names the steward, and points back at the live one.</span>'
-      : '<span class="err">Deployed, but PAGE_HASH, PREVIOUS or steward does not read back as expected.</span>');
-    $('#out').hidden = false;
+    await finished();
     $('#name').hidden = false;
-    $('#out').textContent = 'manifest.json "deployment":\\n' + JSON.stringify({ chainId: 1, contract: st.next, previous: OLD_WRAPPER, pageSha256: SHA, steward: STEWARD, chunkContracts: st.chunks, routes: [
-      { kind: 'erc8244', url: 'https://' + st.next.toLowerCase() + '.w4eth.io/', serves: 'exact' },
-      { kind: 'erc4804', url: 'https://' + st.next.toLowerCase() + '.1.w3link.io/', serves: 'modified', note: "w3link injects its own script, which the page's CSP refuses; the bytes it serves are not the bytes html() returns" },
-      { kind: 'wns', url: 'https://anon.wei.limo/', serves: 'exact' } ] }, null, 2);
   } catch (e) { paint('<span class="err">' + esc(e.message || e) + '</span>'); }
   $('#go').disabled = false;
+};
+// The next generation read back (its page, steward and predecessor), and the manifest's "deployment" record for it.
+async function finished() {
+  const call = async (sig, to) => rpc('eth_call', [{ to, data: sig }, 'latest']);
+  const [hash, prev, steward] = await Promise.all([call('0x5b700b59', st.next), call('0x247dfaa8', st.next), call('0x637eea19', st.next)]);
+  paint(hash.toLowerCase() === PAGE_HASH.toLowerCase() && prev.slice(-40).toLowerCase() === OLD_WRAPPER.slice(2).toLowerCase() && steward.slice(-40).toLowerCase() === STEWARD.slice(2).toLowerCase()
+    ? '<span class="ok">Done: the next generation commits to this page, names the steward, and points back at the live one.</span>'
+    : '<span class="err">Deployed, but PAGE_HASH, PREVIOUS or steward does not read back as expected.</span>');
+  $('#out').hidden = false;
+  $('#out').textContent = 'manifest.json "deployment":\\n' + JSON.stringify({ chainId: 1, contract: st.next, previous: OLD_WRAPPER, pageSha256: SHA, steward: STEWARD, chunkContracts: st.chunks, routes: [
+    { kind: 'erc8244', url: 'https://' + st.next.toLowerCase() + '.w4eth.io/', serves: 'exact' },
+    { kind: 'erc4804', url: 'https://' + st.next.toLowerCase() + '.1.w3link.io/', serves: 'modified', note: "w3link injects its own script, which the page's CSP refuses; the bytes it serves are not the bytes html() returns" },
+    { kind: 'wns', url: 'https://anon.wei.limo/', serves: 'exact' } ] }, null, 2);
+}
+// The whole release from a wallet that can batch calls (EIP-5792, a 7702 smart account): the chunks still to send, deployNext
+// at the mined address and the name pointed there, as one atomic batch, so all of it lands or none of it does. A batch is
+// kept under the 16,777,216 gas a transaction may use, so a release too large for one goes as several, in order, the name
+// last; each is read back from the chain before the next is asked for, and a press after a failure carries on from there.
+const TX_GAS = 15000000;
+async function atomicOk() {
+  try {
+    const c = await rpc('wallet_getCapabilities', [from, ['0x1']]), m = (c && (c['0x1'] || c['1'])) || {};
+    return ['supported', 'ready'].includes(m.atomic?.status) || m.atomicBatch?.supported === true;
+  } catch { return false; }
+}
+// Sends one batch and waits until landed() reads true on chain; the wallet's own status only reports a failure sooner.
+async function sendBatch(calls, label, landed) {
+  await onMainnet();
+  paint('confirm ' + label + ' in your wallet');
+  const res = await nudged(rpc('wallet_sendCalls', [{ version: '2.0.0', chainId: '0x1', from, atomicRequired: true, calls }]), label);
+  const bid = typeof res === 'string' ? res : res?.id;
+  if (!bid) throw new Error('The wallet returned no id for ' + label + '. Check its activity, then press again: what is on chain is read first.');
+  paint(label + ': waiting for the block');
+  for (;;) {
+    if (await landed()) return;
+    let s = null;
+    try { s = await rpc('wallet_getCallsStatus', [bid]); } catch {}
+    const n = typeof s?.status === 'number' ? s.status : { CONFIRMED: 200, PENDING: 100 }[s?.status] ?? 0, r = s?.receipts?.[0];
+    if (n >= 400 || (r && r.status !== '0x1' && r.status !== 1 && r.status !== 'success')) throw new Error(label + ' did not go through' + (r?.transactionHash ? ' (' + r.transactionHash + ')' : '') + ': nothing in it landed. Press again.');
+    await sleep(3000);
+  }
+}
+$('#one').onclick = async () => {
+  const say = (t) => { $('#onesay').innerHTML = t; };
+  $('#one').disabled = $('#go').disabled = true;
+  try {
+    await foundP; await onMainnet(); await reconcile();
+    // A chunk already at its planned address is used as it stands; anything else there stops it.
+    const todo = [];
+    for (const i of NEEDS) {
+      if (st.chunks[i]) continue;
+      const c = await code(PLAN[i].address);
+      if (c === ALL_RUNTIMES[i].toLowerCase()) { st.chunks[i] = PLAN[i].address; continue; }
+      if (c.length > 2) throw new Error('Something else is already at ' + PLAN[i].address + '. Nothing was sent.');
+      todo.push({ i, gas: PLAN[i].bytes * 225 + 150000, call: { to: CREATEX, data: PLAN[i].data, value: '0x0' } });
+    }
+    save(); paint();
+    say(VANITY ? 'Finding an address for the next generation…' : 'Preparing the next generation…');
+    const final = ALL_RUNTIMES.map((_, i) => st.chunks[i] || PLAN[i].address);
+    const m = await fetch('/mine2', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chunks: final }) });
+    if (!m.ok) throw new Error('Could not prepare the next generation: ' + (await m.text()));
+    const { data, address } = await m.json();
+    const owner = await rpc('eth_call', [{ to: WNS, data: '0x6352211e' + word(TOKEN) }, 'latest']), named = async () => ('0x' + (await rpc('eth_call', [{ to: WNS, data: '0x4f896d4f' + word(TOKEN) }, 'latest'])).slice(-40)).toLowerCase() === address.toLowerCase();
+    const canName = owner.slice(-40).toLowerCase() === from.slice(2).toLowerCase();
+    const tail = [];
+    if (!(await nextOk(address))) tail.push({ next: true, gas: 2600000, call: { to: OLD_WRAPPER, data, value: '0x0' } });
+    if (canName && !(await named())) tail.push({ name: true, gas: 150000, call: { to: WNS, data: '0xeba36dbd' + word(TOKEN) + word(address), value: '0x0' } });
+    const batches = [];
+    for (const x of [...todo, ...tail]) { const b = batches[batches.length - 1]; if (b && b.reduce((s, y) => s + y.gas, 0) + x.gas <= TX_GAS) b.push(x); else batches.push([x]); }
+    say('The next generation will be at <code>' + address + '</code>, deployed by the live contract itself' + (canName ? ', and ' + NAME + ' pointed there' : '') + ': ' + (batches.length || 'no') + ' transaction' + (batches.length === 1 ? '' : 's') + '.');
+    await preflight('the release', [...todo, ...tail].reduce((s, x) => s + x.gas, 0));
+    for (let k = 0; k < batches.length; k++) {
+      const b = batches[k], label = batches.length > 1 ? 'transaction ' + (k + 1) + ' of ' + batches.length : 'the release';
+      const landed = async () => (await Promise.all(b.map(async (x) => (x.i !== undefined ? (await code(PLAN[x.i].address)) === ALL_RUNTIMES[x.i].toLowerCase() : x.next ? nextOk(address) : named())))).every(Boolean);
+      await sendBatch(b.map((x) => x.call), label, landed);
+      for (const x of b) if (x.i !== undefined) st.chunks[x.i] = PLAN[x.i].address;
+      save(); paint();
+    }
+    if (!(await nextOk(address))) throw new Error('The next generation is not at ' + address + ' as expected.');
+    st.next = address; save();
+    await finished();
+    say(canName ? (await named() ? '<span class="ok">' + NAME + ' now points at ' + address + '.</span> Check https://' + NAME + '.limo/ in a minute.' : '<span class="err">' + NAME + ' does not point at ' + address + ' yet.</span>')
+      : '<span class="err">This wallet does not own ' + NAME + ', so it was not pointed: press "Point ' + NAME + ' at it" from the wallet that does.</span>');
+    if (!canName) $('#name').hidden = false;
+  } catch (e) { say('<span class="err">' + esc(e.message || e) + '</span>'); }
+  $('#one').disabled = $('#go').disabled = false;
 };
 // The name: WNS setAddr(tokenId, next) from the wallet that owns it, simulated first, then read back.
 $('#name').onclick = async () => {

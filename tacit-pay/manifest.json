@@ -6,7 +6,7 @@
   "page": "dapp/page.min.html",
   "minify": true,
   "bytes": 415902,
-  "sha256": "1d4465f6a131ee18d53639fb67a5af4c9ac48fedc5773b62d620eadb5766a5ad",
+  "sha256": "3b94ab980316470756345dd754cd212dde57067e0ef95dce1531fcaecfde9c08",
   "chunks": {
     "artifact": "TacitPay8244",
     "maxPayload": 24575,
@@ -14,13 +14,13 @@
   },
   "deployment": {
     "chainId": 1,
-    "contract": "0x000000BC9db0D5091853bFBf6D062C1410Bc3745",
-    "previous": "0x937BFF44d6EeeF798AbB0088b6441843eA276DFF",
-    "pageSha256": "1d4465f6a131ee18d53639fb67a5af4c9ac48fedc5773b62d620eadb5766a5ad",
+    "contract": "0x0000000d42137547140b0812E1178F025e08bc49",
+    "previous": "0x000000BC9db0D5091853bFBf6D062C1410Bc3745",
+    "pageSha256": "3b94ab980316470756345dd754cd212dde57067e0ef95dce1531fcaecfde9c08",
     "steward": "0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20",
     "chunkContracts": [
       "0xF80d79CA8586b2181d59FECd8D62f79f9990c68f",
-      "0x23b840118E1714846a8EBb00B3Fe786e4e8806f4",
+      "0x526BA833CbF55dcf063dc6A4cb6493F425904A95",
       "0x77cA6552C1b3aD4F55f11F9eEA8F0f6E7c0C6820",
       "0xe071cd1C1a9d047b171A0a8503B2BeE155DEeF51",
       "0xC147958E8F6Bf651450fc0Dcf726FCBa9eFaC949",
@@ -40,12 +40,12 @@
     "routes": [
       {
         "kind": "erc8244",
-        "url": "https://0x000000bc9db0d5091853bfbf6d062c1410bc3745.w4eth.io/",
+        "url": "https://0x0000000d42137547140b0812e1178f025e08bc49.w4eth.io/",
         "serves": "exact"
       },
       {
         "kind": "erc4804",
-        "url": "https://0x000000bc9db0d5091853bfbf6d062c1410bc3745.1.w3link.io/",
+        "url": "https://0x0000000d42137547140b0812e1178f025e08bc49.1.w3link.io/",
         "serves": "modified",
         "note": "w3link injects its own script after <body>; the bytes it serves are not the bytes html() returns"
       },

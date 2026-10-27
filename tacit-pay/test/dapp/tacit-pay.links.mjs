@@ -45,10 +45,10 @@ await A.waitForFunction(() => /points to this address/.test(document.querySelect
 ok(await record() === K1addr, 'one transaction from the wallet that owns it points the name at this key', (await A.textContent('#status').catch(() => '')).trim());
 ok(/points to this address/.test(await A.textContent('#f-rname-note')), 'and the page confirms it');
 await A.fill('#f-ramt', '0.002'); await A.fill('#f-rfor', 'fork test');
-await A.waitForFunction(() => /^[^#]*#pay=z0r0z\.wei&n=[0-9a-f]{64}&ns=/.test(document.querySelector('#f-rlink')?.textContent || ''), null, {timeout: 600e3});
+await A.waitForFunction(() => /^[^#]*#pay=z0r0z\.wei&n=[\w-]{43}&ns=/.test(document.querySelector('#f-rlink')?.textContent || ''), null, {timeout: 600e3});
 const link = await A.textContent('#f-rlink');
 ok(link.includes(`pay=${NAME}`) && link.includes('amount=0.002') && !link.includes('chain='), 'the link carries the name, the amount and no chain', link);
-ok(/&n=[0-9a-f]{64}&ns=[0-9a-f]{128}&/.test(link), 'and a deposit address of its own, signed by the key');
+ok(/&n=[\w-]{43}&ns=[\w-]{86}&/.test(link), 'and a deposit address of its own, signed by the key (both in base64url)');
 if (names.includes('base')) await A.chain('base');
 
 console.log('\na payer with only a wallet pays it on every chain');
@@ -112,11 +112,22 @@ await C.waitForFunction((n) => [...document.querySelectorAll('#chains small')].f
 const seen = await C.$$eval('#chains small', (x) => x.map((e) => e.textContent.trim()));
 ok(CHAINS.filter((c) => names.includes(c.key)).every((c) => seen[CHAINS.indexOf(c)] === '0.002 ETH'), 'finds 0.002 ETH on each chain from the key and the chains alone, with no relay', seen.join(' · '));
 
-console.log('\na deposit address the payee did not sign');
-const flip = (h) => h.slice(0, -1) + (h.endsWith('0') ? '1' : '0');
-const swapN = (l, n) => l.replace(/&n=[0-9a-f]{64}/, '&n=' + n);
-const forged = [[l => l.replace(/&ns=([0-9a-f]{128})/, (_, g) => '&ns=' + flip(g)), 'a signature with one digit changed'],
-  [l => swapN(l, (BigInt('0x' + /&n=([0-9a-f]{64})/.exec(l)[1]) ^ 1n).toString(16).padStart(64, '0')), 'a signature on a different address']];
+console.log('\na deposit address the payee did not sign, and the same link as earlier pages wrote it');
+// A link's n (the deposit address's key) and ns (its signature) as bytes, changed and written back in base64url, or in hex.
+const field = (l, k) => Buffer.from(new RegExp(`&${k}=([\\w-]+)`).exec(l)[1], 'base64url');
+const put = (l, k, b, enc = 'base64url') => l.replace(new RegExp(`&${k}=[\\w-]+`), `&${k}=${Buffer.from(b).toString(enc)}`);
+const flip = (b) => { const x = Buffer.from(b); x[x.length - 1] ^= 1; return x; };
+const forged = [[(l) => put(l, 'ns', flip(field(l, 'ns'))), 'a signature with one bit changed'],
+  [(l) => put(l, 'n', flip(field(l, 'n'))), 'a signature on a different address']];
+{
+  const F = await (await lab.newContext()).newPage();
+  await F.goto(put(put(link, 'n', field(link, 'n'), 'hex'), 'ns', field(link, 'ns'), 'hex'));
+  await F.waitForSelector('#req:not([hidden])');
+  await F.waitForFunction(() => !/Reading/.test(document.querySelector('#req-body').textContent), null, {timeout: 60e3});
+  const t = (await F.textContent('#req-body')).replace(/\s+/g, ' ');
+  ok(!/could not be verified/.test(t) && !!(await F.$('#req .adv')), 'a link with its deposit address and signature in hex (as earlier pages wrote it) is read the same', t.slice(0, 140));
+  await F.close();
+}
 for (const [mk, why] of forged) {
   const F = await (await lab.newContext()).newPage();
   F.errors = []; F.on('pageerror', (e) => F.errors.push(String(e)));

@@ -13,8 +13,7 @@ await p.openKey(hexKey());
 
 console.log('shield from the wallet');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="wallet"]');
-if (await p.$('#f-conn')) await p.click('#f-conn');
+if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
 await p.waitForSelector('#f-max');
 await p.fill('#f-samt', '0.003');
 await p.click('#f-go');

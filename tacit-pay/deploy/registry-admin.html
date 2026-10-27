@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-P62+Qy4NhKLYXRdz+c1bA1FeZum+FYFHDhMbWvoWI/Y='; style-src 'sha256-lm1WhAvWP1kysYxMrDAUZEWQHP6LYCst0obZwKKb4qY='; connect-src https:; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>anon.wei registry</title>
+<style>
+:root { color-scheme: light dark; --bg: #f6f3ea; --card: #fffdf7; --ink: #1d1a15; --mute: #6f675a; --hair: #e2dccd; --field: #f0ebdf;
+  --ok: #2f7d4f; --err: #b3402f; --r: 10px; --tap: 36px; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16140f; --card: #1e1b16; --ink: #ece4d0; --mute: #9a917f; --hair: #36312a; --field: #24211b; --ok: #7cc48f; --err: #ec7c66; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+main { max-width: 720px; margin: 0 auto; padding: 28px 16px 96px; }
+.top { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 18px; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 0; }
+h3 { font-size: 12px; margin: 14px 0 6px; color: var(--mute); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.mute, .why { color: var(--mute); }
+p { margin: 0; }
+section { background: var(--card); border: 1px solid var(--hair); border-radius: var(--r); padding: 14px 16px 16px; margin-bottom: 14px; }
+.tag { font-size: 11px; font-weight: 500; border: 1px solid var(--hair); border-radius: 99px; padding: 0 7px; color: var(--mute); }
+button { font: inherit; color: var(--bg); background: var(--ink); border: 1px solid var(--ink); border-radius: 8px; min-height: var(--tap); padding: 0 14px; cursor: pointer; }
+button.ghost { color: var(--ink); background: transparent; border-color: var(--hair); }
+button.icon { color: var(--ink); background: transparent; border-color: var(--hair); min-width: var(--tap); padding: 0; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button:not(:disabled):active { transform: scale(.97); }
+ol { list-style: none; margin: 0; padding: 0; }
+.row { display: grid; grid-template-columns: 1.6em minmax(0, 1fr) auto auto; gap: 4px 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--hair); }
+.row:first-child { border-top: 0; }
+.ix { color: var(--mute); }
+.url { overflow-wrap: anywhere; }
+.st { grid-column: 2 / 3; font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.row .acts { grid-row: 1 / 3; grid-column: 3 / 5; display: flex; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1px solid var(--mute); }
+.dot.ok { background: var(--ok); border-color: var(--ok); }
+.dot.bad { background: var(--err); border-color: var(--err); }
+.st.bad { color: var(--err); }
+.empty { color: var(--mute); padding: 6px 0; }
+.add { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.add input { flex: 1 1 260px; min-width: 0; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--hair); border-radius: 8px; min-height: var(--tap); padding: 0 10px; }
+.add input:focus { outline: 2px solid var(--ink); outline-offset: -1px; }
+.add + .st { margin-top: 4px; }
+dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 10px 0 0; font-size: 12px; }
+dt { color: var(--mute); }
+dd { margin: 0; overflow-wrap: anywhere; }
+details summary { cursor: pointer; color: var(--mute); font-size: 12px; margin-top: 12px; }
+#who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#who img { width: 18px; height: 18px; vertical-align: -4px; margin-right: 6px; }
+.row.sg { grid-template-columns: 1.6em minmax(0, 1fr); }
+.row.sg input { margin: 0; width: 16px; height: 16px; accent-color: var(--ink); }
+pre { background: var(--field); border: 1px solid var(--hair); border-radius: 8px; padding: 10px; font-size: 11px; overflow-x: auto; max-height: 280px; margin: 8px 0; }
+.dot.na { border-style: dashed; }
+#toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); border-radius: var(--r); padding: 10px 14px; font-size: 13px; }
+#toast a { color: inherit; }
+#toast:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>anon.wei registry</h1><p class="mute">The onchain lists anon.wei reads. Readers pick up a change within six hours.</p></div>
+    <div id="who"></div>
+  </div>
+  <div id="cards"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+</main>
+<script>
+'use strict';
+// zEndpoints (lists by service and chain, chain 0 the fallback) and zRpcList (Ethereum's own nodes), both on Ethereum.
+const ZEND = '0x00000051f365d898132f4ebf345cd3968e02f288', ZRPC = '0x8c7348d039f58c4e9cfa936ef410eec759213b12';
+const MC3 = '0xca11bde05977b3631167028862be2a173976ca11', POOL = '0x000000c2a20657ce25f2ba99737933d031afbee9';
+// What anon.wei carries in its own bytes, used where the registry names nothing.
+const KEEPERS = 'https://tacit-evm-pool-keepers.onrender.com', BUNDLE = 'bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy';
+const MIRRORS = ['https://tacit.finance/evm-pool/', `https://ipfs.filebase.io/ipfs/${BUNDLE}/`, `https://ipfs.orbitor.dev/ipfs/${BUNDLE}/`];
+// A copy pinned to a commit of the src-company fork, served with CORS by GitHub's raw host (checked by SHA-256 as any mirror).
+const GH_MIRROR = 'https://raw.githubusercontent.com/src-company/tacit/30756fbc3119d92e04b32be621b586682971cd86/dapp/evm-pool/';
+// Its own values, offered for the lists that do not hold them yet, so each can move without a new page.
+// The proving key's manifest in the onchain copy: at this address on every chain that holds it.
+const COPY_MANIFEST = '0xF7679584f6dc84495374dA5B5350C2E7828ad620';
+const SUGGEST = [['keepers', 0, [KEEPERS]], ['mirrors', 0, [...MIRRORS, GH_MIRROR]], ['logs', 8453, ['https://base-rpc.publicnode.com', 'https://base.rpc.blxrbdn.com']],
+  ['logs', 4663, ['https://rpc.mainnet.chain.robinhood.com']], ['wc', 0, ['wss://relay.walletconnect.org']], ['wcpid', 0, ['1e8390ef1c1d8a185e035912a1409749']],
+  // Nodes of the rollup testnets holding the onchain copy of the proving files (at the same addresses as Base Sepolia's).
+  ['copies', 0, ['https://optimism-sepolia-rpc.publicnode.com', 'https://unichain-sepolia-rpc.publicnode.com', 'https://rpc-gel-sepolia.inkonchain.com']]];
+const NODES = ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co', 'https://eth.drpc.org', 'https://rpc.mevblocker.io'];
+const CHAINS = { 1: { name: 'Ethereum', deploy: 26069245 }, 8453: { name: 'Base', deploy: 51864014 }, 4663: { name: 'Robinhood', deploy: 73991661 } };
+const ERR = { '30cd7471': 'This wallet is not the owner.', 'ef3ff4ae': 'The list changed. Reloaded; try again.' };
+// The same shape checks anon.wei applies before it uses an entry.
+const RULE = { rpc: /^https:\/\/\S+$/, logs: /^https:\/\/\S+$/, keepers: /^https:\/\/[\w.-]+(:\d+)?(\/[\w./-]*[\w-])?$/,
+  mirrors: /^https:\/\/[\w.-]+(:\d+)?\/([\w./-]*\/)?$/, copies: /^https:\/\/\S+$/, wc: /^wss:\/\/[\w.-]+(:\d+)?$/, wcpid: /^[0-9a-f]{32}$/ };
+const SHAPE = { keepers: 'https://host[:port][/path], no query or trailing /', mirrors: 'https://host/folder/, ending in /', wc: 'wss://host[:port], no path', wcpid: '32 lowercase hex characters' };
+// What anon.wei reads, by card. `shared`: zSwap reads the same list.
+const GROUPS = [
+  { title: 'Keepers', tag: 'relays', lists: [{ svc: 'keepers', chain: 0, label: 'All chains' }],
+    more: [1, 8453, 4663].map((c) => ({ svc: 'keepers', chain: c, label: `${CHAINS[c].name} only` })) },
+  { title: 'Ethereum', lists: [{ zrpc: true, svc: 'rpc', chain: 1, label: 'Nodes', shared: true }, { svc: 'logs', chain: 1, label: 'Log nodes', shared: true }] },
+  { title: 'Base', lists: [{ svc: 'rpc', chain: 8453, label: 'Nodes', shared: true }, { svc: 'logs', chain: 8453, label: 'Log nodes' }] },
+  { title: 'Robinhood', lists: [{ svc: 'rpc', chain: 4663, label: 'Nodes', shared: true }, { svc: 'logs', chain: 4663, label: 'Log nodes' }] },
+  { title: 'Proving key', tag: 'hash-checked', lists: [{ svc: 'mirrors', chain: 0, label: 'Mirrors' }, { svc: 'copies', chain: 0, label: 'Copy nodes' }] },
+  { title: 'WalletConnect', lists: [{ svc: 'wc', chain: 0, label: 'Relay', shared: true }, { svc: 'wcpid', chain: 0, label: 'Project ID', shared: true }] },
+];
+const ALL = GROUPS.flatMap((g) => [...g.lists, ...(g.more || [])]);
+const keyOf = (l) => (l.zrpc ? 'zrpc' : `${l.svc}:${l.chain}`);
+const S = { lists: {}, owner: {}, acct: '', wallet: null, busy: false, wallets: [] };
+
+// ── encoding ──
+const te = new TextEncoder(), td = new TextDecoder();
+const lc = (x) => String(x || '').toLowerCase();
+const b2h = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+const h2b = (h) => Uint8Array.from(h.match(/../g) || [], (x) => parseInt(x, 16));
+const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+const pad = (h) => h.padEnd(Math.ceil(h.length / 64) * 64, '0');
+const b32 = (s) => pad(b2h(te.encode(s))).slice(0, 64);
+const bytesT = (h) => w(h.length / 2) + pad(h);
+const strT = (s) => bytesT(b2h(te.encode(s)));
+// A tuple from its members, each { s } (static, encoded) or { d } (dynamic, encoded): heads, then tails.
+const tuple = (parts) => { let head = '', tail = ''; const n = parts.length * 32; for (const p of parts) { if (p.s != null) head += p.s; else { head += w(n + tail.length / 2); tail += p.d; } } return head + tail; };
+const aggregate3 = (calls) => '82ad56cb' + tuple([{ d: w(calls.length) + tuple(calls.map(([to, data]) => ({ d: tuple([{ s: to.slice(2).padStart(64, '0') }, { s: w(1) }, { d: bytesT(data) }]) }))) }]);
+const num = (h, at) => Number(BigInt('0x' + h.slice(at * 2, at * 2 + 64)));
+const decAgg = (h) => { const a = num(h, 0), n = num(h, a), out = []; for (let i = 0; i < n; i++) { const e = a + 32 + num(h, a + 32 + 32 * i), bo = e + num(h, e + 32), len = num(h, bo); out.push({ ok: num(h, e) === 1, data: h.slice((bo + 32) * 2, (bo + 32 + len) * 2) }); } return out; };
+const decStrings = (h) => { const a = num(h, 0), n = num(h, a), out = []; if (n > 256) throw new Error('too long'); for (let i = 0; i < n; i++) { const o = a + 32 + num(h, a + 32 + 32 * i), len = num(h, o); out.push(td.decode(h2b(h.slice((o + 32) * 2, (o + 32 + len) * 2)))); } return out; };
+const call = {
+  listAt: (l) => (l.zrpc ? 'd77e4c79' : '292a5f4b' + b32(l.svc) + w(l.chain)),
+  add: (l, u) => (l.zrpc ? 'b0c8f9dc' + tuple([{ d: strT(u) }]) : '63a418e3' + tuple([{ s: b32(l.svc) }, { s: w(l.chain) }, { d: strT(u) }])),
+  remove: (l, i) => (l.zrpc ? '4cc82215' + w(i) : 'aceba3fd' + b32(l.svc) + w(l.chain) + w(i)),
+  move: (l, from, to) => (l.zrpc ? '0867408f' + w(from) + w(to) : 'fd530b5e' + b32(l.svc) + w(l.chain) + w(from) + w(to)),
+};
+const target = (l) => (l.zrpc ? ZRPC : ZEND);
+
+// ── reads ──
+const rpcAt = (u, method, params, ms = 12_000) => fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(ms) })
+  .then((r) => r.json()).then((j) => { if (j.error) throw Object.assign(new Error(j.error.message || 'error'), { data: j.error.data }); return j.result; });
+async function rpc(method, params) {
+  let last;
+  for (const u of NODES) { try { return await rpcAt(u, method, params); } catch (e) { if (e.data) throw e; last = e; } }
+  throw last;
+}
+async function load() {
+  const calls = [[ZEND, '8da5cb5b'], [ZRPC, '8da5cb5b'], ...ALL.map((l) => [target(l), call.listAt(l)])];
+  const res = decAgg((await rpc('eth_call', [{ to: MC3, data: '0x' + aggregate3(calls) }, 'latest'])).slice(2));
+  S.owner = { [ZEND]: '0x' + res[0].data.slice(24, 64), [ZRPC]: '0x' + res[1].data.slice(24, 64) };
+  ALL.forEach((l, i) => { S.lists[keyOf(l)] = res[i + 2].ok ? decStrings(res[i + 2].data) : []; });
+  paintWho(); paintLists();
+}
+const listNow = async (l) => decStrings((await rpc('eth_call', [{ to: target(l), data: '0x' + call.listAt(l) }, 'latest'])).slice(2));
+
+// ── probes: what anon.wei would get from an entry ──
+const PROBES = new Map();
+function probeOf(l, u) {
+  const kind = l.svc, k = `${kind}|${l.chain}|${u}`;
+  if (!PROBES.has(k)) {
+    PROBES.set(k, { state: 'wait', short: 'checking…' });
+    probe(kind, l.chain, u).catch((e) => ({ state: 'bad', short: /abort|timeout/i.test(String(e)) ? 'no answer' : String(e.message || e).slice(0, 80) }))
+      .then((r) => { PROBES.set(k, r); paintLists(); });
+  }
+  return PROBES.get(k);
+}
+async function probe(kind, chain, u) {
+  if (!RULE[kind].test(u)) return { state: 'bad', short: 'anon.wei skips this shape' };
+  if (kind === 'wc' || kind === 'wcpid') return { state: 'na', short: 'shape ok' };
+  // A node of any chain holding the onchain copy: the proving key's manifest has code there (the same address on every chain).
+  if (kind === 'copies') {
+    const [code, id] = await Promise.all([rpcAt(u, 'eth_getCode', [COPY_MANIFEST, 'latest']), rpcAt(u, 'eth_chainId', [])]);
+    return code && code.length > 2 ? { state: 'ok', short: `holds the copy (chain ${Number(id)})` } : { state: 'bad', short: `no copy on chain ${Number(id)}` };
+  }
+  if (kind === 'mirrors') {
+    // The file's first bytes, read off the stream until there are four, then the rest left unread (a server that ignores
+    // Range, or compresses, would send it all anyway).
+    const r = await fetch(u + 'transact.wasm', { signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) return { state: 'bad', short: `HTTP ${r.status}` };
+    const rd = r.body.getReader(), head = [];
+    while (head.length < 4) { const { value, done } = await rd.read(); if (done) break; head.push(...value.subarray(0, 4 - head.length)); }
+    rd.cancel().catch(() => {});
+    return head.join() === '0,97,115,109' ? { state: 'ok', short: 'serves the prover' } : { state: 'bad', short: 'not the prover’s files' };
+  }
+  if (kind === 'keepers') {
+    const ids = chain ? [chain] : [1, 8453, 4663], bad = [];
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const j = await fetch(`${u}/${id}/evm-pool/keeper/info`, { signal: AbortSignal.timeout(15_000) }).then((r) => r.json());
+        if (Number(j.chainId) !== id || lc(j.pool) !== POOL) bad.push(`${CHAINS[id].name}: another pool`);
+      } catch { bad.push(`${CHAINS[id].name}: no answer`); }
+    }));
+    return bad.length ? { state: 'bad', short: bad.join(' · ') } : { state: 'ok', short: ids.length > 1 ? 'serves all three chains' : 'serves the pool' };
+  }
+  const id = Number(await rpcAt(u, 'eth_chainId', []));
+  if (id !== chain) return { state: 'bad', short: Number.isNaN(id) ? 'no answer' : `on chain ${id}` };
+  if (kind === 'rpc') return { state: 'ok', short: `block ${Number(await rpcAt(u, 'eth_blockNumber', [])).toLocaleString('en-US')}` };
+  // One window of anon.wei's own log reads (LOG_STEP, 50,000 blocks, given 30 s as the page gives it), from the pool's first block.
+  const from = CHAINS[chain].deploy, logs = await rpcAt(u, 'eth_getLogs', [{ address: POOL, fromBlock: '0x' + from.toString(16), toBlock: '0x' + (from + 49_999).toString(16) }], 30_000);
+  return Array.isArray(logs) ? { state: 'ok', short: `${logs.length} pool logs in 50,000 blocks` } : { state: 'bad', short: 'no logs' };
+}
+
+// ── page ──
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) e[k] = v; else if (k === 'class') e.className = v; else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+const $ = (s) => document.querySelector(s);
+const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const canEdit = (l) => !!S.acct && lc(S.owner[target(l)]) === S.acct && !S.busy;
+const stLine = (st) => el('span', { class: `st ${st.state === 'bad' ? 'bad' : ''}` }, el('span', { class: `dot ${st.state}` }), st.short);
+// The host anon.wei uses for a chain: the chain's own list if it has entries, else every chain's; its first good entry.
+const inUse = (c) => { const own = S.lists[`keepers:${c}`] || [], l = own.length ? own : S.lists['keepers:0'] || []; return l.find((u) => RULE.keepers.test(u)); };
+
+// ── suggested: anon.wei's own values, for each list that lacks them ──
+const PICK = new Map();
+const proposals = () => SUGGEST.flatMap(([svc, chain, urls]) => {
+  const l = ALL.find((x) => x.svc === svc && x.chain === chain && !x.zrpc), have = S.lists[keyOf(l)];
+  if (have == null) return [];
+  const g = GROUPS.find((x) => x.lists.includes(l) || x.more?.includes(l));
+  return urls.filter((u) => !have.includes(u)).map((u) => ({ l, u, where: `${g.title} · ${l.label}`, to: target(l), data: call.add(l, u) }));
+});
+function paintSuggest() {
+  const ps = proposals(), body = $('#sg-rows'), go = $('#sg-go');
+  $('#suggest').hidden = !Object.keys(S.lists).length;
+  for (const x of ps) if (!PICK.has(x.data)) PICK.set(x.data, true);
+  body.replaceChildren(...(ps.length ? ps.map((x) => {
+    const box = el('input', { type: 'checkbox', checked: PICK.get(x.data), 'aria-label': `Add ${x.u}` });
+    box.onchange = () => { PICK.set(x.data, box.checked); paintSuggest(); };
+    return el('li', { class: 'row sg' }, box, el('span', { class: 'url' }, el('span', { class: 'mute' }, x.where, ' '), x.u), el('span'), stLine(probeOf(x.l, x.u)));
+  }) : [el('li', { class: 'empty' }, 'Nothing to add: the registry holds every value anon.wei carries.')]));
+  const picked = ps.filter((x) => PICK.get(x.data));
+  go.disabled = !picked.length || !picked.every((x) => canEdit(x.l));
+  go.textContent = picked.length > 1 ? `Send ${picked.length} writes` : 'Send';
+  $('#sg-pay').textContent = JSON.stringify(picked.map((x) => ({ to: x.to, data: '0x' + x.data, value: '0x0' })), null, 2);
+  $('#sg-more').hidden = !picked.length;
+  return picked;
+}
+// One wallet batch (EIP-5792) where the wallet takes one, each write in turn otherwise.
+async function sendSuggested() {
+  const picked = paintSuggest();
+  if (!picked.length || S.busy) return;
+  S.busy = true; paintLists();
+  try {
+    for (const x of picked) await simulate(x.to, x.data);
+    await onMainnet();
+    let batched = false;
+    try {
+      toast(`${picked.length} writes: confirm in your wallet…`);
+      await S.wallet.request({ method: 'wallet_sendCalls', params: [{ version: '2.0.0', from: S.acct, chainId: '0x1', atomicRequired: false, calls: picked.map((x) => ({ to: x.to, data: '0x' + x.data, value: '0x0' })) }] });
+      batched = true;
+    } catch (e) { if (e?.code === 4001) throw e; }
+    if (batched) {
+      toast(`${picked.length} writes sent as one batch. Waiting for them…`);
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 4000));
+        await load().catch(() => {});
+        if (!proposals().some((x) => picked.some((y) => y.data === x.data))) { toast('Done: every suggested value is in the registry.'); return; }
+      }
+      throw new Error('Not in a block yet. Reload in a minute.');
+    }
+    for (const [i, x] of picked.entries()) await sendTx(x.to, x.data, `${i + 1} of ${picked.length}`);
+    toast('Done: every suggested value is in the registry.');
+  } catch (e) { toast(e?.code === 4001 ? 'Cancelled.' : String(e?.message || e)); }
+  finally { S.busy = false; await load().catch(() => paintLists()); }
+}
+
+const VIEWS = new Map();
+function build() {
+  const cards = $('#cards');
+  const copy = el('button', { type: 'button', class: 'ghost', onclick: () => navigator.clipboard.writeText($('#sg-pay').textContent).then(() => toast('Payloads copied.'), () => toast('Could not copy.')) }, 'Copy');
+  cards.append(el('section', { id: 'suggest', hidden: true }, el('h2', {}, 'Suggested ', el('span', { class: 'tag' }, 'anon.wei’s own values')),
+    el('ol', { id: 'sg-rows' }),
+    el('div', { class: 'add' }, el('button', { type: 'button', id: 'sg-go', disabled: true, onclick: sendSuggested }, 'Send')),
+    el('details', { id: 'sg-more' }, el('summary', {}, 'Payloads'), el('pre', { id: 'sg-pay' }), copy)));
+  for (const g of GROUPS) {
+    const sec = el('section', {}, el('h2', {}, g.title, ' ', g.tag ? el('span', { class: 'tag' }, g.tag) : null));
+    for (const l of g.lists) sec.append(listView(l));
+    if (g.more) {
+      sec.append(el('dl', { id: 'inuse' }));
+      const d = el('details', {}, el('summary', {}, 'Per chain'));
+      for (const l of g.more) d.append(listView(l));
+      sec.append(d);
+    }
+    cards.append(sec);
+  }
+}
+function listView(l) {
+  const ol = el('ol'), inp = el('input', { placeholder: l.svc === 'keepers' ? KEEPERS : 'https://…', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', 'aria-label': `New entry: ${l.label}` });
+  const go = el('button', { type: 'button', disabled: true }, 'Add'), note = el('span', { class: 'st' });
+  const fill = l.svc === 'keepers' ? el('button', { type: 'button', class: 'ghost', onclick: () => { inp.value = KEEPERS; check(); } }, 'Current host') : null;
+  const check = () => {
+    const u = inp.value.trim(), have = S.lists[keyOf(l)] || [];
+    note.replaceChildren(); go.textContent = 'Add';
+    if (!u) { go.disabled = true; return; }
+    if (!RULE[l.svc].test(u)) { go.disabled = true; note.append(stLine({ state: 'bad', short: SHAPE[l.svc] || 'https://…, no spaces' })); return; }
+    if (have.includes(u)) { go.disabled = true; note.append(stLine({ state: 'bad', short: 'already listed' })); return; }
+    const st = probeOf(l, u);
+    note.append(stLine(st));
+    if (st.state === 'bad') go.textContent = 'Add anyway';
+    go.disabled = !canEdit(l);
+  };
+  inp.oninput = check;
+  go.onclick = () => write(l, call.add(l, inp.value.trim()), `Add to ${l.label.toLowerCase()}`).then((ok) => { if (ok) { inp.value = ''; check(); } });
+  VIEWS.set(keyOf(l), { l, ol, check });
+  return el('div', {}, el('h3', {}, l.label, l.shared ? el('span', { class: 'tag' }, 'shared with zSwap') : null), ol, el('div', { class: 'add' }, inp, fill, go), note);
+}
+function paintLists() {
+  for (const { l, ol, check } of VIEWS.values()) {
+    const have = S.lists[keyOf(l)];
+    ol.replaceChildren(...(have == null ? [el('li', { class: 'empty' }, 'reading…')] : !have.length ? [el('li', { class: 'empty' }, l.svc === 'keepers' && l.chain ? 'none: uses All chains' : l.zrpc ? 'none' : 'none: anon.wei uses its own')] : have.map((u, i) => el('li', { class: 'row' },
+      el('span', { class: 'ix' }, String(i + 1)), el('span', { class: 'url' }, u),
+      el('span', { class: 'acts' },
+        el('button', { type: 'button', class: 'icon', title: 'Move up', 'aria-label': 'Move up', disabled: !canEdit(l) || i === 0, onclick: () => guarded(l, i, u, () => write(l, call.move(l, i, i - 1), 'Move up')) }, '↑'),
+        el('button', { type: 'button', class: 'icon', title: 'Remove', 'aria-label': 'Remove', disabled: !canEdit(l), onclick: () => guarded(l, i, u, () => write(l, call.remove(l, i), 'Remove')) }, '✕')),
+      stLine(probeOf(l, u))))));
+    check();
+  }
+  paintSuggest();
+  const dl = $('#inuse');
+  if (dl) dl.replaceChildren(...[1, 8453, 4663].flatMap((c) => { const u = inUse(c); return [el('dt', {}, CHAINS[c].name), el('dd', {}, u || KEEPERS, u ? '' : el('span', { class: 'mute' }, ' (built in)'))]; }));
+}
+function paintWho() {
+  const who = $('#who');
+  if (S.acct) {
+    const own = [ZEND, ZRPC].filter((t) => lc(S.owner[t]) === S.acct).length;
+    who.replaceChildren(el('span', {}, short(S.acct)), el('span', { class: 'tag' }, own === 2 ? 'owner' : own ? 'owner of one list' : 'read only'));
+    return;
+  }
+  const ws = S.wallets.length ? S.wallets : window.ethereum ? [{ info: { name: 'wallet' }, provider: window.ethereum }] : [];
+  who.replaceChildren(...(ws.length ? ws.map((x) => el('button', { type: 'button', class: 'ghost', onclick: () => connect(x.provider) }, x.info.icon && /^data:image\//.test(x.info.icon) ? el('img', { src: x.info.icon, alt: '' }) : null, `Connect ${x.info.name}`)) : [el('span', { class: 'mute' }, 'No wallet found')]));
+}
+let toastT;
+function toast(...parts) { clearTimeout(toastT); $('#toast').replaceChildren(...parts); toastT = setTimeout(() => { if (!S.busy) $('#toast').replaceChildren(); }, 12_000); }
+
+// ── wallet ──
+addEventListener('eip6963:announceProvider', (e) => { const d = e.detail; if (d?.info?.uuid && d.provider && !S.wallets.some((x) => x.info.uuid === d.info.uuid)) { S.wallets.push(d); paintWho(); } });
+async function connect(p) {
+  try {
+    const [a] = await p.request({ method: 'eth_requestAccounts' });
+    S.wallet = p; S.acct = lc(a);
+    p.on?.('accountsChanged', (xs) => { S.acct = lc(xs?.[0]); paintWho(); paintLists(); });
+    paintWho(); paintLists();
+  } catch (e) { toast(e?.code === 4001 ? 'Cancelled.' : String(e?.message || e)); }
+}
+// Remove and move name an entry by position: the list is read again first, and the write goes only if that position still
+// holds what was shown.
+async function guarded(l, i, u, go) {
+  const now = await listNow(l).catch(() => null);
+  if (!now || now[i] !== u) { toast('The list changed. Reloaded; try again.'); return load(); }
+  return go();
+}
+// Each write is first run as a call from this wallet, so one that would revert never reaches it.
+const simulate = (to, data) => rpc('eth_call', [{ from: S.acct, to, data: '0x' + data }, 'latest']).catch((e) => { throw new Error(ERR[String(e.data || '').slice(2, 10)] || `It would fail: ${e.message}`); });
+const onMainnet = async () => { if (Number(await S.wallet.request({ method: 'eth_chainId' })) !== 1) await S.wallet.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] }); };
+async function sendTx(to, data, label) {
+  await simulate(to, data);
+  await onMainnet();
+  toast(`${label}: confirm in your wallet…`);
+  const hash = await S.wallet.request({ method: 'eth_sendTransaction', params: [{ from: S.acct, to, data: '0x' + data }] });
+  const link = () => el('a', { href: `https://etherscan.io/tx/${hash}`, target: '_blank', rel: 'noopener noreferrer' }, short(hash));
+  toast(`${label}: sent `, link());
+  for (let i = 0; i < 120; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const r = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
+    if (!r) continue;
+    if (r.status !== '0x1') throw new Error('The transaction failed.');
+    toast(`${label}: done `, link());
+    return hash;
+  }
+  throw new Error('Not in a block yet. It will show here once it is; reload then.');
+}
+async function write(l, data, label) {
+  if (!canEdit(l)) return false;
+  S.busy = true; paintLists();
+  try {
+    await sendTx(target(l), data, label);
+    return true;
+  } catch (e) {
+    toast(e?.code === 4001 ? 'Cancelled.' : String(e?.message || e));
+    return false;
+  } finally { S.busy = false; await load().catch(() => paintLists()); }
+}
+
+build(); paintWho(); paintLists();
+dispatchEvent(new Event('eip6963:requestProvider'));
+load().catch((e) => toast(`Could not read the registry: ${e?.message || e}`));
+</script>
+</body>
+</html>

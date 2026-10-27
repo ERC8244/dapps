@@ -31,6 +31,57 @@ console.log('a hold on a note from before a catch-up point');
   ok(again.hold === true && !again.duplicate, 'so a new payment waits for the user to say it is a different one', again.message.slice(0, 70));
   relay.restore();
 }
+console.log('\na relay that refuses before it sends');
+for (const [mode, held, label] of [['refuse503', false, 'the relay’s own 503 (no gas to front it)'], ['refuse400', false, 'its trial run reverting (400)'], ['proxy502', true, 'a proxy’s 502, which may come after a send'], ['refuse', true, 'a 500']]) {
+  const {node, wallet, relayed} = mkWorld(), relay = mockRelay(node, relayed);
+  const A = wallet(7, {keeper: KEEPER});
+  await A.W.deposit({amount: 5n * E / 100n});
+  relay.mode = mode;
+  const e = await A.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote}).catch((x) => x);
+  if (held) ok(e.inflight && A.W.inflight().length === 1, `${label}: the notes stay held`, e.message.slice(0, 60));
+  else {
+    ok(!e.inflight && e.relay && A.W.inflight().length === 0, `${label}: nothing was sent, so nothing is held`, e.message.slice(0, 70));
+    relay.mode = 'send';
+    const h = await A.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote}).catch((x) => x);
+    ok(typeof h === 'string' && !h.hold, 'and the payment goes through when pressed again, with no question about a held one', String(h?.message || h).slice(0, 60));
+  }
+  relay.restore();
+}
+console.log('\na relay that says it sent nothing after it sent');
+{
+  const {node, wallet, relayed} = mkWorld(), store = mkStore(), relay = mockRelay(node, relayed);
+  const A = wallet(7, {keeper: KEEPER, store});
+  for (let i = 0; i < 3; i++) await A.W.deposit({amount: 5n * E / 100n});
+  relay.mode = 'refuse400sent';
+  const e = await A.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote}).catch((x) => x);
+  ok(!e.inflight && e.relay && A.W.inflight().length === 0, 'it is taken at its word: nothing is held', e.message.slice(0, 70));
+  relay.mode = 'send';
+  const other = await A.W.withdraw({to: '0x' + '22'.repeat(20), amount: E / 100n, via: null, expectFee: relay.quote}).catch((x) => x);
+  ok(typeof other === 'string', 'a different payment is not held back', String(other?.message || other).slice(0, 60));
+  const again = await A.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote}).catch((x) => x);
+  ok(again.duplicate === true && /may have landed/.test(again.message), 'the same payment pressed again is held back: a note the relay was given is spent', String(again?.message || again).slice(0, 80));
+  const B = wallet(7, {keeper: KEEPER, store});
+  const reloaded = await B.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote}).catch((x) => x);
+  ok(reloaded.duplicate === true, 'and is still held back after the page is opened again', String(reloaded?.message || reloaded).slice(0, 60));
+  const second = await B.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote, fresh: true}).catch((x) => x);
+  ok(typeof second === 'string', 'and goes out when the user says it is a second payment', String(second?.message || second).slice(0, 60));
+  relay.restore();
+}
+console.log('\nwhat a payment leaves for the duplicate check');
+{
+  const {node, wallet, relayed} = mkWorld(), store = mkStore(), relay = mockRelay(node, relayed);
+  const A = wallet(7, {keeper: KEEPER, store});
+  for (let i = 0; i < 2; i++) await A.W.deposit({amount: 5n * E / 100n});
+  await A.W.withdraw({to: DEST, amount: 2n * E / 100n, via: null, expectFee: relay.quote});
+  ok(A.W.landed().length === 1 && A.W.landed()[0].pay.to.toLowerCase() === DEST, 'a payment that landed is remembered with its payee', JSON.stringify(A.W.landed().map((y) => y.pay.to)));
+  const real = Date.now; Date.now = () => real() + 2 * 86_400_000;
+  await A.W.deposit({amount: E / 100n});
+  ok(A.W.landed().length === 0, 'and is gone at the next write after its day', JSON.stringify(A.W.landed().map((y) => y.pay.to)));
+  const B = wallet(7, {keeper: KEEPER, store});
+  ok(B.W.landed().length === 0, 'and from what is stored', String(B.W.landed().length));
+  Date.now = real;
+  relay.restore();
+}
 console.log('\na step that combines notes');
 {
   const {node, wallet, relayed} = mkWorld(), relay = mockRelay(node, relayed);

@@ -19,12 +19,19 @@ export function mockRelay(node, relayed, o = {}) {
     if (p === '/relay') {
       st.relays = (st.relays || 0) + 1; st.last = body;
       if (st.mode === 'refuse') return res(500, {error: 'busy'});
+      // The keeper's own refusals before it sends: no gas to front it, or its trial run reverts. A proxy's 502 says nothing.
+      if (st.mode === 'refuse503') return res(503, {error: "the relay can't front the gas for this right now"});
+      if (st.mode === 'refuse400') return res(400, {error: 'the transaction reverts'});
+      // A relay that sends and then says it did not: the transaction is on the chain when it answers.
+      if (st.mode === 'refuse400sent') { relayed(body.tx); return res(400, {error: 'the transaction reverts'}); }
+      if (st.mode === 'proxy502') return res(502, {});
       if (st.mode === 'drop') return res(200, {txHash: '0x' + 'cd'.repeat(32)});
       if (st.need && BigInt(body.tx.fee) < st.need) return res(400, {error: 'fee too low', needFee: String(st.need)});
       const r = relayed(body.tx);
       return r.revert ? res(400, {error: r.revert}) : res(200, {txHash: r.h});
     }
     if (p.startsWith('/events')) return res(404, {});
+    if (p === '/point') return st.point ? res(200, st.point) : res(404, {});
     return res(404, {});
   };
   st.restore = () => { globalThis.fetch = real; };

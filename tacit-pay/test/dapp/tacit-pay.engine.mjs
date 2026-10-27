@@ -136,6 +136,8 @@ console.log('\nthe head a read goes up to');
   globalThis.fetch = (u, i) => ({'https://a.test': head(2 ** 40), 'https://b.test': head(130), 'https://c.test': head(131)})[u](u, i);
   ok(await lib.headOf(['https://a.test', 'https://b.test', 'https://c.test']) === 130, 'is the lower of two nodes’ answers, so one node cannot send a read through blocks that do not exist');
   ok(await lib.headOf(['https://b.test']) === 130, 'and one node is enough when it is the only one');
+  globalThis.fetch = (u, i) => ({'https://a.test': head(100), 'https://b.test': head(5000), 'https://c.test': head(5001)})[u](u, i);
+  ok(await lib.headOf(['https://a.test', 'https://b.test', 'https://c.test']) === 5000, 'a node stuck far behind does not hold the read back: a third settles it, the lower of the two that agree');
   globalThis.fetch = real;
 }
 
@@ -212,6 +214,18 @@ console.log('\na made-up sweep into a deposit address, from a lying node');
   depositTo(honest, hk, E / 10n, 101); sweepTo(honest, hk, 5, E, 115); honest.tip = 130;
   const s = await H.sync();
   ok(s.balance === E + E / 10n && H.nextBox() === 6 && H.boxSpan() === 26, 'while a real one does', `balance ${s.balance} nextBox ${H.nextBox()} span ${H.boxSpan()}`);
+}
+
+console.log('\nan escrow’s refund box, in a range of its own');
+{
+  // A refund that reached the key's refund box (from 2^20) and was moved in is found from the key alone, by the wallet
+  // and by a fresh one; it moves neither the one-time addresses nor the refunds' own count past it.
+  const R0 = 1 << 20, node = mkNode(), {W, keys} = mkWallet(node);
+  depositTo(node, keys, E / 10n, 101); sweepTo(node, keys, R0, E / 4n, 112); sweepTo(node, keys, R0 + 3, E / 8n, 118); node.tip = 130;
+  const s = await W.sync();
+  const F = mkWallet(node).W, f = await F.sync();
+  ok(s.balance === E / 10n + E / 4n + E / 8n && f.balance === s.balance, 'both refunds are found, by this wallet and a fresh one', `${s.balance} · ${f.balance}`);
+  ok(W.nextBox() === 1 && W.nextRefundBox() === R0 + 4, 'the one-time addresses stay where they were; the next refund box is past the last used', `nextBox ${W.nextBox()} nextRefundBox ${W.nextRefundBox() - R0}`);
 }
 
 console.log('\nthe tree, with its wide levels hashed elsewhere');

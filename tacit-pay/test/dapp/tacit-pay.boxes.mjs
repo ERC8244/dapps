@@ -13,7 +13,7 @@ const f = lab.fork(name);
 const K1 = hexKey(), K2 = hexKey();
 const eth = (n) => '0x' + (BigInt(Math.round(n * 1e6)) * 10n ** 12n).toString(16);
 const rowsOf = (p) => p.$$eval('#form .rows li', (lis) => lis.map((li) => ({label: li.querySelector('b').textContent.trim(), addr: li.querySelector('code').textContent.trim(), take: !!li.querySelector('[data-take]')})));
-const exchange = async (p) => { await p.click('#tabs [data-tab="shield"]'); await p.click('[data-from="exchange"]'); await p.waitForSelector('#f-newbox', {timeout: 120e3}); };
+const exchange = async (p) => { await p.click('#tabs [data-tab="shield"]'); await p.click('#f-tok'); await p.click('[data-from="exchange"]'); await p.waitForSelector('#f-newbox', {timeout: 120e3}); };
 
 const A = await lab.page();
 await A.openKey(K1);

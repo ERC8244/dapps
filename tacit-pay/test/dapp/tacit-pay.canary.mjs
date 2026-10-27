@@ -84,8 +84,7 @@ if (steps.has('shield')) {
   console.log(`\nshield ${SHIELD.join(' + ')} from the wallet`);
   for (const amt of SHIELD) {
     await p.click('#tabs [data-tab="shield"]');
-    await p.click('[data-from="wallet"]');
-    if (await p.$('#f-conn')) await p.click('#f-conn');
+    if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
     await p.waitForSelector('#f-max');
     await p.fill('#f-samt', amt);
     await p.waitForFunction(() => !document.querySelector('#f-go').disabled, null, {timeout: 120e3});
@@ -124,7 +123,7 @@ if (steps.has('swap2')) await swap(TOKENS[1][0], TOKENS[1][1], K.destDAI.address
 if (steps.has('base')) {
   console.log('\nmove 0.003 ETH to Base through the relay');
   await p.click('#tabs [data-tab="withdraw"]');
-  await p.click('#form [data-mv="8453"]');
+  await p.click('#tabs [data-tab="swap"]'); await p.click('#f-pv2'); await p.click('[data-pv="chain:8453"]');
   await p.fill('#f-wamt', '0.003');
   await p.waitForFunction(() => /Moves to Base/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 300e3});
   log((await p.textContent('#f-rcpt')).replace(/\s+/g, ' ').slice(0, 220));
@@ -152,9 +151,10 @@ if (steps.has('tokenshield')) {
   const [sym, token, dec] = TOKENS[0], amt = process.env.TOKEN_SHIELD || '0.0002';
   console.log(`\nshield exactly ${amt} ETH from ${sym}`);
   await p.click('#tabs [data-tab="shield"]');
-  await p.click('[data-from="wallet"]');
-  if (await p.$('#f-conn')) await p.click('#f-conn');
+  if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
   await p.waitForSelector('#f-tok', {timeout: 60e3});
+  // Into private ETH, picked first.
+  await p.click('#f-pv'); await p.click('[data-pv="eth"]');
   if (!new RegExp(sym).test(await p.textContent('#f-tok'))) {
     await p.click('#f-tok');
     await p.waitForSelector(`[data-tk="${token}"]`, {timeout: 120e3});
@@ -176,7 +176,7 @@ if (steps.has('tokenshield')) {
 if (steps.has('takein')) {
   console.log('\ntake in what waits at the deposit addresses');
   await p.click('#tabs [data-tab="shield"]');
-  await p.click('[data-from="exchange"]');
+  await p.click('#f-tok'); await p.click('[data-from="exchange"]');
   await p.waitForSelector('#f-check', {timeout: 120e3});
   await p.click('#f-check');
   const found = await p.waitForSelector('[data-take]', {timeout: 240e3}).then(() => true, () => false);

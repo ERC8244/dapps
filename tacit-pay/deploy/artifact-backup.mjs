@@ -9,7 +9,7 @@
    Reading one back: eth_getCode of the manifest, then of each piece in order, drop each leading 0x00, join, and check
    the SHA-256 against the one the page pins.
 
-   Usage: RPC=<url> KEY_FILE=<file with a 0x private key> node deploy/artifact-backup.mjs [send]
+   Usage: RPC=<url> KEY_FILE=<file with a 0x private key> [BATCH=<most reads in one request, 20>] node deploy/artifact-backup.mjs [send]
    Without `send` it only plans: piece and manifest addresses, what is already deployed, gas, and cost at the node's
    price. With it, it deploys what is missing, oldest first, a few transactions per block, and can be run again to
    resume. */
@@ -48,7 +48,7 @@ for (const f of FILES) {
 }
 const all = plan.flatMap((f) => [...f.pieces.map((p, i) => ({...p, what: `${f.name} piece ${i + 1}/${f.pieces.length}`})), {...f.manifest, what: `${f.name} manifest`}]);
 
-const rpc = new JsonRpcProvider(process.env.RPC || 'https://ethereum-sepolia-rpc.publicnode.com', undefined, {staticNetwork: true, batchMaxCount: 20});
+const rpc = new JsonRpcProvider(process.env.RPC || 'https://ethereum-sepolia-rpc.publicnode.com', undefined, {staticNetwork: true, batchMaxCount: Number(process.env.BATCH || 20)});
 const net = await rpc.getNetwork();
 const have = [];
 for (let i = 0; i < all.length; i += 20) have.push(...await Promise.all(all.slice(i, i + 20).map((x) => rpc.getCode(x.addr).then((c) => c.length > 2))));

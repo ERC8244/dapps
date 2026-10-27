@@ -18,8 +18,7 @@ await p.openKey(hexKey());
 
 console.log('shield from the wallet');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="wallet"]');
-if (await p.$('#f-conn')) await p.click('#f-conn');
+if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
 await p.waitForSelector('#f-max');
 await p.fill('#f-samt', '0.05');
 await p.click('#f-go');
@@ -29,7 +28,7 @@ await p.balance('0.05');
 
 const move = async (amount, via) => {
   await p.click('#tabs [data-tab="withdraw"]');
-  await p.click('#form [data-mv="8453"]');
+  await p.click('#tabs [data-tab="swap"]'); await p.click('#f-pv2'); await p.click('[data-pv="chain:8453"]');
   if (via === 'wallet') await p.click('[data-route="wallet"]').catch(() => {});
   await p.fill('#f-wamt', amount);
   await p.waitForFunction(() => /Moves to Base/.test(document.querySelector('#f-rcpt')?.textContent || '') && !document.querySelector('#f-go').disabled, null, {timeout: 90e3});
@@ -87,7 +86,7 @@ const onBase = BigInt(await fb.rpc('eth_getBalance', [to1, 'latest']));
 ok(rr?.status === '0x1' && onBase === 10n ** 16n, 'Base’s bridge pays the new deposit address 0.01 ETH', `${onBase} wei at ${to1}`);
 await p.chain('base');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="exchange"]');
+await p.click('#f-tok'); await p.click('[data-from="exchange"]');
 await p.waitForSelector('#f-check', {timeout: 120e3});
 await p.click('#f-check');
 await p.waitForSelector('[data-take]', {timeout: 180e3});

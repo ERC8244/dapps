@@ -21,8 +21,7 @@ await p.openKey(hexKey());
 
 console.log('shield from the wallet');
 await p.click('#tabs [data-tab="shield"]');
-await p.click('[data-from="wallet"]');
-if (await p.$('#f-conn')) await p.click('#f-conn');
+if (/^Connect a wallet$/.test((await p.textContent('#f-go')).trim())) await p.click('#f-go');
 await p.waitForSelector('#f-max');
 await p.fill('#f-samt', '0.05');
 await p.click('#f-go');
@@ -50,13 +49,13 @@ console.log('\nthe token list');
 await p.click('#tabs [data-tab="withdraw"]');
 await p.click('#f-tok');
 await p.waitForSelector(`[data-tk="${USDC}"]`, {timeout: 120e3});
-const listed = await p.$$eval('#f-tokl [data-tk]', (b) => b.map((x) => [x.dataset.tk, !!x.querySelector('img')]));
+const listed = await p.$$eval('#f-tokl [data-tk]', (b) => b.map((x) => [x.dataset.tk, !!x.querySelector('img, svg')]));
 ok(listed.length > 1 && listed[0][0] === '', `ETH first, then the list’s tokens on ${NAME}`, `${listed.length} rows`);
 ok(listed.filter(([, img]) => img).length >= listed.length - 2, 'with their onchain logos');
 await p.fill('#f-toksq', SYM.toLowerCase());
 ok((await p.$$eval('#f-tokl [data-tk]', (b) => b.length)) < listed.length || listed.length <= 2, 'and a search narrows it');
 await p.click(`[data-tk="${USDC}"]`);
-ok(await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#f-tok')?.textContent || '') && /zRouter swaps it/.test(document.querySelector('#form')?.textContent || ''), SYM, {timeout: 30e3}).then(() => true, () => false), `choosing ${SYM} turns the withdrawal into a swap`);
+ok(await p.waitForFunction((s) => new RegExp(s).test(document.querySelector('#f-tok')?.textContent || '') && /Swapped in the same transaction/.test(document.querySelector('#form')?.textContent || ''), SYM, {timeout: 30e3}).then(() => true, () => false), `choosing ${SYM} turns the withdrawal into a swap`);
 
 console.log(`\nswap 0.01 ETH to ${SYM} through the relay`);
 const D1 = '0x' + '5a'.repeat(20);

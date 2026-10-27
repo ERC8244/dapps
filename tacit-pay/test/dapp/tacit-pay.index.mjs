@@ -16,7 +16,7 @@ const A = await lab.page();
 const K1addr = await (async () => { const a = await A.openKey(K1); await A.lockKey(); return a; })();
 await A.openKey(K0);
 await A.click('#tabs [data-tab="shield"]');
-await A.click('#f-conn');
+await A.click('#f-go');
 await A.waitForSelector('#f-max');
 await A.fill('#f-samt', '0.003'); await A.fill('#f-sto', K1addr);
 await A.waitForFunction(() => /Into their private balance/.test(document.querySelector('#f-rcpt').textContent), null, {timeout: 30e3});

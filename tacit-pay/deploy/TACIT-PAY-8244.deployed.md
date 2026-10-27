@@ -5,26 +5,25 @@ and serves them over ERC-8244 and ERC-5219.
 
 | | |
 | --- | --- |
-| **TacitPay8244** | [`0x000000BC9db0D5091853bFBf6D062C1410Bc3745`](https://etherscan.io/address/0x000000BC9db0D5091853bFBf6D062C1410Bc3745#code) |
-| **Browse (ERC-8244)** | https://0x000000bc9db0d5091853bfbf6d062c1410bc3745.w4eth.io/ |
-| **Browse (ERC-4804)** | https://0x000000bc9db0d5091853bfbf6d062c1410bc3745.1.w3link.io/ |
+| **TacitPay8244** | [`0x0000000d42137547140b0812E1178F025e08bc49`](https://etherscan.io/address/0x0000000d42137547140b0812E1178F025e08bc49#code) |
+| **Browse (ERC-8244)** | https://0x0000000d42137547140b0812e1178f025e08bc49.w4eth.io/ |
+| **Browse (ERC-4804)** | https://0x0000000d42137547140b0812e1178f025e08bc49.1.w3link.io/ |
 | **Name route** | https://anon.wei.limo/ (`anon.wei` resolves through WNS to the wrapper) |
 | steward | `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20` |
-| previous / successor | `0x937BFF44d6EeeF798AbB0088b6441843eA276DFF` / `0x0`: generation 5, the tip of its lineage |
-| page | 415,902 B, sha256 `1d4465f6a131ee18d53639fb67a5af4c9ac48fedc5773b62d620eadb5766a5ad` |
-| page commitment | keccak `0x44a24d8ff8cc3dc83a4a82c2a0bf119beaa4a786700eeb2650f47d03c12b9dfd` |
-| appended | 2026-10-26, by `deployNext` on generation 4 (tx `0x37f351f0c3b83d64e30eba4f1e689d2a145746a1a77509d039f08354dddc8e39`), at a CREATE2 salt mined for three leading zero bytes |
+| previous / successor | `0x000000BC9db0D5091853bFBf6D062C1410Bc3745` / `0x0`: generation 6, the tip of its lineage |
+| page | 415,902 B, sha256 `3b94ab980316470756345dd754cd212dde57067e0ef95dce1531fcaecfde9c08` |
+| page commitment | keccak `0xc38edd73acfcad5a4d5049669f6d7853c32b4687904d6b3d56ce9ccac0feea12` |
+| appended | 2026-10-27, by `deployNext` on generation 5, in one transaction with the new chunk and the name pointed (tx `0x12a96138e057c571386d9340996900124ec8b4886a78d85dcd8b0ad5653cef7c`), at a CREATE2 salt mined for three leading zero bytes |
 | source | verified on Sourcify (`match`, creation and runtime) and Etherscan, solc 0.8.30, 200 runs, prague |
 
 ## Data chunks
 
-Each chunk is a CreateX CREATE2 deployment under a chain-bound salt anyone may use, so its address is fixed by its code. All
-seventeen were sent from the steward wallet.
+Chunk 2 was sent in the release (the repaired USDG mark and the Base and Robinhood network marks); the other sixteen are generation 5's, reused at their live addresses. Each is a CreateX CREATE2 deployment under a chain-bound salt anyone may use, so its address is fixed by its code.
 
 | # | address | bytes |
 | --- | --- | --- |
 | 1 | `0xF80d79CA8586b2181d59FECd8D62f79f9990c68f` | 24,576 |
-| 2 | `0x23b840118E1714846a8EBb00B3Fe786e4e8806f4` | 24,576 |
+| 2 | `0x526BA833CbF55dcf063dc6A4cb6493F425904A95` | 24,576 |
 | 3 | `0x77cA6552C1b3aD4F55f11F9eEA8F0f6E7c0C6820` | 24,576 |
 | 4 | `0xe071cd1C1a9d047b171A0a8503B2BeE155DEeF51` | 24,576 |
 | 5 | `0xC147958E8F6Bf651450fc0Dcf726FCBa9eFaC949` | 24,576 |
@@ -43,7 +42,7 @@ seventeen were sent from the steward wallet.
 
 ## Check it
 
-`node deploy/check-deployment.mjs <rpc url> 0x000000BC9db0D5091853bFBf6D062C1410Bc3745 dapp/page.min.html` checks each chunk's bytes, that `html()` returns the page
+`node deploy/check-deployment.mjs <rpc url> 0x0000000d42137547140b0812E1178F025e08bc49 dapp/page.min.html` checks each chunk's bytes, that `html()` returns the page
 byte for byte, and that `PAGE_HASH` is its keccak.
 
 ## The catch-up registry

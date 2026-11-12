@@ -356,19 +356,21 @@ whose bytes changed (an unchanged chunk is reused at its address, checked agains
 `<tip>.deployNext(initcode, salt)` with the wrapper's creation code (`previous` the tip, the same steward, the new page hash)
 and a gas limit of 2,000,000 (generation 2's used 1,718,451). Run step 3 against the new wrapper, then `setAddr` to it. To
 verify a successor's source (step 4), its second constructor argument is the previous version's address, not zero.
-To go back, `setAddr` to the old one: every version serves its own bytes forever. Only the newest version can append.
+To go back, `setAddr` to the old one: every version serves its own bytes forever. Only the newest version can append. With the Z DAO as steward (see Stewardship and the name below), the `deployNext` call and the `setAddr` are DAO proposals, not calls from one wallet.
 
 ## Stewardship and the name
 
-The steward is `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20`. Releases follow the lineage model poidh and fwa use, with
-no delay: the steward deploys each new version through `deployNext` (CREATE2 from this contract, so the successor's
-`PREVIOUS` is unforgeable) and points `anon.wei` at it. The role moves in two steps (`transferStewardship`, then
-`acceptStewardship` from the new steward), so once the page settles it can be handed to a lock, a multisig or a
-timelock, or renounced to freeze the lineage.
+The steward is the Z DAO, `0x5E58BA0e06ED0F5558f83bE732a4b899a674053E`, a Moloch-style DAO whose votes are Z Shares. The role
+moved in two steps (`transferStewardship`, then `acceptStewardship` called by the DAO through a passed proposal, transaction
+`0xb9a83c8f9f4bb4b32963cbb8e454973bbd35e087aad24e09c9ee55748d668ee1`). Releases follow the lineage model poidh and fwa use:
+the steward deploys each new version through `deployNext` (CREATE2 from this contract, so the successor's `PREVIOUS` is
+unforgeable) and points `anon.wei` at it, and now both happen only through a DAO proposal. A proposal has a 24-hour voting
+window, needs votes from 10% of Z Shares, and waits 24 hours after it is queued before it can be executed (`proposalTTL()`,
+`quorumBps()` and `timelockDelay()` on the DAO). No single key can publish a version.
 
 `html()` never forwards: every version serves its own bytes forever. The page reads its own address from the
 gateway's hostname (an `<address>.` host, or a `.wei.limo` name resolved through WNS) and, when `latest()` names a
 newer version, says so in its footer; it redirects nothing.
 
 `anon.wei` points at the version contract directly, as `fwa.wei` and `poidh.wei` do, so a successor reaches the name
-when the steward repoints it.
+when the DAO, which holds the name, repoints it.

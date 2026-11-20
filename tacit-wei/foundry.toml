@@ -1,0 +1,32 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+optimizer = true
+optimizer_runs = 200
+bytecode_hash = "none"
+cbor_metadata = false
+fs_permissions = [
+    { access = "read", path = "./dapp" },
+    { access = "read", path = "./out" },
+    { access = "read", path = "./deploy" },
+]
+
+[fuzz]
+runs = 1000
+
+# No global compiler: each file builds with the version its pragma names. The page contract and its artifact index
+# stay on 0.8.30, the compiler of the live deployments (deploy-helper.mjs reads TacitPay8244's bytecode from out/);
+# TacitPayRegistry pins 0.8.37 in its own pragma and builds through the IR pipeline (as zEndpoints does): the legacy
+# one runs out of stack decoding its constructor's nested seed list.
+[[profile.default.compilation_restrictions]]
+paths = "src/TacitPay8244.sol"
+version = "=0.8.30"
+
+[[profile.default.additional_compiler_profiles]]
+name = "ir"
+via_ir = true
+
+[[profile.default.compilation_restrictions]]
+paths = "src/TacitPayRegistry.sol"
+via_ir = true

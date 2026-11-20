@@ -1,0 +1,491 @@
+#!/usr/bin/env node
+// Serves a page on localhost that deploys the NEXT generation of tacit-pay from a browser wallet: whichever chunks
+// changed since the live wrapper, then deployNext(initcode, salt) on that wrapper itself. A chunk whose bytes are
+// unchanged from the live deployment is reused at its existing address instead of redeployed — checked against
+// mainnet at startup here, not assumed from an edit history.
+//   node ../scripts/chunk.mjs tacit-pay && forge build && node deploy/deploy-next-helper.mjs [port]     (from tacit-pay/)
+// Never `forge build --force` or `forge clean` between chunk.mjs and this: they delete out/.
+// The chunks that are new are deployed through CreateX's CREATE2 under a chain-bound salt anyone may use (the same plan as the
+// /tasks job that pays for them: salt = 20 zero bytes, 0x01, 'g4chunkNN' and two zero bytes), so each lands at an address fixed by
+// its code. One already there (sent by someone doing that job) is found and used, not sent again.
+// deployNext does a plain CREATE2 from the current wrapper's own address, and only the steward can call it: no CreateX
+// hop needed, since there is no front-running risk to guard against. The address can still be mined for leading zero
+// bytes with deploy/vanity/target/release/vanity2 (built alongside vanity: cargo build --release --offline --manifest-path
+// deploy/vanity/Cargo.toml). Without it, the next generation lands at whatever address a zero salt gives.
+import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+
+const DIR = new URL('../', import.meta.url).pathname;
+const STEWARD = '0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20';
+// Any generation finds the rest: latest() walks forward to the live tip, the only one deployNext can extend.
+const LINEAGE = process.env.LINEAGE || '0x0000001e01D6ee371b51b49dc80E9B96b238e7c5';
+const manifest = JSON.parse(readFileSync(DIR + 'manifest.json', 'utf8'));
+const page = readFileSync(DIR + manifest.page);
+if (page.length !== manifest.bytes || createHash('sha256').update(page).digest('hex') !== manifest.sha256) throw new Error('the page is not the one the manifest pins');
+const files = readdirSync(DIR + 'out').filter((f) => /^TacitPay8244\.chunk\d+\.creation\.txt$/.test(f)).sort((a, b) => Number(a.match(/chunk(\d+)/)[1]) - Number(b.match(/chunk(\d+)/)[1]));
+const chunks = files.map((f) => readFileSync(DIR + 'out/' + f, 'utf8').trim());
+const runtimes = chunks.map((c) => '0x' + c.slice(2 + 20));   // the 10-byte stub, then the runtime
+if (Buffer.concat(runtimes.map((r) => Buffer.from(r.slice(4), 'hex'))).compare(page) !== 0) throw new Error('the chunks do not reassemble to the page');
+const bytecode = JSON.parse(readFileSync(DIR + 'out/TacitPay8244.sol/TacitPay8244.json', 'utf8')).bytecode.object;
+const { keccak256, getCreateAddress, getAddress, concat, AbiCoder, id, namehash } = await import(new URL('../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+
+const RPC_URL = process.env.ETH_RPC_URL || 'https://ethereum-rpc.publicnode.com';
+const rpcCall = async (method, params) => {
+  const res = await fetch(RPC_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const j = await res.json();
+  if (j.error) throw new Error(method + ': ' + j.error.message);
+  return j.result;
+};
+const abi = AbiCoder.defaultAbiCoder();
+const view = async (to, sig, types = [], args = []) => rpcCall('eth_call', [{ to, data: id(sig).slice(0, 10) + abi.encode(types, args).slice(2) }, 'latest']);
+const addrOf = (word) => getAddress('0x' + String(word).slice(-40));
+const OLD_WRAPPER = addrOf(await view(LINEAGE, 'latest()'));
+if (addrOf(await view(OLD_WRAPPER, 'steward()')) !== getAddress(STEWARD)) throw new Error(`${OLD_WRAPPER} is not stewarded by ${STEWARD}`);
+// Every chunk the lineage already holds, newest generation first, by its exact bytes: a chunk whose bytes are already on
+// chain anywhere in the lineage is reused at that address instead of redeployed. Read from mainnet, not assumed.
+const onchain = new Map();
+for (let g = OLD_WRAPPER; BigInt(g); g = addrOf(await view(g, 'PREVIOUS()'))) {
+  const n = Number(BigInt(await view(g, 'chunkCount()')));
+  for (let i = 0; i < n; i++) {
+    const a = addrOf(await view(g, 'chunkAt(uint256)', ['uint256'], [i]));
+    const code = (await rpcCall('eth_getCode', [a, 'latest'])).toLowerCase();
+    if (!onchain.has(code)) onchain.set(code, a);
+  }
+}
+const reused = runtimes.map((r) => onchain.get(r.toLowerCase()) ?? null);
+const needsDeploy = reused.map((a, i) => (a ? -1 : i)).filter((i) => i !== -1);
+if (!needsDeploy.length) throw new Error('every chunk already matches the live generation; there is nothing to deploy next');
+
+const pageHash = keccak256(page);
+const GAS = Math.round(needsDeploy.reduce((s, i) => s + (runtimes[i].length - 2) / 2, 0) * 225 + 1.8e6);   // rough: changed chunks + one deployNext
+const MINER = DIR + 'deploy/vanity/target/release/vanity2', ZEROS = Number(process.env.ZEROS || 3), VANITY = existsSync(MINER);
+const DEPLOYNEXT = id('deployNext(bytes,bytes32)').slice(0, 10);
+const create2Address = (deployer, salt, initcodeHash) => getAddress('0x' + keccak256(concat(['0xff', deployer, salt, initcodeHash])).slice(26));
+// Where each chunk lands through CreateX, and the call that puts it there (deployCreate2(bytes32,bytes)).
+const CREATEX = '0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed';
+const PLAN = chunks.map((init, i) => {
+  const salt = '0x' + Buffer.concat([Buffer.alloc(20), Buffer.from([1]), Buffer.from(`g4chunk${String(i + 1).padStart(2, '0')}`), Buffer.alloc(2)]).toString('hex');
+  const guarded = keccak256(abi.encode(['uint256', 'bytes32'], [1, salt]));
+  const n = (init.length - 2) / 2;
+  const data = id('deployCreate2(bytes32,bytes)').slice(0, 10) + abi.encode(['bytes32', 'bytes'], [salt, init]).slice(2);
+  return { salt, address: create2Address(CREATEX, guarded, keccak256(init)), data, bytes: n };
+});
+
+// The new generation's constructor args and deployNext calldata, for one final chunk list: built with ethers' own ABI
+// coder rather than by hand, since getting an offset wrong in a real deployNext call is not a cheap mistake to make twice.
+function buildCall(finalChunks) {
+  const args = AbiCoder.defaultAbiCoder().encode(['address', 'address', 'address[]', 'bytes32'], [STEWARD, OLD_WRAPPER, finalChunks, pageHash]);
+  const initcode = bytecode + args.slice(2);
+  return { initcode, initcodeHash: keccak256(initcode) };
+}
+const MINED = new Map();
+function mineFor(finalChunks) {
+  const key = finalChunks.join(',').toLowerCase();
+  if (MINED.has(key)) return MINED.get(key);
+  const p = (async () => {
+    const { initcode, initcodeHash } = buildCall(finalChunks);
+    let salt = '0x' + '00'.repeat(32);
+    if (VANITY) {
+      const out = await new Promise((resolve, reject) => execFile(MINER, [OLD_WRAPPER, initcodeHash, String(ZEROS)], { timeout: 900_000 }, (e, o) => (e ? reject(e) : resolve(o))));
+      salt = /salt (0x[0-9a-f]{64})/.exec(out)?.[1];
+      if (!salt) throw new Error('the miner did not report a salt');
+    }
+    const address = create2Address(OLD_WRAPPER, salt, initcodeHash);
+    if (VANITY && !address.toLowerCase().startsWith('0x' + '00'.repeat(ZEROS))) throw new Error('the miner and the check disagree');
+    const data = DEPLOYNEXT + AbiCoder.defaultAbiCoder().encode(['bytes', 'bytes32'], [initcode, salt]).slice(2);
+    return { salt, address, data };
+  })();
+  MINED.set(key, p);
+  p.catch(() => MINED.delete(key));
+  return p;
+}
+const NAME = 'tacit.wei', WNS = '0x0000000000696760e15f265e828db644a0c242eb', TOKEN = namehash(NAME);
+
+const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tacit-pay: next generation</title>
+<style>body{font:14px/1.6 ui-monospace,Menlo,monospace;max-width:760px;margin:40px auto;padding:0 16px}button{font:inherit;padding:8px 14px;margin:4px 0}code{overflow-wrap:anywhere}.ok{color:#0a7d3a}.err{color:#b8341d}li{margin:4px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f1e8;padding:12px}
+#pick{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}#pick button{display:flex;align-items:center;gap:8px}#pick img{width:20px;height:20px;border-radius:4px}</style></head><body>
+<h2>deploy tacit-pay: next generation</h2>
+<p>Page ${manifest.bytes.toLocaleString('en-US')} bytes, sha256 <code>${manifest.sha256}</code>, keccak <code>${pageHash}</code>. ${needsDeploy.length} of ${chunks.length} chunks changed since <code>${OLD_WRAPPER}</code>; the rest are reused at their live addresses. From the steward wallet <code>${STEWARD}</code> on Ethereum mainnet: one transaction for the whole release (and ${NAME} pointed at it) from a wallet that can batch calls, else ${needsDeploy.length + 1} and one more for the name.</p>
+<p><button id="connect">Connect wallet</button> <span id="who"></span></p>
+<div id="pick" hidden></div>
+<p id="where"></p>
+<p><button id="one" hidden>Release in one transaction</button> <span id="onesay"></span></p>
+<p><button id="go" disabled>Deploy what is left</button> <button id="reset">Forget progress</button></p>
+<p><button id="name" hidden>Point ${NAME} at it</button> <span id="named"></span></p>
+<ol id="steps"></ol><pre id="out" hidden></pre>
+<script>
+const ALL_RUNTIMES = ${JSON.stringify(runtimes)}, NEEDS = ${JSON.stringify(needsDeploy)}, PLAN = ${JSON.stringify(PLAN)}, CREATEX = ${JSON.stringify(CREATEX)};
+const REUSED = ${JSON.stringify(Object.fromEntries(reused.map((a, i) => [i, a]).filter(([, a]) => a)))};
+const STEWARD = ${JSON.stringify(STEWARD)}, OLD_WRAPPER = ${JSON.stringify(OLD_WRAPPER)}, PAGE_HASH = ${JSON.stringify(pageHash)}, SHA = ${JSON.stringify(manifest.sha256)}, GAS = ${GAS};
+const VANITY = ${VANITY}, NAME = ${JSON.stringify(NAME)}, WNS = ${JSON.stringify(WNS)}, TOKEN = ${JSON.stringify(TOKEN)}, MAXGWEI = ${Number(process.env.MAX_GWEI ?? 1)};
+const KEY = 'tacit-pay-deploy-next-' + OLD_WRAPPER.slice(2, 10) + '-' + SHA.slice(0, 16);
+let st = JSON.parse(localStorage.getItem(KEY) || JSON.stringify({ chunks: Object.assign(new Array(ALL_RUNTIMES.length), REUSED) })), eth = null, from = null;
+const save = () => localStorage.setItem(KEY, JSON.stringify(st));
+// Whether every chunk slot 0..ALL_RUNTIMES.length-1 is filled: checked by index, not by scanning st.chunks itself,
+// since an array with holes answers "does any filled slot fail this test" wrong for the holes themselves.
+const allChunksIn = () => Array.from({ length: ALL_RUNTIMES.length }, (_, i) => i).every((i) => st.chunks[i]);
+const $ = (s) => document.querySelector(s), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), esc = (s) => String(s).replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';');
+// A wallet's own RPC node can answer "rate limit exceeded" under a burst of reads; that is backed off and retried
+// here, rather than left to abort whatever called it.
+async function rpc(method, params = []) {
+  for (let i = 0; ; i++) {
+    try { return await eth.request({ method, params }); }
+    catch (e) {
+      if (i >= 5 || !/rate.?limit|too many requests|\\b429\\b/i.test(e?.message || '')) throw e;
+      await sleep(500 * 2 ** i);
+    }
+  }
+}
+// A wallet that never answers (its popup dismissed, backgrounded, or dropped) would otherwise hang this await with no
+// sign of it: after 8 s a note appears saying so. There is no way to cancel a pending wallet request, so the only way
+// out is to find and answer it in the wallet, or reload: reconcile() re-checks every address against the chain before
+// anything more is sent, so a reload never sends what is already on it twice.
+function nudged(p, label, append = (el) => $('#steps').appendChild(el)) {
+  const t = setTimeout(() => {
+    const el = document.createElement('div');
+    el.innerHTML = '<span class="err">Still waiting on your wallet for ' + label + '. Check its popup or toolbar icon (it can open behind this window). If there is truly nothing pending there, reload this page and press the button again: nothing already sent is ever sent twice.</span>';
+    append(el);
+  }, 8000);
+  return Promise.resolve(p).finally(() => clearTimeout(t));
+}
+// Every extension that announces itself (EIP-6963: MetaMask, Rainbow, Coinbase Wallet, Rabby, …) is offered by name, not
+// just whichever one happened to grab window.ethereum first; a wallet that only sets window.ethereum is used when none
+// announces.
+const WALLETS = [];
+window.addEventListener('eip6963:announceProvider', (e) => {
+  const d = e.detail;
+  if (!d?.info || !d.provider?.request || WALLETS.some((w) => w.info.uuid === d.info.uuid)) return;
+  WALLETS.push(d);
+});
+const askWallets = () => window.dispatchEvent(new Event('eip6963:requestProvider'));
+askWallets();
+const installed = () => (WALLETS.length ? WALLETS : window.ethereum?.request ? [{ info: { name: 'Browser wallet', rdns: 'window.ethereum' }, provider: window.ethereum }] : []);
+function pickWallet(list) {
+  return new Promise((resolve) => {
+    $('#pick').innerHTML = list.map((w, i) => '<button type="button" data-i="' + i + '">' + ((w.info.icon || '').indexOf('data:image') === 0 ? '<img src="' + esc(w.info.icon) + '" alt="">' : '') + '<span>' + esc(w.info.name) + '</span></button>').join('');
+    $('#pick').hidden = false;
+    document.querySelectorAll('#pick [data-i]').forEach((b) => b.onclick = () => { $('#pick').hidden = true; $('#pick').innerHTML = ''; resolve(list[b.dataset.i]); });
+  });
+}
+const word = (h) => h.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+function paint(note) {
+  const items = ALL_RUNTIMES.map((_, i) => '<li>chunk ' + (i + 1) + ': ' + (st.chunks[i] ? '<span class="ok">' + st.chunks[i] + (REUSED[i] ? ' (reused)' : '') + '</span>' : '…') + '</li>');
+  items.push('<li>next generation: ' + (st.next ? '<span class="ok">' + st.next + '</span>' : '…') + '</li>');
+  if (note) items.push('<li>' + note + '</li>');
+  $('#steps').innerHTML = items.join('');
+}
+const code = async (a) => (await rpc('eth_getCode', [a, 'latest'])).toLowerCase();
+// The same read through this page's own server, for the moment before a wallet is connected.
+const publicCode = async (a) => (await (await fetch('/code?a=' + a, { signal: AbortSignal.timeout(20000) })).text()).toLowerCase();
+async function onMainnet() {
+  const id = parseInt(await rpc('eth_chainId'), 16);
+  if (id !== 1) throw new Error('Your wallet is on chain ' + id + ', not Ethereum mainnet. Switch it and press the button again: nothing was sent.');
+}
+// Before the wallet is asked, what cannot go through is said here in words rather than left as a popup that never
+// completes: an account that cannot pay at today's gas, and gas above the ceiling (MAX_GWEI on the server, default 1;
+// ?maxgwei=N on this page changes it, 0 turns it off), which waits for gas to fall.
+async function preflight(label, gas) {
+  const q = new URLSearchParams(location.search).get('maxgwei'), ceiling = q === null || q === '' ? MAXGWEI : Number(q);
+  for (;;) {
+    const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
+    const gwei = Number(BigInt(gp)) / 1e9, cost = Number(BigInt(gas) * BigInt(gp)) / 1e18, have = Number(BigInt(bal)) / 1e18;
+    if (have < cost * 1.3) throw new Error('Nothing was sent: ' + label + ' needs about ' + cost.toFixed(4) + ' ETH at ' + gwei.toFixed(3) + ' gwei, and ' + from + ' holds ' + have.toFixed(4) + ' ETH. Add ETH to it and press the button again.');
+    if (ceiling > 0 && gwei > ceiling) {
+      paint('Gas is ' + gwei.toFixed(3) + ' gwei, above the ' + ceiling + ' gwei ceiling, so ' + label + ' waits for it to fall (checked every 15 s). Add ?maxgwei=N to this page&#39;s address to change the ceiling, or ?maxgwei=0 to turn it off.');
+      await sleep(15000);
+      continue;
+    }
+    return;
+  }
+}
+// Sends the creation code and waits for the contract. landed(address) says whether the intended contract is at an
+// address: that is how a replaced or sped-up transaction (same nonce, so the same address) is found.
+// The nonce to send at: the first one not yet confirmed, never the wallet node's "pending" count, which can include a
+// transaction held only in that node's own pool (one sent through a private endpoint): a chunk sent behind it waits for a
+// nonce that never confirms. A pending transaction at that nonce is replaced, and a contract's address is set by the nonce,
+// so a chunk cannot be deployed twice. NONCE_FLOOR stays one step ahead of a node that is a block behind.
+let NONCE_FLOOR = 0;
+const nextNonce = async () => Math.max(parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16), NONCE_FLOOR);
+async function create(data, label, landed) {
+  await onMainnet();
+  const nonce = await nextNonce();
+  const expected = await (await fetch('/addr?from=' + from + '&nonce=' + nonce)).text();
+  if (await landed(expected)) { NONCE_FLOOR = nonce + 1; return expected; }
+  const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, data }]))) * 1.1).toString(16);
+  await preflight(label, gas);
+  paint('confirm ' + label + ' in your wallet');
+  const h = await nudged(rpc('eth_sendTransaction', [{ from, data, gas, nonce: '0x' + nonce.toString(16) }]), label);
+  paint(label + ': waiting for <code>' + esc(h) + '</code>');
+  for (;;) {
+    const r = await rpc('eth_getTransactionReceipt', [h]);
+    if (r) { if (r.status !== '0x1' || !r.contractAddress) throw new Error(label + ' reverted in ' + h); NONCE_FLOOR = nonce + 1; return r.contractAddress; }
+    if (await landed(expected)) { NONCE_FLOOR = nonce + 1; return expected; }
+    if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await landed(expected)))
+      throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
+    await sleep(3000);
+  }
+}
+// A chunk through CreateX at its planned address: sent with a "to", and found by what the address holds.
+async function viaCreateX(i) {
+  await onMainnet();
+  const plan = PLAN[i], want = ALL_RUNTIMES[i].toLowerCase(), label = 'chunk ' + (i + 1), has = async () => (await code(plan.address)) === want;
+  if (await has()) return plan.address;
+  if ((await code(plan.address)).length > 2) throw new Error('Something else is already at ' + plan.address + '. Nothing was sent.');
+  const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, to: CREATEX, data: plan.data }]))) * 1.1).toString(16);
+  await preflight(label, gas);
+  const nonce = await nextNonce();
+  paint('confirm ' + label + ' in your wallet');
+  const h = await nudged(rpc('eth_sendTransaction', [{ from, to: CREATEX, data: plan.data, gas, nonce: '0x' + nonce.toString(16) }]), label);
+  paint(label + ': waiting for <code>' + esc(h) + '</code>');
+  for (;;) {
+    const r = await rpc('eth_getTransactionReceipt', [h]);
+    if (r && r.status !== '0x1') throw new Error(label + ' reverted in ' + h);
+    if (await has()) { NONCE_FLOOR = nonce + 1; return plan.address; }
+    if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await has()))
+      throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
+    await sleep(3000);
+  }
+}
+// deployNext on the live wrapper: a plain call, not a creation, so it is sent with a "to" address and checked the
+// same way chunks are — by what the address holds, not by trusting that a receipt came back.
+async function viaWrapper(data, expected) {
+  await onMainnet();
+  if (await nextOk(expected)) return expected;
+  if ((await code(expected)).length > 2) throw new Error('Something else is already at ' + expected + '. Nothing was sent.');
+  const gas = '0x' + Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from, to: OLD_WRAPPER, data }]))) * 1.1).toString(16);
+  const nonce = await nextNonce();
+  paint('confirm the next generation in your wallet');
+  const h = await nudged(rpc('eth_sendTransaction', [{ from, to: OLD_WRAPPER, data, gas, nonce: '0x' + nonce.toString(16) }]), 'the next generation');
+  paint('the next generation: waiting for <code>' + esc(h) + '</code>');
+  for (;;) {
+    const r = await rpc('eth_getTransactionReceipt', [h]);
+    if (r && r.status !== '0x1') throw new Error('deployNext reverted in ' + h);
+    if (await nextOk(expected)) { NONCE_FLOOR = nonce + 1; return expected; }
+    if (parseInt(await rpc('eth_getTransactionCount', [from, 'latest']), 16) > nonce && !(await rpc('eth_getTransactionReceipt', [h])) && !(await nextOk(expected)))
+      throw new Error('Another transaction used nonce ' + nonce + ' (see the activity in your wallet). Nothing is lost: press the button again to carry on from what is on chain.');
+    await sleep(3000);
+  }
+}
+const nextOk = async (a) => { try { return (await code(a)).length > 4 && (await rpc('eth_call', [{ to: a, data: '0x5b700b59' }, 'latest'])).toLowerCase() === PAGE_HASH.toLowerCase(); } catch { return false; } };
+async function reconcile() {
+  await Promise.all(ALL_RUNTIMES.map(async (_, i) => { if (st.chunks[i] && (await code(st.chunks[i])) !== ALL_RUNTIMES[i].toLowerCase()) delete st.chunks[i]; }));
+  if (st.next && !(await nextOk(st.next))) delete st.next;
+  save();
+}
+// A chunk's address is remembered only once its transaction is seen confirmed in this tab, so a reload a moment too early
+// loses one that landed. What the steward has already created is therefore read by this page's own server (no wallet
+// involved) as the page opens: its last 40 creations, matched by exact runtime code. The Deploy button waits for it.
+const foundP = Promise.all([
+  fetch('/found', { signal: AbortSignal.timeout(20000) }).then((r) => r.json()).then((found) => { for (const [i, a] of Object.entries(found)) if (!st.chunks[i]) st.chunks[i] = a; }).catch(() => {}),
+  // A chunk already at its planned address (sent by whoever did that part of the /tasks job) is used as it stands.
+  Promise.all(NEEDS.map(async (i) => { try { if (!st.chunks[i] && (await publicCode(PLAN[i].address)) === ALL_RUNTIMES[i].toLowerCase()) st.chunks[i] = PLAN[i].address; } catch {} })),
+]).then(() => { save(); paint(); });
+$('#connect').onclick = async () => {
+  askWallets(); await sleep(150);
+  const list = installed();
+  if (!list.length) return paint('<span class="err">No wallet found in this browser. Install one (MetaMask, Rainbow, Coinbase Wallet, …) and reload.</span>');
+  const w = list.length > 1 ? await pickWallet(list) : list[0];
+  if (!w) return;
+  eth = w.provider;
+  $('#who').textContent = 'connecting to ' + w.info.name + '…';
+  const whereNudge = (el) => $('#where').appendChild(el);
+  try {
+    const accounts = await nudged(rpc('eth_requestAccounts'), 'connecting ' + w.info.name, whereNudge);
+    from = accounts.find((a) => a.toLowerCase() === STEWARD.toLowerCase()) || accounts[0];
+    if (parseInt(await rpc('eth_chainId'), 16) !== 1) { try { await nudged(rpc('wallet_switchEthereumChain', [{ chainId: '0x1' }]), 'switching to Ethereum mainnet', whereNudge); } catch {} }
+    await onMainnet();
+    if (from.toLowerCase() !== STEWARD.toLowerCase()) $('#where').innerHTML = '<span class="err">This wallet is not the steward (' + STEWARD + '). deployNext will revert if sent from here.</span>';
+    await reconcile();
+    const [bal, gp] = await Promise.all([rpc('eth_getBalance', [from, 'latest']), rpc('eth_gasPrice')]);
+    $('#who').textContent = w.info.name + ' · ' + from + ' · ' + (Number(BigInt(bal)) / 1e18).toFixed(5) + ' ETH · gas ' + (Number(BigInt(gp)) / 1e9).toFixed(3) + ' gwei · the rest of the deploy ≈ ' + (Number(BigInt(gp)) * GAS / 1e18).toFixed(4) + ' ETH';
+    $('#go').disabled = false;
+    if (await atomicOk()) { $('#one').hidden = false; $('#one').disabled = false; }
+    else $('#onesay').textContent = 'This wallet cannot batch calls, so the release goes one transaction at a time below.';
+    paint();
+  } catch (e) { paint('<span class="err">' + esc(e.message || e) + '</span>'); }
+};
+$('#reset').onclick = () => { if (confirm('Forget the addresses deployed so far? (They stay on chain.)')) { st = { chunks: Object.assign(new Array(ALL_RUNTIMES.length), REUSED) }; save(); paint(); } };
+$('#go').onclick = async () => {
+  $('#go').disabled = true;
+  try {
+    await foundP;
+    for (const i of NEEDS) {
+      if (st.chunks[i]) continue;
+      const a = await viaCreateX(i);
+      if ((await code(a)) !== ALL_RUNTIMES[i].toLowerCase()) throw new Error('chunk ' + (i + 1) + ' at ' + a + ' is not its build');
+      st.chunks[i] = a; save(); paint();
+    }
+    if (!st.next) {
+      $('#where').textContent = VANITY ? 'Finding an address for the next generation…' : 'Preparing the next generation…';
+      const r = await fetch('/mine2', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chunks: st.chunks }) });
+      if (!r.ok) throw new Error('Could not prepare the next generation: ' + (await r.text()));
+      const { data, address } = await r.json();
+      $('#where').innerHTML = 'The next generation will be at <code>' + address + '</code>, deployed by the live contract itself.';
+      st.next = await viaWrapper(data, address);
+      save();
+    }
+    await finished();
+    $('#name').hidden = false;
+  } catch (e) { paint('<span class="err">' + esc(e.message || e) + '</span>'); }
+  $('#go').disabled = false;
+};
+// The next generation read back (its page, steward and predecessor), and the manifest's "deployment" record for it.
+async function finished() {
+  const call = async (sig, to) => rpc('eth_call', [{ to, data: sig }, 'latest']);
+  const [hash, prev, steward] = await Promise.all([call('0x5b700b59', st.next), call('0x247dfaa8', st.next), call('0x637eea19', st.next)]);
+  paint(hash.toLowerCase() === PAGE_HASH.toLowerCase() && prev.slice(-40).toLowerCase() === OLD_WRAPPER.slice(2).toLowerCase() && steward.slice(-40).toLowerCase() === STEWARD.slice(2).toLowerCase()
+    ? '<span class="ok">Done: the next generation commits to this page, names the steward, and points back at the live one.</span>'
+    : '<span class="err">Deployed, but PAGE_HASH, PREVIOUS or steward does not read back as expected.</span>');
+  $('#out').hidden = false;
+  $('#out').textContent = 'manifest.json "deployment":\\n' + JSON.stringify({ chainId: 1, contract: st.next, previous: OLD_WRAPPER, pageSha256: SHA, steward: STEWARD, chunkContracts: st.chunks, routes: [
+    { kind: 'erc8244', url: 'https://' + st.next.toLowerCase() + '.w4eth.io/', serves: 'exact' },
+    { kind: 'erc4804', url: 'https://' + st.next.toLowerCase() + '.1.w3link.io/', serves: 'modified', note: "w3link injects its own script, which the page's CSP refuses; the bytes it serves are not the bytes html() returns" },
+    { kind: 'wns', url: 'https://tacit.wei.limo/', serves: 'exact' } ] }, null, 2);
+}
+// The whole release from a wallet that can batch calls (EIP-5792, a 7702 smart account): the chunks still to send, deployNext
+// at the mined address and the name pointed there, as one atomic batch, so all of it lands or none of it does. A batch is
+// kept under the 16,777,216 gas a transaction may use, so a release too large for one goes as several, in order, the name
+// last; each is read back from the chain before the next is asked for, and a press after a failure carries on from there.
+const TX_GAS = 15000000;
+async function atomicOk() {
+  try {
+    const c = await rpc('wallet_getCapabilities', [from, ['0x1']]), m = (c && (c['0x1'] || c['1'])) || {};
+    return ['supported', 'ready'].includes(m.atomic?.status) || m.atomicBatch?.supported === true;
+  } catch { return false; }
+}
+// Sends one batch and waits until landed() reads true on chain; the wallet's own status only reports a failure sooner.
+async function sendBatch(calls, label, landed) {
+  await onMainnet();
+  paint('confirm ' + label + ' in your wallet');
+  const res = await nudged(rpc('wallet_sendCalls', [{ version: '2.0.0', chainId: '0x1', from, atomicRequired: true, calls }]), label);
+  const bid = typeof res === 'string' ? res : res?.id;
+  if (!bid) throw new Error('The wallet returned no id for ' + label + '. Check its activity, then press again: what is on chain is read first.');
+  paint(label + ': waiting for the block');
+  for (;;) {
+    if (await landed()) return;
+    let s = null;
+    try { s = await rpc('wallet_getCallsStatus', [bid]); } catch {}
+    const n = typeof s?.status === 'number' ? s.status : { CONFIRMED: 200, PENDING: 100 }[s?.status] ?? 0, r = s?.receipts?.[0];
+    if (n >= 400 || (r && r.status !== '0x1' && r.status !== 1 && r.status !== 'success')) throw new Error(label + ' did not go through' + (r?.transactionHash ? ' (' + r.transactionHash + ')' : '') + ': nothing in it landed. Press again.');
+    await sleep(3000);
+  }
+}
+$('#one').onclick = async () => {
+  const say = (t) => { $('#onesay').innerHTML = t; };
+  $('#one').disabled = $('#go').disabled = true;
+  try {
+    await foundP; await onMainnet(); await reconcile();
+    // A chunk already at its planned address is used as it stands; anything else there stops it.
+    const todo = [];
+    for (const i of NEEDS) {
+      if (st.chunks[i]) continue;
+      const c = await code(PLAN[i].address);
+      if (c === ALL_RUNTIMES[i].toLowerCase()) { st.chunks[i] = PLAN[i].address; continue; }
+      if (c.length > 2) throw new Error('Something else is already at ' + PLAN[i].address + '. Nothing was sent.');
+      todo.push({ i, gas: PLAN[i].bytes * 225 + 150000, call: { to: CREATEX, data: PLAN[i].data, value: '0x0' } });
+    }
+    save(); paint();
+    say(VANITY ? 'Finding an address for the next generation…' : 'Preparing the next generation…');
+    const final = ALL_RUNTIMES.map((_, i) => st.chunks[i] || PLAN[i].address);
+    const m = await fetch('/mine2', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chunks: final }) });
+    if (!m.ok) throw new Error('Could not prepare the next generation: ' + (await m.text()));
+    const { data, address } = await m.json();
+    const owner = await rpc('eth_call', [{ to: WNS, data: '0x6352211e' + word(TOKEN) }, 'latest']), named = async () => ('0x' + (await rpc('eth_call', [{ to: WNS, data: '0x4f896d4f' + word(TOKEN) }, 'latest'])).slice(-40)).toLowerCase() === address.toLowerCase();
+    const canName = owner.slice(-40).toLowerCase() === from.slice(2).toLowerCase();
+    const tail = [];
+    if (!(await nextOk(address))) tail.push({ next: true, gas: 2600000, call: { to: OLD_WRAPPER, data, value: '0x0' } });
+    if (canName && !(await named())) tail.push({ name: true, gas: 150000, call: { to: WNS, data: '0xeba36dbd' + word(TOKEN) + word(address), value: '0x0' } });
+    const batches = [];
+    for (const x of [...todo, ...tail]) { const b = batches[batches.length - 1]; if (b && b.reduce((s, y) => s + y.gas, 0) + x.gas <= TX_GAS) b.push(x); else batches.push([x]); }
+    say('The next generation will be at <code>' + address + '</code>, deployed by the live contract itself' + (canName ? ', and ' + NAME + ' pointed there' : '') + ': ' + (batches.length || 'no') + ' transaction' + (batches.length === 1 ? '' : 's') + '.');
+    await preflight('the release', [...todo, ...tail].reduce((s, x) => s + x.gas, 0));
+    for (let k = 0; k < batches.length; k++) {
+      const b = batches[k], label = batches.length > 1 ? 'transaction ' + (k + 1) + ' of ' + batches.length : 'the release';
+      const landed = async () => (await Promise.all(b.map(async (x) => (x.i !== undefined ? (await code(PLAN[x.i].address)) === ALL_RUNTIMES[x.i].toLowerCase() : x.next ? nextOk(address) : named())))).every(Boolean);
+      await sendBatch(b.map((x) => x.call), label, landed);
+      for (const x of b) if (x.i !== undefined) st.chunks[x.i] = PLAN[x.i].address;
+      save(); paint();
+    }
+    if (!(await nextOk(address))) throw new Error('The next generation is not at ' + address + ' as expected.');
+    st.next = address; save();
+    await finished();
+    say(canName ? (await named() ? '<span class="ok">' + NAME + ' now points at ' + address + '.</span> Check https://' + NAME + '.limo/ in a minute.' : '<span class="err">' + NAME + ' does not point at ' + address + ' yet.</span>')
+      : '<span class="err">This wallet does not own ' + NAME + ', so it was not pointed: press "Point ' + NAME + ' at it" from the wallet that does.</span>');
+    if (!canName) $('#name').hidden = false;
+  } catch (e) { say('<span class="err">' + esc(e.message || e) + '</span>'); }
+  $('#one').disabled = $('#go').disabled = false;
+};
+// The name: WNS setAddr(tokenId, next) from the wallet that owns it, simulated first, then read back.
+$('#name').onclick = async () => {
+  const say = (t) => { $('#named').innerHTML = t; };
+  $('#name').disabled = true;
+  try {
+    await onMainnet();
+    [from] = await rpc('eth_accounts');
+    if (!st.next || !(await nextOk(st.next))) throw new Error('Deploy the next generation first.');
+    const data = '0xeba36dbd' + word(TOKEN) + word(st.next);
+    try { await rpc('eth_call', [{ from, to: WNS, data }, 'latest']); }
+    catch { throw new Error('Only the wallet that owns ' + NAME + ' can point it. Switch to that account in your wallet and press again.'); }
+    say('confirm in your wallet');
+    const h = await nudged(rpc('eth_sendTransaction', [{ from, to: WNS, data }]), 'pointing ' + NAME, (el) => $('#named').appendChild(el));
+    say('waiting for <code>' + esc(h) + '</code>');
+    let r = null;
+    for (let i = 0; i < 200 && !r; i++) { r = await rpc('eth_getTransactionReceipt', [h]); if (!r) await sleep(3000); }
+    if (!r || r.status !== '0x1') throw new Error('The transaction did not go through: ' + h);
+    const now = '0x' + (await rpc('eth_call', [{ to: WNS, data: '0x4f896d4f' + word(TOKEN) }, 'latest'])).slice(-40);
+    if (now.toLowerCase() !== st.next.toLowerCase()) throw new Error(NAME + ' resolves to ' + now + ', not the next generation.');
+    say('<span class="ok">' + NAME + ' now points at ' + st.next + '.</span> Check https://' + NAME + '.limo/ in a minute.');
+  } catch (e) { say('<span class="err">' + esc(e.message || e) + '</span>'); }
+  $('#name').disabled = false;
+};
+paint();
+</script></body></html>`;
+const port = Number(process.argv[2] || 8445);
+http.createServer((q, r) => {
+  const u = new URL(q.url, 'http://localhost');
+  if (u.pathname === '/mine2' && q.method === 'POST') {
+    let body = '';
+    q.on('data', (c) => { body += c; });
+    q.on('end', () => {
+      Promise.resolve().then(() => {
+        const { chunks: submitted } = JSON.parse(body);
+        if (!Array.isArray(submitted) || submitted.length !== runtimes.length || submitted.some((a) => !a)) throw new Error('expected ' + runtimes.length + ' chunk addresses, all filled');
+        return mineFor(submitted.map((a) => getAddress(a)));
+      }).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
+        (e) => { r.writeHead(500, { 'content-type': 'text/plain' }); r.end(String(e.message || e)); });
+    });
+    return;
+  }
+  if (u.pathname === '/found') {                      // which chunks the steward has already created, from its last 40 nonces
+    Promise.resolve().then(async () => {
+      const from = getAddress(STEWARD);
+      const sent = parseInt(await rpcCall('eth_getTransactionCount', [from, 'latest']), 16), nonces = [];
+      for (let n = sent - 1; n >= Math.max(0, sent - 40); n--) nonces.push(n);
+      const res = await fetch(RPC_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(nonces.map((n, k) => ({ jsonrpc: '2.0', id: k, method: 'eth_getCode', params: [getCreateAddress({ from, nonce: n }), 'latest'] }))) });
+      const out = {}, byCode = new Map(runtimes.map((r, i) => [r.toLowerCase(), i]));
+      for (const x of await res.json()) {
+        const i = byCode.get(String(x.result || '').toLowerCase());
+        if (i !== undefined && !(i in out)) out[i] = getCreateAddress({ from, nonce: nonces[x.id] });
+      }
+      return out;
+    }).then((v) => { r.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); r.end(JSON.stringify(v)); },
+      (e) => { r.writeHead(500, { 'content-type': 'text/plain' }); r.end(String(e.message || e)); });
+    return;
+  }
+  if (u.pathname === '/code') {                        // the code at an address, through the server's own node
+    const a = u.searchParams.get('a') || '';
+    if (!/^0x[0-9a-fA-F]{40}$/.test(a)) { r.writeHead(400); return r.end('an address'); }
+    rpcCall('eth_getCode', [a, 'latest']).then((c) => { r.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); r.end(c); }, (e) => { r.writeHead(502); r.end(String(e.message)); });
+    return;
+  }
+  if (u.pathname === '/addr') {                       // where a contract creation by `from` at `nonce` lands
+    try { r.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); r.end(getCreateAddress({ from: getAddress(u.searchParams.get('from')), nonce: Number(u.searchParams.get('nonce')) })); }
+    catch { r.writeHead(400); r.end(); }
+    return;
+  }
+  r.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); r.end(html);
+})
+  .listen(port, '127.0.0.1', () => console.log(`deploy tacit-pay next generation: http://127.0.0.1:${port}/  (${needsDeploy.length} of ${chunks.length} chunks changed, steward ${STEWARD}, previous ${OLD_WRAPPER})`));

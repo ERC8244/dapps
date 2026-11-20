@@ -1,0 +1,14 @@
+[
+  { "service": "rpc", "chainId": 1, "urls": ["https://ethereum-rpc.publicnode.com", "https://eth.drpc.org", "https://rpc.mevblocker.io"] },
+  { "service": "logs", "chainId": 1, "urls": ["https://mainnet.gateway.tenderly.co"] },
+  { "service": "keepers", "chainId": 1, "urls": ["https://tacit-evm-pool-keepers.onrender.com"] },
+  { "service": "bundler", "chainId": 1, "urls": ["https://public.pimlico.io/v2/1/rpc", "https://api.candide.dev/public/v3/1"] },
+  { "service": "paymasters", "chainId": 1, "urls": ["0xB0FfCdC890E969579D348F519a9C3920C2DD04a5 kohaku-v1"] },
+  { "service": "forwarders", "chainId": 1, "urls": ["https://tacit-evm-pool-forwarder.onrender.com", "https://tacit-evm-pool-forwarder-2.onrender.com"] },
+  { "service": "gateways", "chainId": 1, "urls": ["keeper https://tacit-evm-pool-keepers.onrender.com k 03dcc0e9c8f2f3f283831159600a0f1db2f615003a4d939999ff0e911894265a70", "rpc https://tacit-evm-pool-rpc.onrender.com r 033b728ecb1b4ff06af1eaf111c0efe54e2cccedcb8febc458842f1f45cd79073a"] },
+  { "service": "leaves", "chainId": 1, "urls": ["https://saga.0000000000.org"] },
+  { "service": "mirrors", "chainId": 0, "urls": ["https://tacit.finance/evm-pool/"] },
+  { "service": "tmirrors", "chainId": 0, "urls": ["https://ipfs.filebase.io/ipfs/QmfZgme9jnnCYAE2URB7xt9Lv8n52hfLd3ZWL1VKJqGUzf", "https://raw.githubusercontent.com/z0r0z/tacit/main/dapp/vendor/fixed-pool-prover_bg.wasm"] },
+  { "service": "wc", "chainId": 0, "urls": ["wss://relay.walletconnect.org"] },
+  { "service": "wcpid", "chainId": 0, "urls": ["1e8390ef1c1d8a185e035912a1409749"] }
+]

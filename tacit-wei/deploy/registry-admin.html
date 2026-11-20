@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-fDckX+Zdk5RYCb9ZuNk7jy6UHfAoRzxs/nQN+0S9r8Q='; style-src 'sha256-PQTzqpytVmAzK7Rt9AeDf2fF48bXhOJQpBYdM+JBfno='; connect-src https: http://127.0.0.1:* http://localhost:*; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>tacit pay registry</title>
+<style>
+:root { color-scheme: light dark; --bg: #f6f3ea; --card: #fffdf7; --ink: #1d1a15; --mute: #6f675a; --hair: #e2dccd; --field: #f0ebdf;
+  --ok: #2f7d4f; --err: #b3402f; --r: 10px; --tap: 36px; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16140f; --card: #1e1b16; --ink: #ece4d0; --mute: #9a917f; --hair: #36312a; --field: #24211b; --ok: #7cc48f; --err: #ec7c66; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+main { max-width: 760px; margin: 0 auto; padding: 28px 16px 96px; }
+.top { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 18px; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 0 0 6px; }
+.mute { color: var(--mute); }
+p { margin: 0; }
+section { background: var(--card); border: 1px solid var(--hair); border-radius: var(--r); padding: 14px 16px 16px; margin-bottom: 14px; }
+button { font: inherit; color: var(--bg); background: var(--ink); border: 1px solid var(--ink); border-radius: 8px; min-height: var(--tap); padding: 0 14px; cursor: pointer; }
+button.ghost, button.icon { color: var(--ink); background: transparent; border-color: var(--hair); }
+button.icon { min-width: var(--tap); padding: 0; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+ol { list-style: none; margin: 0; padding: 0; }
+.row { display: grid; grid-template-columns: 1.6em minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--hair); }
+.row:first-child { border-top: 0; }
+.ix { color: var(--mute); }
+.url { overflow-wrap: anywhere; }
+.acts { display: flex; gap: 6px; }
+.empty { color: var(--mute); padding: 6px 0; }
+.line { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+input[type=text] { flex: 1 1 240px; min-width: 0; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--hair); border-radius: 8px; min-height: var(--tap); padding: 0 10px; }
+input.short { flex: 0 1 120px; }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--ink); margin: 0; }
+.bit { display: grid; grid-template-columns: 22px 3.5em minmax(0, 1fr); gap: 8px; align-items: center; padding: 4px 0; }
+.warn { color: var(--err); font-size: 12px; }
+dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 10px 0 0; font-size: 12px; }
+dt { color: var(--mute); }
+dd { margin: 0; overflow-wrap: anywhere; }
+pre { background: var(--field); border: 1px solid var(--hair); border-radius: 8px; padding: 10px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+#who img { vertical-align: -4px; }
+#toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); border-radius: var(--r); padding: 10px 14px; font-size: 13px; }
+#toast a { color: inherit; }
+#toast:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>tacit pay registry</h1><p class="mute">The lists and switches the tacit pay page reads from TacitPayRegistry on Ethereum.</p></div>
+    <div id="who"></div>
+  </div>
+  <section>
+    <div class="line"><input type="text" id="addr" placeholder="registry address 0x…" spellcheck="false" autocomplete="off" aria-label="Registry address"><button type="button" id="go">Read</button></div>
+    <dl id="meta"></dl>
+  </section>
+  <section id="flags-card" hidden>
+    <h2>Flags</h2>
+    <p class="mute">A set bit turns the feature off. The page reads them once per session.</p>
+    <div id="bits"></div>
+    <div class="line"><span class="mute">new value</span><span id="flags-new"></span><button type="button" id="flags-go" disabled>Set flags</button></div>
+  </section>
+  <section id="seed-card" hidden>
+    <h2>Recommended entries</h2>
+    <p class="mute">What the tacit.wei page expects the registry to hold. Only missing entries are added, one transaction each from the owner wallet; nothing is removed or reordered.</p>
+    <ol id="seed-list"></ol>
+    <div class="line"><button type="button" id="seed-go" disabled>Add all missing</button></div>
+  </section>
+  <div id="lists"></div>
+  <section id="other" hidden>
+    <h2>Another list</h2>
+    <div class="line"><input type="text" id="o-svc" class="short" placeholder="service" aria-label="Service"><input type="text" id="o-chain" class="short" placeholder="chain id" aria-label="Chain id"><input type="text" id="o-url" placeholder="entry" aria-label="Entry"><button type="button" id="o-go">Add</button></div>
+  </section>
+  <section id="own" hidden>
+    <h2>Ownership</h2>
+    <p class="mute">Two steps: the owner offers, the new owner accepts. Offering 0x000…000 withdraws an offer. There is no renounce.</p>
+    <div class="line"><input type="text" id="t-to" placeholder="new owner 0x…" spellcheck="false" aria-label="New owner"><button type="button" id="t-go">Offer</button><button type="button" class="ghost" id="a-go">Accept</button></div>
+  </section>
+  <section id="pay-card" hidden>
+    <h2>Last payload</h2>
+    <p class="mute">Built for every action, so an owner that is a contract (a DAO, a Safe) can submit the same call.</p>
+    <pre id="pay"></pre>
+  </section>
+  <div id="toast" role="status" aria-live="polite"></div>
+</main>
+<script>
+'use strict';
+// Read nodes for Ethereum; ?rpc=<url> replaces them (a local fork, say). ?r=<address> names the registry.
+const Q = new URLSearchParams(location.search);
+const NODES = Q.get('rpc') ? [Q.get('rpc')] : ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io'];
+// What the page reads, in TacitPayRegistry's NatSpec order.
+const LISTS = [['rpc', 1, 'Ethereum read nodes'], ['logs', 1, 'Wide eth_getLogs nodes'], ['keepers', 1, 'Relay host, or host#0xrelayer for a relay pinned to its address'], ['bundler', 1, 'ERC-4337 bundlers'], ['gateways', 1, 'Private-route gateways: "keeper|rpc <https base> <id> <66-hex key>"'], ['paymasters', 1, 'ERC-4337 paymasters: "<address> <interface>", e.g. 0xB0Ff… kohaku-v1'],
+  ['leaves', 1, 'Tornado deposit-history caches'], ['mirrors', 0, 'Tacit proving-key mirrors'], ['tmirrors', 0, 'Tornado prover wasm mirrors'],
+  ['forwarders', 1, 'Private-route forwarders'], ['wc', 0, 'WalletConnect relay'], ['wcpid', 0, 'WalletConnect project id']];
+const BITS = ['Tornado Cash split on deposit', 'Gasless (paymaster, bundler) note withdrawals', 'Making notes from the private balance',
+  'Stop using relays from the open RelayRegistry (the page\'s own relay and the keepers list remain)', 'Swap-in into whole notes (the split zap)', 'Swap-out from whole notes (a note out as a token)',
+  'The one-transaction split forwarder (falls back to separate transactions)',
+  'Stop hybrid post-quantum memos to others (own notes keep the self form; those made are still read)', 'Stop turning post-quantum privacy on'];
+// Shapes the page can use; anything else may be written but is flagged.
+const RULE = { wc: /^wss:\/\/[\w.-]+(:\d+)?(\/\S*)?$/, wcpid: /^[0-9a-f]{32}$/, paymasters: /^0x[0-9a-fA-F]{40} [\w.-]{1,32}$/, gateways: /^(?:keeper|rpc) https:\/\/[\w.-]+(:\d+)? [a-z0-9]{1,8} (?:02|03)[0-9a-f]{64}$/ };
+const ruleOf = (svc) => RULE[svc] || /^https:\/\/\S+$/;
+const SEEDS = [{"service":"rpc","chainId":1,"urls":["https://ethereum-rpc.publicnode.com","https://eth.drpc.org","https://rpc.mevblocker.io"]},{"service":"logs","chainId":1,"urls":["https://mainnet.gateway.tenderly.co"]},{"service":"keepers","chainId":1,"urls":["https://tacit-evm-pool-keepers.onrender.com"]},{"service":"bundler","chainId":1,"urls":["https://public.pimlico.io/v2/1/rpc","https://api.candide.dev/public/v3/1"]},{"service":"paymasters","chainId":1,"urls":["0xB0FfCdC890E969579D348F519a9C3920C2DD04a5 kohaku-v1"]},{"service":"forwarders","chainId":1,"urls":["https://tacit-evm-pool-forwarder.onrender.com","https://tacit-evm-pool-forwarder-2.onrender.com"]},{"service":"gateways","chainId":1,"urls":["keeper https://tacit-evm-pool-keepers.onrender.com k 03dcc0e9c8f2f3f283831159600a0f1db2f615003a4d939999ff0e911894265a70","rpc https://tacit-evm-pool-rpc.onrender.com r 033b728ecb1b4ff06af1eaf111c0efe54e2cccedcb8febc458842f1f45cd79073a"]},{"service":"leaves","chainId":1,"urls":["https://saga.0000000000.org"]},{"service":"mirrors","chainId":0,"urls":["https://tacit.finance/evm-pool/"]},{"service":"tmirrors","chainId":0,"urls":["https://ipfs.filebase.io/ipfs/QmfZgme9jnnCYAE2URB7xt9Lv8n52hfLd3ZWL1VKJqGUzf","https://raw.githubusercontent.com/z0r0z/tacit/main/dapp/vendor/fixed-pool-prover_bg.wasm"]},{"service":"wc","chainId":0,"urls":["wss://relay.walletconnect.org"]},{"service":"wcpid","chainId":0,"urls":["1e8390ef1c1d8a185e035912a1409749"]}];
+const DEFAULT_REGISTRY = '0x0000000000029534a955A164223417fc5f4fA405';
+const ERR = { '30cd7471': 'This wallet is not the owner.', ef3ff4ae: 'That position is out of range (the list changed?).', ff633a38: 'Length mismatch.' };
+const S = { reg: '', owner: '', pending: '', flags: 0n, next: 0n, lists: {}, acct: '', wallet: null, wallets: [], busy: false };
+
+// ── encoding ──
+const te = new TextEncoder(), td = new TextDecoder();
+const lc = (x) => String(x || '').toLowerCase();
+const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a);
+const isZero = (a) => /^0x0{40}$/.test(a);
+const b2h = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+const h2b = (h) => Uint8Array.from(h.match(/../g) || [], (x) => parseInt(x, 16));
+const w = (v) => BigInt(v).toString(16).padStart(64, '0');
+const pad = (h) => h.padEnd(Math.ceil(h.length / 64) * 64, '0');
+const b32 = (s) => b2h(te.encode(s)).padEnd(64, '0');
+const strT = (s) => { const h = b2h(te.encode(s)); return w(h.length / 2) + pad(h); };
+// A tuple from its members, each { s } (static, encoded) or { d } (dynamic, encoded): heads, then tails.
+const tuple = (parts) => { let head = '', tail = ''; const k = parts.length * 32; for (const p of parts) { if (p.s != null) head += p.s; else { head += w(k + tail.length / 2); tail += p.d; } } return head + tail; };
+const word = (h, at) => BigInt('0x' + h.slice(at * 2, at * 2 + 64));
+const num = (h, at) => Number(word(h, at));
+const decStrings = (h) => { const a = num(h, 0), k = num(h, a), out = []; if (k > 256) throw new Error('too long'); for (let i = 0; i < k; i++) { const o = a + 32 + num(h, a + 32 + 32 * i), len = num(h, o); out.push(td.decode(h2b(h.slice((o + 32) * 2, (o + 32 + len) * 2)))); } return out; };
+const decWords = (h, a) => Array.from({ length: num(h, a) }, (_, i) => h.slice((a + 32 + 32 * i) * 2, (a + 64 + 32 * i) * 2));
+const svcName = (h) => td.decode(h2b(h.replace(/(00)+$/, '')));
+const C = {
+  listAt: (s, c) => '292a5f4b' + b32(s) + w(c),
+  add: (s, c, u) => '63a418e3' + tuple([{ s: b32(s) }, { s: w(c) }, { d: strT(u) }]),
+  remove: (s, c, i) => 'aceba3fd' + b32(s) + w(c) + w(i),
+  move: (s, c, a, b) => 'fd530b5e' + b32(s) + w(c) + w(a) + w(b),
+  setAt: (s, c, i, u) => '1dbd5943' + tuple([{ s: b32(s) }, { s: w(c) }, { s: w(i) }, { d: strT(u) }]),
+  setFlags: (v) => '5c9aed35' + w(v),
+  transferOwnership: (a) => 'f2fde38b' + a.slice(2).toLowerCase().padStart(64, '0'),
+  acceptOwnership: () => '79ba5097',
+};
+
+// ── reads ──
+const rpcAt = (u, method, params) => fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(12_000) })
+  .then((r) => r.json()).then((j) => { if (j.error) throw Object.assign(new Error(j.error.message || 'error'), { data: j.error.data }); return j.result; });
+async function rpc(method, params) {
+  let last;
+  for (const u of NODES) { try { return await rpcAt(u, method, params); } catch (e) { if (e.data) throw e; last = e; } }
+  throw last;
+}
+const ethCall = (data) => rpc('eth_call', [{ to: S.reg, data: '0x' + data }, 'latest']).then((r) => r.slice(2));
+const key = (s, c) => `${s}:${c}`;
+async function load() {
+  if (!isAddr(S.reg)) return;
+  // owner, pendingOwner, flags, keys
+  const [o, p, f, k] = await Promise.all(['8da5cb5b', 'e30c3978', '64cc4aa5', '307540f6'].map(ethCall));
+  if (!o || !k) throw new Error('No registry at this address.');
+  const svcs = decWords(k, num(k, 0)), chains = decWords(k, num(k, 32));
+  const extra = svcs.map((x, i) => [svcName(x), Number(BigInt('0x' + chains[i]))]).filter(([s, c]) => !LISTS.some((l) => l[0] === s && l[1] === c));
+  const all = [...LISTS.map(([s, c]) => [s, c]), ...extra];
+  const got = await Promise.all(all.map(([s, c]) => ethCall(C.listAt(s, c)).then(decStrings)));
+  S.owner = lc('0x' + o.slice(24, 64)); S.pending = lc('0x' + p.slice(24, 64)); S.flags = S.next = word(f, 0);
+  S.lists = {}; all.forEach(([s, c], i) => { S.lists[key(s, c)] = got[i]; });
+  paint();
+}
+
+// ── page ──
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) e[k] = v; else if (k === 'class') e.className = v; else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+const $ = (s) => document.querySelector(s);
+const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+let toastT;
+function toast(...parts) { clearTimeout(toastT); $('#toast').replaceChildren(...parts); toastT = setTimeout(() => { if (!S.busy) $('#toast').replaceChildren(); }, 12_000); }
+
+function paint() {
+  const loaded = !!S.owner;
+  for (const id of ['#flags-card', '#other', '#own', '#seed-card']) $(id).hidden = !loaded;
+  $('#meta').replaceChildren(...(loaded ? [el('dt', {}, 'owner'), el('dd', {}, S.owner), el('dt', {}, 'offered to'), el('dd', {}, isZero(S.pending) ? 'nobody' : S.pending),
+    el('dt', {}, 'flags'), el('dd', {}, `${S.flags} (0x${S.flags.toString(16)})`)] : []));
+  paintWho();
+  paintSeeds();
+  if (!loaded) { $('#lists').replaceChildren(); return; }
+  // One box per named bit; bits above 6 are kept as they are.
+  $('#bits').replaceChildren(...BITS.map((label, i) => {
+    const bit = 1n << BigInt(i), box = el('input', { type: 'checkbox', checked: (S.next & bit) !== 0n, 'aria-label': label });
+    box.onchange = () => { S.next = box.checked ? S.next | bit : S.next & ~bit; paint(); };
+    return el('div', { class: 'bit' }, box, el('span', { class: 'mute' }, `bit ${i}`), el('span', {}, `${label} off`, (S.flags & bit) ? el('span', { class: 'warn' }, ' (off now)') : null));
+  }), (S.flags >> 7n) ? el('p', { class: 'warn' }, `Bits above 6 are set (${(S.flags >> 7n) << 7n}); they are kept.`) : '');
+  $('#flags-new').textContent = `${S.next} (0x${S.next.toString(16)})`;
+  $('#flags-go').disabled = S.busy || S.next === S.flags;
+  $('#lists').replaceChildren(...Object.keys(S.lists).map((k) => {
+    const [s, c] = [k.slice(0, k.lastIndexOf(':')), Number(k.slice(k.lastIndexOf(':') + 1))];
+    return listCard(s, c, (LISTS.find((l) => l[0] === s && l[1] === c) || [])[2] || 'Not read by the page');
+  }));
+  $('#a-go').disabled = S.busy || !S.acct || S.acct !== S.pending;
+}
+const missing = () => SEEDS.flatMap((x) => x.urls.filter((u) => !(S.lists[key(x.service, x.chainId)] || []).includes(u)).map((u) => [x.service, x.chainId, u]));
+function paintSeeds() {
+  const m = missing();
+  $('#seed-list').replaceChildren(...(m.length ? m.map(([sv, c, u]) => el('li', { class: 'row' }, el('span', { class: 'ix' }, '+'), el('span', { class: 'url' }, el('span', { class: 'mute' }, `${sv} (chain ${c}) `), u), el('span'))) : [el('li', { class: 'empty' }, 'Everything recommended is listed.')]));
+  $('#seed-go').disabled = S.busy || !m.length || !S.acct || S.acct !== S.owner;
+  $('#seed-go').textContent = m.length ? `Add ${m.length} missing` : 'Nothing to add';
+}
+async function addMissing() {
+  for (const [sv, c, u] of missing()) { await write(C.add(sv, BigInt(c), u), `Add to ${sv}`); if ((S.lists[key(sv, c)] || []).includes(u)) continue; return toast('Stopped: that entry did not land. Fix it and press again.'); }
+  toast('All recommended entries are listed.');
+}
+$('#seed-go').onclick = addMissing;
+function listCard(s, c, label) {
+  const have = S.lists[key(s, c)] || [], fb = c !== 0 && !have.length ? S.lists[key(s, 0)] : null;
+  const inp = el('input', { type: 'text', placeholder: s === 'wcpid' ? '32 hex characters' : s === 'wc' ? 'wss://…' : 'https://…', spellcheck: 'false', autocomplete: 'off', 'aria-label': `New entry for ${s}` });
+  const note = el('span', { class: 'warn' });
+  inp.oninput = () => { const u = inp.value.trim(); note.textContent = u && !ruleOf(s).test(u) ? 'the page skips this shape' : u && have.includes(u) ? 'already listed' : ''; };
+  const rows = have.map((u, i) => el('li', { class: 'row' }, el('span', { class: 'ix' }, String(i + 1)),
+    el('span', { class: 'url' }, u, ruleOf(s).test(u) ? null : el('span', { class: 'warn' }, ' (skipped by the page)')),
+    el('span', { class: 'acts' },
+      el('button', { type: 'button', class: 'icon', title: 'Move up', 'aria-label': 'Move up', disabled: S.busy || i === 0, onclick: () => guarded(s, c, i, u, C.move(s, c, i, i - 1), 'Move up') }, '↑'),
+      el('button', { type: 'button', class: 'icon', title: 'Replace', 'aria-label': 'Replace', disabled: S.busy, onclick: () => { const v = (prompt('Replace with', u) || '').trim(); if (v && v !== u) guarded(s, c, i, u, C.setAt(s, c, i, v), 'Replace'); } }, '✎'),
+      el('button', { type: 'button', class: 'icon', title: 'Remove', 'aria-label': 'Remove', disabled: S.busy, onclick: () => guarded(s, c, i, u, C.remove(s, c, i), 'Remove') }, '✕'))));
+  return el('section', {}, el('h2', {}, `${label} `, el('span', { class: 'mute' }, `"${s}" chain ${c}`)),
+    el('ol', {}, rows.length ? rows : el('li', { class: 'empty' }, fb && fb.length ? `none: the page reads chain 0's ${fb.length}` : 'none: the page uses its own')),
+    el('div', { class: 'line' }, inp, el('button', { type: 'button', disabled: S.busy, onclick: () => { const u = inp.value.trim(); if (u) write(C.add(s, c, u), `Add to ${s}`); } }, 'Add')), note);
+}
+function paintWho() {
+  const who = $('#who');
+  if (S.acct) { who.replaceChildren(el('span', {}, short(S.acct), ' '), el('span', { class: 'mute' }, S.acct === S.owner ? 'owner' : S.acct === S.pending ? 'offered ownership' : 'not the owner: builds payloads only')); return; }
+  const ws = S.wallets.length ? S.wallets : window.ethereum ? [{ info: { name: 'wallet' }, provider: window.ethereum }] : [];
+  who.replaceChildren(...(ws.length ? ws.map((x) => el('button', { type: 'button', class: 'ghost', onclick: () => connect(x.provider) }, x.info.icon && /^data:image\//.test(x.info.icon) ? el('img', { src: x.info.icon, alt: '', width: 18, height: 18 }) : null, ` Connect ${x.info.name}`)) : [el('span', { class: 'mute' }, 'No wallet found')]));
+}
+
+// ── wallet ──
+addEventListener('eip6963:announceProvider', (e) => { const d = e.detail; if (d?.info?.uuid && d.provider && !S.wallets.some((x) => x.info.uuid === d.info.uuid)) { S.wallets.push(d); paintWho(); } });
+async function connect(p) {
+  try {
+    const [a] = await p.request({ method: 'eth_requestAccounts' });
+    S.wallet = p; S.acct = lc(a);
+    p.on?.('accountsChanged', (xs) => { S.acct = lc(xs?.[0]); paint(); });
+    paint();
+  } catch (e) { toast(e?.code === 4001 ? 'Cancelled.' : String(e?.message || e)); }
+}
+// Positional writes go only if the position still holds what was shown.
+async function guarded(s, c, i, u, data, label) {
+  const now = await ethCall(C.listAt(s, c)).then(decStrings).catch(() => null);
+  if (!now || now[i] !== u) { toast('The list changed. Reloaded; try again.'); return load(); }
+  return write(data, label);
+}
+// Every write is shown as a payload and first run as a call from the account that must send it (the owner, or for an
+// accept the address offered); it is sent only when that account is the connected wallet.
+const simulate = (from, data) => rpc('eth_call', [{ from, to: S.reg, data: '0x' + data }, 'latest']).catch((e) => { throw new Error(ERR[String(e.data || '').slice(2, 10)] || `It would fail: ${e.message}`); });
+async function write(data, label, from = S.owner) {
+  if (S.busy) return;
+  $('#pay-card').hidden = false;
+  $('#pay').textContent = JSON.stringify({ from, to: S.reg, data: '0x' + data, value: '0x0' }, null, 2);
+  S.busy = true; paint();
+  try {
+    await simulate(from, data);
+    if (!S.acct || S.acct !== lc(from)) { toast(`${label}: it would go through when sent by ${short(from)}. Payload above.`); return; }
+    if (Number(await S.wallet.request({ method: 'eth_chainId' })) !== 1) await S.wallet.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+    toast(`${label}: confirm in your wallet…`);
+    const hash = await S.wallet.request({ method: 'eth_sendTransaction', params: [{ from: S.acct, to: S.reg, data: '0x' + data }] });
+    const link = () => el('a', { href: `https://etherscan.io/tx/${hash}`, target: '_blank', rel: 'noopener noreferrer' }, short(hash));
+    toast(`${label}: sent `, link());
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const r = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
+      if (!r) continue;
+      if (r.status !== '0x1') throw new Error('The transaction failed.');
+      toast(`${label}: done `, link());
+      return;
+    }
+    throw new Error('Not in a block yet. Reload in a minute.');
+  } catch (e) { toast(e?.code === 4001 ? 'Cancelled.' : String(e?.message || e)); }
+  finally { S.busy = false; await load().catch(() => paint()); }
+}
+
+$('#flags-go').onclick = () => write(C.setFlags(S.next), 'Set flags');
+$('#o-go').onclick = () => {
+  const s = $('#o-svc').value.trim(), c = $('#o-chain').value.trim(), u = $('#o-url').value.trim();
+  if (!/^[\x21-\x7e]{1,32}$/.test(s) || !/^\d+$/.test(c) || !u) return toast('Service: 1 to 32 ASCII characters. Chain id: a number. Entry: not empty.');
+  write(C.add(s, BigInt(c), u), `Add to ${s}`);
+};
+$('#t-go').onclick = () => { const a = $('#t-to').value.trim(); if (!isAddr(a)) return toast('Not an address.'); write(C.transferOwnership(a), isZero(a) ? 'Withdraw the offer' : 'Offer ownership'); };
+$('#a-go').onclick = () => write(C.acceptOwnership(), 'Accept ownership', S.pending);
+$('#go').onclick = () => {
+  const a = $('#addr').value.trim();
+  if (!isAddr(a)) return toast('Not an address.');
+  S.reg = a; S.owner = '';
+  try { localStorage.setItem('tacit-pay-registry', a); } catch {}
+  paint(); load().catch((e) => toast(`Could not read the registry: ${e?.message || e}`));
+};
+let saved = '';
+try { saved = localStorage.getItem('tacit-pay-registry') || ''; } catch {}
+$('#addr').value = Q.get('r') || saved || DEFAULT_REGISTRY;
+paint();
+dispatchEvent(new Event('eip6963:requestProvider'));
+if (isAddr($('#addr').value)) $('#go').onclick();
+</script>
+</body>
+</html>

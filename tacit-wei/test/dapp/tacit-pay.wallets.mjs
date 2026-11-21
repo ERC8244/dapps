@@ -72,6 +72,13 @@ const WALLET = `(() => {
         if (method === 'wallet_addEthereumChain') { st.known.add(params[0].chainId); window.__added = params[0]; if (w.addSwitches !== false) { st.chain = params[0].chainId; p.emit('chainChanged', st.chain); } return null; }
         if (method === 'eth_getCode') return w.code || '0x';
         // dropQuick: a popup still closing drops a signature request that comes within that many ms of the last answer
+        // plan: what the wallet does with each signature request in turn ('reject', 'hang', 'slow' = answered after 16 s)
+        if (method === 'personal_sign' && w.plan) {
+          const k = w.plan[(st.calls = (st.calls || 0) + 1) - 1];
+          if (k === 'reject') throw err(4001, 'User rejected the request.');
+          if (k === 'hang') return new Promise(() => {});
+          if (k === 'slow') await new Promise((r) => setTimeout(r, 16_000));
+        }
         if (method === 'personal_sign') { if (w.dropQuick && Date.now() - (st.answered || 0) < w.dropQuick) return new Promise(() => {}); const r = await window.__sign(i, params[0], ++st.signs, w.sig || 'ok'); st.answered = Date.now(); return r; }
         if (method === 'eth_sendTransaction') { window.__sent = params[0]; return '0x' + 'ab'.repeat(32); }
         throw err(4200, 'not in this test: ' + method);
@@ -236,6 +243,54 @@ for (const [w, want, what] of [
   ok(await settled(p), `${what}: the button comes back`);
   ok(want.test(await sayText(p)), `${what}: is refused, and told why`, await sayText(p));
   ok(!/^tacit1/.test(await label(p)), `${what}: nothing opened`);
+  if (w.sig === 'drift') {
+    const n = (await log(p)).filter((x) => x === '0:personal_sign').length;
+    await p.click('#sheet-wallet [data-in="eth"]');
+    ok(await settled(p), 'pressed again: the button comes back');
+    ok((await log(p)).filter((x) => x === '0:personal_sign').length === n && /differently/i.test(await sayText(p)), 'and the wallet is asked nothing more, with the same reason', `${n} → ${(await log(p)).join()}`);
+  }
+  await p.context().close();
+}
+
+console.log('the signatures of a first sign-in, as wallets answer them');
+{
+  // The first request is answered late (16 s), past the offer to ask again; the request asked again is one the wallet
+  // only queued, and never answers: the first answer is the one taken.
+  const p = await open([{...ALPHA, plan: ['slow', 'hang']}]);
+  await signInFromHeader(p);
+  ok(await until(p, () => !!document.querySelector('[data-reask]'), null, 20_000), 'a slow wallet: "Ask again" is offered after 15 s');
+  await p.click('[data-reask]');
+  ok(await until(p, () => /^tacit1/.test(document.querySelector('#wallet-label').textContent), null, 20_000), 'the first request, answered late, still opens the key', (await log(p)).join());
+  ok((await log(p)).filter((x) => x === '0:personal_sign').length === 3, 'with the check asked once', (await log(p)).join());
+  await p.context().close();
+}
+{
+  const p = await open([{...ALPHA, plan: ['ok', 'reject']}]);
+  await signInFromHeader(p);
+  ok(await settled(p), 'the check refused: the button comes back');
+  ok(!/^tacit1/.test(await label(p)), 'and nothing is opened yet');
+  await p.click('#sheet-wallet [data-in="eth"]');
+  ok(await opened(p), 'pressed again, the key opens');
+  ok((await log(p)).filter((x) => x === '0:personal_sign').length === 3, 'asking only for the check the second time', (await log(p)).join());
+  await p.context().close();
+}
+{
+  const p = await open([{...ALPHA, plan: ['reject']}]);
+  await signInFromHeader(p);
+  ok(await settled(p), 'the first signature refused: the button comes back');
+  await p.click('#sheet-wallet [data-in="eth"]');
+  ok(await opened(p), 'pressed again, the key opens');
+  ok((await log(p)).filter((x) => x === '0:personal_sign').length === 3, 'with the two signatures of a first sign-in', (await log(p)).join());
+  await p.context().close();
+}
+{
+  // Pressed twice, and the account announced again while the wallet asks: one sign-in, two signatures.
+  const p = await open([ALPHA]);
+  await p.click('#wallet');
+  await p.click('#sheet-wallet [data-in="eth"]');
+  await p.evaluate(() => { window.__wallets[0].emit('accountsChanged', [window.__WALLETS[0].account]); document.querySelector('#sheet-wallet [data-in="eth"]')?.click(); document.querySelector('#form [data-in="eth"]')?.click(); });
+  ok(await opened(p), 'presses and events while it signs: the key opens');
+  ok((await log(p)).filter((x) => x === '0:personal_sign').length === 2, 'with two signatures, no more', (await log(p)).join());
   await p.context().close();
 }
 {

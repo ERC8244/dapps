@@ -85,15 +85,15 @@ const answer = (host, {method, params}) => {
   // read: these two say they are on another chain (registry-wrong.example is listed for Ethereum), the rest on Ethereum.
   if (method === 'eth_chainId') return ['example.org', 'registry-wrong.example'].includes(host) ? '0x2105' : '0x1';
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
-  // TacitPayRegistry.read([rpc, logs, keepers, bundler, leaves, forwarders, mirrors, tmirrors, wc, wcpid, copies, paymasters], [1 ×6, 0 ×5, 1]), and only that.
+  // TacitPayRegistry.read([rpc, logs, keepers, bundler, leaves, forwarders, mirrors, tmirrors, wc, wcpid, copies, paymasters, gateways], [1 ×6, 0 ×5, 1, 1]), and only that.
   if (to === TPR && data.startsWith('0x78f142e8')) {
     const [keys, ids] = coder.decode(['bytes32[]', 'uint256[]'], '0x' + data.slice(10)), names = keys.map((k) => Buffer.from(k.slice(2), 'hex').toString().replace(/\0+$/, ''));
-    if (names.join() !== 'rpc,logs,keepers,bundler,leaves,forwarders,mirrors,tmirrors,wc,wcpid,copies,paymasters' || ids.join() !== '1,1,1,1,1,1,0,0,0,0,0,1') throw {rpcError: {code: 3, message: 'execution reverted'}};
+    if (names.join() !== 'rpc,logs,keepers,bundler,leaves,forwarders,mirrors,tmirrors,wc,wcpid,copies,paymasters,gateways' || ids.join() !== '1,1,1,1,1,1,0,0,0,0,0,1,1') throw {rpcError: {code: 3, message: 'execution reverted'}};
     return coder.encode(['uint256', 'string[][]'], [5n, [['https://registry-wrong.example', 'https://registry-eth.example', 'http://insecure.example', 'https://ethereum-rpc.publicnode.com'], ['https://registry-logs.example'],
       ['http://insecure.example', 'https://registry-keepers.example/?x=1', 'https://registry-keepers.example'], ['http://insecure.example', 'https://registry-bundler.example/v1/rpc'], ['https://registry-leaves.example'],
       ['https://registry-fwd.example/path', 'https://registry-fwd.example'], ['https://registry-mirror.example/ipfs/x', 'https://registry-mirror.example/evm-pool/'], ['https://registry-tmirror.example/', 'https://registry-tmirror.example/prover.wasm'],
       ['wss://relay.walletconnect.org/path', 'wss://relay.walletconnect.org'], ['NOT-AN-ID', '0123456789abcdef0123456789abcdef'], ['http://insecure.example', 'https://registry-copy.example'],
-      ['http://insecure.example', '0x2222222222222222222222222222222222222222 kohaku-v1', 'not an entry', '0x2222222222222222222222222222222222222222 kohaku-v1']]]);
+      ['http://insecure.example', '0x2222222222222222222222222222222222222222 kohaku-v1', 'not an entry', '0x2222222222222222222222222222222222222222 kohaku-v1'], ['not a gateway']]]);
   }
   if ([WNS, GNS, R_DIRECT].includes(to) && data.startsWith('0x59d1d43c')) {
     const rec = RECORDS['0x' + data.slice(10, 74)];

@@ -1618,7 +1618,7 @@ const bj = (() => {
     const P = [x, y], Q = mulPoint(P, BJ_L);
     return Q[0] === 0n && Q[1] === 1n ? P : null;
   };
-  return { mulB8, add, pack, unpack, mul: mulPoint };
+  return { mulB8, add, pack, unpack, mul: mulPoint, sqrt };
 })();
 
 // ── pool keys, notes and the tree (transact.circom) ──

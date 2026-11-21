@@ -3395,7 +3395,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (keys.pq !== root) throw rootMoved();
     if (q?.rl) cur = q.rl;
     carried = null;
-    const pre = ahead && ins.length && nextAttempt(ins[0].nf, ahead.attempt) != null ? ahead : null;
+    const pre = ahead && (ins.length ? nextAttempt(ins[0].nf, ahead.attempt) != null : !q && ahead.pay?.kind === 'deposit' && ahead.pay.amount === String(ext)) ? ahead : null;
     if (ahead && !pre) ahead.dead = true;
     const attempt = pre ? pre.attempt : ins.length ? nextAttempt(ins[0].nf) : 0;
     const sealed = pre ? pre.sealed : sealOuts(ins, outs, attempt, plain);
@@ -3462,7 +3462,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         w = buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => ({ v: o.v, npk: o.npk, rho: o.rho })), extAmount: ext, fee, extDataHash: eh });
         // The proof made ahead, when it starts where this one must: the same tree, so the same proof.
         const at = pre && !round && !pre.dead && pre.treeIn ? await pre.tree : null;
-        if (at && at.size === start && at.root === tree.root) { if (!pre.proved) onStep('proving'); proved = await pre.ready; }
+        // its witness with it: a dummy input's nullifier differs from one witness to the next, and the landing is matched by it
+        if (at && at.size === start && at.root === tree.root) { if (!pre.proved) onStep('proving'); proved = await pre.ready; if (proved && pre.w) w = pre.w; }
         if (pre) pre.dead = true;
         if (!proved) {
           onStep('proving');
@@ -3725,6 +3726,26 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // found, or a root forgotten, after the proof was made makes it another payment's).
   const sealKey = (to) => `${rootTag()}|${!chain.pqWrite || chain.pqWrite() ? 1 : 0}|${to?.ek ? hex(kemHash(to.ek).subarray(0, 8)) : ''}`;
   const aheadKey = (pay, q, ins, to) => `${pay.kind}|${payKey(pay)}|${pay.amount}|${q?.fee}|${lc(String(q?.relayer))}|${ins.map((n) => String(n.nf)).join('|')}|${sealKey(to)}`;
+  // A deposit into this key's own balance, sent from the wallet, proved while its form is still: on the synced tree the press
+  // proves on, and checked through the wallet's node as that one would be. The press uses it when the tree has not moved.
+  const depKey = (a, plain = false) => `deposit|${a}|${sealKey(null)}|${plain ? 1 : 0}`;
+  function proveAheadDeposit(amount) {
+    if (stopped) return;
+    const a = BigInt(amount), key = depKey(a);
+    if (a <= 0n || a >= 1n << 120n || (early && !early.dead && early.key === key)) return;
+    if (early) early.dead = true;
+    const sealed = sealOuts([], [{ to: keys, value: a }, null], 0);
+    const me = early = { key, base: key, pay: { kind: 'deposit', amount: String(a) }, q: null, attempt: 0, sealed, at: Date.now(), dead: false, proved: false };
+    me.tree = sync().then(() => { me.treeIn = true; return state().tree; });
+    me.ready = me.tree.then(async (tree) => {
+      if (me.dead) return null;
+      const eh = extDataHash({ chainId: chain.chainId, pool: chain.pool, recipient: ZERO_ADDRESS, extAmount: a, relayer: ZERO_ADDRESS, fee: 0n, memo0: sealed[0].memo, memo1: sealed[1].memo });
+      const w = me.w = buildWitness({ asset, tree, inputs: [{ dummy: true }, { dummy: true }], outputs: sealed.map((o) => ({ v: o.v, npk: o.npk, rho: o.rho })), extAmount: a, fee: 0n, extDataHash: eh });
+      const proved = await prove(w.input, { ...chain, rpc: own() }, () => !me.dead);
+      me.proved = !me.dead;
+      return proved;
+    }).catch(() => null);
+  }
   function proveAhead({ to, amount, out, q }) {
     if (stopped || !q) return;
     joinHolds();
@@ -3744,7 +3765,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (!tree || me.dead) return null;
       const inputs = [...ins.map((n) => ({ v: BigInt(n.v), rho: BigInt(n.rho), nk: n.nk, sk: n.sk, index: n.index })), ...Array(2 - ins.length).fill({ dummy: true })];
       const eh = extDataHash({ chainId: chain.chainId, pool: chain.pool, recipient, extAmount: ext, relayer: q.relayer, fee, memo0: sealed[0].memo, memo1: sealed[1].memo });
-      const w = buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => ({ v: o.v, npk: o.npk, rho: o.rho })), extAmount: ext, fee, extDataHash: eh });
+      const w = me.w = buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => ({ v: o.v, npk: o.npk, rho: o.rho })), extAmount: ext, fee, extDataHash: eh });
       const proved = await prove(w.input, { ...chain, rpc: null }, () => !me.dead);
       me.proved = !me.dead;
       return proved;
@@ -3774,7 +3795,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   }
 
   return {
-    asset, sync, summary, notes: unspent, spendable, history: () => state().rows, landed: () => saved.landed || [], consolidate, reseal, oldValue: () => oldNotes().reduce((s, n) => s + BigInt(n.v), 0n), inflight, retry, proveAhead,
+    asset, sync, summary, notes: unspent, spendable, history: () => state().rows, landed: () => saved.landed || [], consolidate, reseal, oldValue: () => oldNotes().reduce((s, n) => s + BigInt(n.v), 0n), inflight, retry, proveAhead, proveAheadDeposit,
     // `classical`: index i's address from before the root, which an older link or an exchange may still pay.
     receiveBox: (i = 0, classical = false) => boxOf(i, classical),
     quote: (gas = null) => choose(gas, 300_000, false),
@@ -3860,7 +3881,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (a <= 0n) throw new Error('Enter an amount.');
       if (a >= 1n << 120n) throw new Error('That amount is out of range.');
       const before = (await sync()).balance;
-      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep, guard, through, plain });
+      const ahead = to === keys && !through && early && !early.dead && early.key === depKey(a, plain) ? early : null;
+      const h = await transact({ ins: [], outs: [{ to, value: a }, null], ext: a, onStep, guard, through, plain, ahead });
       if (to === keys) await waitFor(() => summary().balance >= before + a, 60_000).catch(() => {});
       return h;
     },
@@ -6404,6 +6426,11 @@ const proveSoon = (c, p, st = CH[c.chainId]) => {
   clearTimeout(AHEAD);
   AHEAD = setTimeout(() => { if (!S.busy && S.key && PROVER.state === 'ready' && st.quote && st.W && c === S.chain) st.W.proveAhead({ ...p, q: st.quote }); }, 1200);
 };
+// A deposit from the wallet into this key's own balance, the same way: proved while the form is still, sent at the press.
+const depositSoon = (c, a, st = CH[c.chainId]) => {
+  clearTimeout(AHEAD);
+  AHEAD = setTimeout(() => { if (!S.busy && S.key && S.account && PROVER.state === 'ready' && st.W && c === S.chain) st.W.proveAheadDeposit(a); }, 1200);
+};
 // The ETH | token switch under an amount: an amount switched back unchanged returns as it was typed; otherwise it is carried
 // to the other unit as that reads it (`tokOf(a)`: the token side of `a` ETH, or ''). `wasKey`/`inKey`: where the form keeps
 // the last switch and that the amount is in the token (`here`).
@@ -6569,6 +6596,7 @@ function formShield(f) {
       const p = splitOf(a, t);
       say(p ? html`${kvRow('Into whole notes', `${fmt(p.noteTotal)} ETH`)}${p.remainder ? kvRow('Ready to pay', `${fmt(p.remainder, 18)} ETH`) : ''}` : html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a, 18)} ETH`)}`);
       go.disabled = false;
+      if (t.self && !p) depositSoon(c, a);
     };
     go.onclick = () => {
       if (!S.account) return connectHere();

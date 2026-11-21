@@ -480,6 +480,21 @@ console.log('\na proof made ahead under the root, the words forgotten before the
   relay.restore();
 }
 
+console.log('\na deposit proved while its form was still: the press sends that proof');
+{
+  const proofs = [], {wallet} = mkWorld({onProve: () => proofs.push(1)});
+  const A = wallet(93);
+  const wait = async (n) => { for (let i = 0; i < 300 && proofs.length < n; i++) await new Promise((r) => setTimeout(r, 20)); };
+  A.W.proveAheadDeposit(2n * E / 100n);
+  await wait(1);
+  const h = await A.W.deposit({amount: 2n * E / 100n}).catch((x) => x);
+  ok(typeof h === 'string' && proofs.length === 1 && A.W.summary().balance === 2n * E / 100n, 'one proof in all: made ahead, used at the press', `${h?.message ?? ''} ${proofs.length} proofs`);
+  A.W.proveAheadDeposit(3n * E / 100n);
+  await wait(2);
+  const h2 = await A.W.deposit({amount: 4n * E / 100n}).catch((x) => x);
+  ok(typeof h2 === 'string' && proofs.length === 3 && A.W.summary().balance === 6n * E / 100n, 'another amount at the press is proved again', `${h2?.message ?? ''} ${proofs.length} proofs`);
+}
+
 console.log('\na held payment to a post-quantum address, tried again: still sealed to the payee\'s key');
 {
   const world = mkWorld(), {node} = world;

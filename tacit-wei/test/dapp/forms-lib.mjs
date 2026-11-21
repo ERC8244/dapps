@@ -288,4 +288,4 @@ export const toasts = (p) => p.evaluate(() => window.__toasts.splice(0));
 let failures = 0;
 export const ok = (c, m, x = '') => { console.log((c ? '  PASS  ' : '  FAIL  ') + m + (x !== '' && !c ? '  ' + x : '')); if (!c) failures++; return c; };
 export const info = (m, x = '') => console.log('  INFO  ' + m + (x !== '' ? '  ' + x : ''));
-export const done = async () => { await shutdown(); console.log(failures ? `\n${failures} FAILED` : '\ndone'); process.exit(0); };
+export const done = async () => { await shutdown(); console.log(failures ? `\n${failures} FAILED` : '\ndone'); process.exit(failures ? 1 : 0); };

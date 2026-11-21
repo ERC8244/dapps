@@ -43,7 +43,12 @@ CREATE2 (so the successor's `PREVIOUS` is unforgeable) from creation code built 
 5. **setAddr.** Offered only once the live version's `successor()` is the predicted address and the successor reads back
    with this page's `PAGE_HASH`, the multisig as steward and the live version as `PREVIOUS`. Queue and release it the
    same way (`--execute setAddr 0x<signatures>`, then `executeQueued`).
-6. **Read back.** `--plan` reports `done` once `tacit.wei` resolves to the successor and `https://tacit.wei.limo/` serves
+6. **setGwei.** `tacit.gwei` (GNS `0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6`, served at `https://tacit.gwei.limo/`) is
+   pointed the same way: `setAddr(namehash("tacit.gwei"), successor)` on GNS. While the name's owner is an account rather
+   than the multisig, that account sends this one transaction (the helper prints it, about 41k gas); once the multisig
+   owns the name, it is queued like setAddr. Until it is sent, tacit.gwei.limo keeps serving the earlier version, which
+   shows its "newer version" link.
+7. **Read back.** `--plan` reports `done` once `tacit.wei` resolves to the successor and `https://tacit.wei.limo/` serves
    bytes with the manifest's SHA-256, and prints the `deployment` record for `manifest.json`. Then
    `node deploy/check-deployment.mjs https://ethereum-rpc.publicnode.com <successor> dapp/page.min.html`, verify the
    successor on Sourcify and Etherscan (solc 0.8.30, 200 runs, prague), and check the "newer version" link on

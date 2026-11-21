@@ -11,7 +11,9 @@
 //      The successor's steward is the multisig.
 //   3. setAddr. Offered only once the live version's successor() is that address and the successor commits to this page.
 //      It is a call from the multisig to WNS: setAddr(namehash("tacit.wei"), successor).
-//   4. Read-back: the successor's PAGE_HASH, steward and PREVIOUS, what tacit.wei resolves to, and the SHA-256 of what
+//   4. setGwei. Then tacit.gwei (GNS) is pointed the same way: setAddr(namehash("tacit.gwei"), successor) on GNS, a multisig
+//      op when the multisig owns the name, else one transaction from the account that owns it.
+//   5. Read-back: the successor's PAGE_HASH, steward and PREVIOUS, what tacit.wei resolves to, and the SHA-256 of what
 //      https://tacit.wei.limo/ serves.
 // Steps 2 and 3 are never sent from here. For each, the helper prints the call (target, value, data), the multisig's op
 // id for it (getTransactionHash, asked of the multisig itself), the execute(...) call that queues it once two owners
@@ -45,9 +47,11 @@ const OUT = (process.env.OUT || DIR + 'out').replace(/\/?$/, '/');
 const OPS = '0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2';
 const LINEAGE = process.env.LINEAGE || '0x000000000009dde9bb333bbad42ad74bbacc2bd6';
 const NAME = 'tacit.wei', WNS = '0x0000000000696760e15f265e828db644a0c242eb', LIMO = 'https://tacit.wei.limo/';
+// tacit.gwei (GNS) serves the same page; its record follows tacit.wei's, sent by whoever owns the name.
+const GNAME = 'tacit.gwei', GNS = '0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6', GLIMO = 'https://tacit.gwei.limo/';
 const CREATEX = '0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed';
 // Gas limits for the release transactions: deployNext estimates near 2.45M from the multisig.
-const RELEASE_GAS = { deployNext: 3_500_000, setAddr: 200_000 };
+const RELEASE_GAS = { deployNext: 3_500_000, setAddr: 200_000, setGwei: 200_000 };
 
 const argv = process.argv.slice(2);
 const MODE = argv.includes('--sim') ? 'sim' : argv.includes('--plan') ? 'plan' : argv.includes('--execute') ? 'execute' : 'serve';
@@ -97,7 +101,7 @@ const nameOf = async (a) => { try { return abi.decode(['string'], await callAt(a
 
 // ── the lineage, read from mainnet ──
 const pageHash = keccak256(page);
-const TOKEN = namehash(NAME);
+const TOKEN = namehash(NAME), GTOKEN = namehash(GNAME);
 const tip = addrOf(await view(LINEAGE, 'latest()'));
 if ((await nameOf(tip)) !== NAME) throw new Error(`${tip} (the tip of ${LINEAGE}) is not a ${NAME} page contract`);
 // The tip already holding this page means deployNext has run: the version before it is the one being extended. In --sim
@@ -154,6 +158,7 @@ const salt = landed ? null : await saltFor();
 const predicted = landed ?? create2Address(base, salt, initcodeHash);
 const deployNextData = landed ? null : enc('deployNext(bytes,bytes32)', ['bytes', 'bytes32'], [initcode, salt]);
 const setAddrData = '0xeba36dbd' + TOKEN.slice(2) + predicted.slice(2).toLowerCase().padStart(64, '0');
+const setGweiData = '0xeba36dbd' + GTOKEN.slice(2) + predicted.slice(2).toLowerCase().padStart(64, '0');
 
 // ── the multisig's queue ──
 // The op id for (target, value 0, data) at a nonce, asked of the multisig; an op already queued is found by its queued()
@@ -207,12 +212,19 @@ async function status() {
   if (!next.pageHash || !next.steward || !next.previous) return { ...head, step: 'stop', next, error: 'the successor does not read back as built' };
   const resolved = addrOf(await callAt(WNS, '0x4f896d4f' + TOKEN.slice(2)));
   if (resolved !== succ) return { ...head, next, resolved, ...(await stepCall('setAddr', WNS, setAddrData)) };
+  // tacit.gwei next: a multisig op when the multisig owns it, else one transaction from the name's owner.
+  const gResolved = addrOf(await callAt(GNS, '0x4f896d4f' + GTOKEN.slice(2)));
+  if (gResolved !== succ) {
+    const gOwner = addrOf(await callAt(GNS, '0x6352211e' + GTOKEN.slice(2)));
+    if (gOwner === getAddress(OPS)) return { ...head, next, resolved, gResolved, ...(await stepCall('setGwei', GNS, setGweiData)) };
+    return { ...head, next, resolved, gResolved, step: 'setGwei', call: { from: gOwner, to: GNS, value: '0', data: setGweiData }, note: `${GNAME} is owned by ${gOwner}, not the multisig: that account sends this one transaction (or moves the name to the multisig first)` };
+  }
   let limo;
   try { const b = Buffer.from(await (await fetch(LIMO, { signal: AbortSignal.timeout(60_000) })).arrayBuffer()); limo = { bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') }; limo.same = limo.sha256 === manifest.sha256; } catch (e) { limo = { error: String(e.message || e) }; }
   return { ...head, step: limo.same ? 'done' : 'serving', next, resolved, limo,
     note: limo.same ? `${NAME} serves this page from ${succ}` : `${NAME} resolves to ${succ}; ${LIMO} does not serve this page yet (it may hold a page for a few minutes)`,
     deployment: { chainId: 1, contract: succ, previous: base, steward: OPS, pageSha256: manifest.sha256, chunkContracts: finalChunks, routes: [
-      { kind: 'erc8244', url: 'https://' + lc(succ) + '.w4eth.io/', serves: 'exact' }, { kind: 'wns', url: LIMO, serves: 'exact' }] } };
+      { kind: 'erc8244', url: 'https://' + lc(succ) + '.w4eth.io/', serves: 'exact' }, { kind: 'wns', url: LIMO, serves: 'exact' }, { kind: 'gns', url: GLIMO, serves: 'exact' }] } };
 }
 
 if (MODE === 'plan') { console.log(JSON.stringify(await status(), null, 2)); process.exit(0); }
@@ -249,6 +261,7 @@ if (MODE === 'sim') {
     deployNext: { to: base, calldataBytes: (deployNextData.length - 2) / 2, gasFromMultisig: await est(tx, override), gasFromAnotherAccount: await est({ ...tx, from: CREATEX }, override),
       opIdAtNextNonce: await word(OPS, hashCall(base, deployNextData, nonce)), nonce },
     setAddr: { to: WNS, data: setAddrData, gasFromMultisig: await est({ from: OPS, to: WNS, data: setAddrData }, {}) },
+    setGwei: await (async () => { const owner = addrOf(await callAt(GNS, '0x6352211e' + GTOKEN.slice(2))); return { to: GNS, data: setGweiData, owner, ownerIsMultisig: owner === getAddress(OPS), gasFromOwner: await est({ from: owner, to: GNS, data: setGweiData }, {}) }; })(),
   }, null, 2));
   process.exit(0);
 }

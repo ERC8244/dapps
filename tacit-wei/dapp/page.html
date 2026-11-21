@@ -3221,7 +3221,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (bad) {
         const d = String(bad.error?.data || bad.returnData || '');
         if (RACED.has(d.slice(0, 10))) return null;
-        throw Object.assign(new Error(`This would fail on chain${bad.error?.message ? ` (${String(bad.error.message).slice(0, 120)})` : ''}, so nothing was sent.`), { rpc: { data: d } });
+        throw Object.assign(new Error('This would fail on chain, so nothing was sent.'), { rpc: { data: d } });
       }
       onStep('confirm in your wallet');
       const undo = handOut();
@@ -3494,7 +3494,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
           if (need > fee && need <= fee * 3n / 2n + hair && (q.expect == null || need <= BigInt(q.expect) * 6n / 5n + hair) && k >= 0 && BigInt(outs[k].value) > need - fee) {
             await cancel(slot); undoHold();
             const less = outs.map((o, j) => (j === k ? { ...o, value: BigInt(o.value) - (need - fee) } : o));
-            return transact({ ins, outs: less, ext, recipient, q: { ...(await vetGas(vet({ ...q, fee: String(need) }), pay?.gas)), refee: true }, onStep, guard, pay, call, plain, root, fresh });
+            return transact({ ins, outs: less, ext, recipient, q: { ...(await vetGas(vet({ ...q, fee: String(need) }, q.rl?.relayer), pay?.gas)), refee: true }, onStep, guard, pay, call, plain, root, fresh });
           }
           await cancel(slot); undoHold();
           throw refusal(Object.assign(new Error(`The relay asks ${feeStr(need)} for this, more than it quoted (${feeStr(fee)}), so nothing was sent.`), { relay: true }), start);
@@ -4096,9 +4096,9 @@ function errText(e) {
   if (/rate.?limit|too many requests|(?:http|status|code) ?429|\(429\)/i.test(m)) return 'The network is busy. Try again in a moment.';
   if (/timed? ?out|timeout|aborted/i.test(m)) return 'The network took too long to answer. Try again.';
   if (shortOfMemory(e)) return SHORT_OF_MEMORY;
-  if (/so nothing was sent/.test(m)) return m.slice(0, 240);
+  if (/so nothing was sent/.test(m)) return m.replace(/\p{C}+/gu, ' ').slice(0, 240);
   if (e?.rpc || e?.all || e instanceof SyntaxError || e instanceof TypeError) return 'A node answered with an error. Try again in a moment.';
-  return m.replace(/^Error:\s*/, '').slice(0, 240);
+  return m.replace(/\p{C}+/gu, ' ').replace(/^Error:\s*/, '').slice(0, 240);
 }
 const relayTrouble = (e) => /relay|failed to fetch|\b5\d\d\b|timed? ?out/i.test(String(e?.message || e));
 
@@ -4143,7 +4143,7 @@ const headNodes = (c) => (mineOf(c).length ? mineOf(c) : nodesOf(c));
 // ABI string[] and string[][] at byte `at` of a reply.
 const abiStrings = (b, at) => { const n = Number(big(b.subarray(at, at + 32))), out = []; if (n > 64) throw new Error('too many'); for (let i = 0; i < n; i++) { const o = at + 32 + Number(big(b.subarray(at + 32 + 32 * i, at + 64 + 32 * i))), len = Number(big(b.subarray(o, o + 32))); if (o + 32 + len > b.length) throw new Error('short'); out.push(new TextDecoder().decode(b.subarray(o + 32, o + 32 + len))); } return out; };
 const abiStringLists = (b, at) => { const n = Number(big(b.subarray(at, at + 32))), out = []; if (n > 16) throw new Error('too many'); for (let i = 0; i < n; i++) out.push(abiStrings(b, at + 32 + Number(big(b.subarray(at + 32 + 32 * i, at + 64 + 32 * i))))); return out; };
-const goodUrl = (u) => /^https:\/\/\S+$/.test(u);
+const goodUrl = (u) => typeof u === 'string' && u.length <= 300 && /^https:\/\/[\w.-]+(?::\d{1,5})?(?:[/?#]\S*)?$/.test(u);
 // The chain a node says it is on; NaN when it does not answer. The pool is at the same address on every chain, so a node
 // on another chain would show that chain's notes as this one's.
 const chainIdAt = (u) => rpcPost(u, '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}', 10_000).then((r) => r.json()).then((j) => Number(j.result), () => NaN);
@@ -5313,7 +5313,7 @@ async function keyFromWallet(say) {
     if (b[64] !== 27 && b[64] !== 28) throw new Error('Your wallet signs in a format that cannot hold a Tacit key. Use an ordinary account.');
     return b;
   };
-  const kept = first && HALF?.a === a && Date.now() - HALF.at < 600_000 ? HALF.sig : null;
+  const kept = first && HALF?.who === who && Date.now() - HALF.at < 600_000 ? HALF.sig : null;
   HALF = null;
   const sig = kept || await signed(first ? 'Sign “Tacit identity” in your wallet to open your Tacit key (1 of 2: the first time on a device, it is asked twice).' : 'Sign “Tacit identity” in your wallet to open your Tacit key.');
   const P = secp.recover(keccak(cat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg)), big(sig.subarray(0, 32)), big(sig.subarray(32, 64)), sig[64] - 27);
@@ -5321,7 +5321,7 @@ async function keyFromWallet(say) {
   if ('0x' + hex(keccak(cat(be(x), be(y))).subarray(12)) !== a) throw new Error(/^0xef0100/i.test(code) ? 'Your wallet signs like a smart-contract wallet, which cannot open a Tacit key. Use an ordinary account.' : 'That signature is from another account. Switch accounts and try again.');
   if (big(sig.subarray(32, 64)) > SN / 2n) throw new Error('Your wallet returned a signature in an unusual form, so no key was opened. Try another wallet.');
   if (first) {
-    HALF = { a, sig, at: Date.now() };
+    HALF = { who, sig, at: Date.now() };
     // said at once: the first prompt has closed, and the old line would still say it is open while the pause runs
     if (!kept) { say('Got the first signature. Your wallet will ask once more, to confirm (2 of 2).'); await popupClosed(); }
     const again = await signed('Sign once more to confirm your wallet gives the same key (2 of 2, only the first time on a device).');
@@ -5459,10 +5459,13 @@ function pqMine(then) {
 
 // What belongs to the key that was open goes with it: its engines and box reads, its sealed values as last opened, and
 // (`all`) the times, drafts and picks made under it; a first sign-in keeps what was typed before it.
+// The post-quantum words being shown or checked belong to the key that is open: another key never gets them.
+const PQUI = { step: null, root: null, ask: null, err: '' };
 const forgetKey = (all) => {
   for (const c of CHAINS) CH[c.chainId].W?.stop();
   for (const k of Object.keys(BOXQ)) delete BOXQ[k];
-  VAULT.clear(); RECV.s = null; RECV.for = '';
+  VAULT.clear(); RECV.s = null; RECV.for = ''; HALF = null;
+  Object.assign(PQUI, { step: null, root: null, ask: null, err: '' });
   // The next key starts as a new visitor would: how it pays (relay or wallet) and what it picked are not the last key's.
   if (all) { for (const o of [TIMES, DRAFT]) for (const k of Object.keys(o)) delete o[k]; Object.assign(S, { inTok: {}, outTok: {}, askTok: {}, route: {}, shieldVia: null, payIn: null, unitWas: null, outIn: null, outWas: null }); }
 };
@@ -5789,7 +5792,8 @@ async function freshBoxIndex() {
 // anyway, through the pool's own logs.
 const RPCAT = {}, rpcAt = (u) => (RPCAT[u] ||= jsonRpc(() => [u]));
 // Not the first of three or more (it reads the head with the key's other reads), as quorum does.
-const oneNode = async (c, method, params) => { const all = ownNodes(c), nodes = all.length > 2 ? all.slice(1) : all, at = Math.floor(Math.random() * nodes.length); try { return await rpcAt(nodes[at])(method, params); } catch (e) { if (nodes.length < 2) throw e; return rpcAt(nodes[(at + 1) % nodes.length])(method, params); } };
+// With a wallet app behind WalletConnect, the node that answers its account reads (the last: wcNodes) is not asked these either.
+const oneNode = async (c, method, params) => { const all = ownNodes(c), rest = all.length > 2 ? all.slice(1) : all, apart = S.provider?.wc && !mineOf(c).length ? wcNodes(c)[0] : null, nodes = rest.length > 1 && rest.includes(apart) ? rest.filter((u) => u !== apart) : rest, at = Math.floor(Math.random() * nodes.length); try { return await rpcAt(nodes[at])(method, params); } catch (e) { if (nodes.length < 2) throw e; return rpcAt(nodes[(at + 1) % nodes.length])(method, params); } };
 const BOXQ = {}, BOX_DAY = 86_400_000;
 // A funded address found waiting is given to the relay again (one an earlier relay took may never be taken in): once in
 // a visit, then at most every half hour.
@@ -5911,7 +5915,7 @@ const cur = () => CH[S.chain.chainId];
 const ethIcon = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`, pethIcon = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg>`;
 // A coin's mark `m` on chain `c`: the chain's mark (`#net-<chain ID>`) at its foot.
 const tkOn = (m, c) => html`<span class="tkn">${m}<svg class="net" aria-hidden="true"><use href="#net-${c.chainId}"/></svg></span>`;
-const txLink = (c, h) => (h ? html`<a href="${c.explorer}/tx/${h}" target="_blank" rel="noopener">${short(h, 6)} ↗</a>` : '');
+const txLink = (c, h) => (/^0x[0-9a-f]{64}$/i.test(String(h || '')) ? html`<a href="${c.explorer}/tx/${h}" target="_blank" rel="noopener">${short(h, 6)} ↗</a>` : '');
 // The two faces of the pool: the ninja for what stays hidden, the plain face for what shows on chain.
 const pal = (k, cls = '') => html`<span class="pal ${k} ${cls}" aria-hidden="true"${k === 'ninja' ? html` title="Stays hidden"` : ''}></span>`;
 const kvRow = (k, v) => html`<div class="kv"><span>${k}</span><b class="num${typeof v === 'string' && /0x[0-9a-f]|tacit1|bp1|^[0-9a-f]{4}·/i.test(v) ? ' id' : ''}">${v}</b></div>`;
@@ -8427,12 +8431,15 @@ async function pinName(t) {
 const CODES = new Map(), DESTS = new Map(), TAKES = new Set(), CODE_TTL = 600_000;
 // Reads that name where a payment goes, or carry its amount as it is sent, go to the reader's own nodes when they set any;
 // else sealed to the wallet-read gateway and carried by a forwarder (ROUTE), so the node that answers does not see who
-// asks; and to the chain's nodes (`direct`) only when the route does not carry them, which is then left alone a minute.
+// asks; and to the chain's nodes (`direct`) only when the reader chose that (Endpoints: reach directly). A route that does not
+// carry the read leaves it unread, as the bundler's does until the reader agrees, and is left alone for twenty seconds.
 // A refusal from the node behind the gateway is the read's answer, not a reason to ask in the open.
 let apartSkip = 0;
+const routeDown = () => Object.assign(new Error('The private route is not answering. Try again in a moment, or let this page reach the nodes directly under Endpoints.'), { routeDown: true });
 async function readApart(c, method, params, direct) {
   const g = ROUTE.OWN.rpc, req = { method: 'POST', path: `/${c.chainId}/evm-pool/keeper/rpc`, body: { jsonrpc: '2.0', id: 1, method, params } };
-  if (mineOf(c).length || ends.direct || !g?.gateway || Date.now() < apartSkip) return direct();
+  if (mineOf(c).length || ends.direct || !g?.gateway) return direct();
+  if (Date.now() < apartSkip) throw routeDown();
   for (const fw of ROUTE.forwarders()) {
     let j = null;
     try {
@@ -8441,12 +8448,12 @@ async function readApart(c, method, params, direct) {
       if (!o || o.status >= 500 || o.status === 429) continue;
       if (o.status === 200) j = JSON.parse(new TextDecoder().decode(o.body));
     } catch { continue; }
-    if (j?.error) throw Object.assign(new Error(String(j.error.message)), { answered: true });
+    if (j?.error && method === 'eth_estimateGas') throw Object.assign(new Error(String(j.error.message)), { answered: true });
     if (j && 'result' in j) return j.result;
     break;
   }
-  apartSkip = Date.now() + 60_000;
-  return direct();
+  apartSkip = Date.now() + 20_000;
+  throw routeDown();
 }
 // The code at an address: the wallet's own through its node, which knows it already; any other as a read apart, so the
 // wallet's node does not learn where a relayed withdrawal goes. Kept ten minutes: an address may be given code later.
@@ -8468,7 +8475,7 @@ function codeAt(c, a) {
 // Code that is not an account's EIP-7702 delegation.
 const isContract = (code) => /^0x[0-9a-f]+$/i.test(code) && code.length > 2 && !/^0xef0100[0-9a-f]{40}$/i.test(code);
 async function destRead(c, a) {
-  try { if (isContract(await codeAt(c, a))) return { here: true }; } catch { return { unread: true, at: c }; }
+  try { if (isContract(await codeAt(c, a))) return { here: true }; } catch (e) { return { unread: true, at: c, down: !!e?.routeDown }; }
   return {};
 }
 // What a read means for a payment of `tok` (a token a withdrawal arrives as; ETH when null): { warn, ack } or {}.
@@ -8489,7 +8496,7 @@ function destNote(c, a, again = () => FORM.check?.(), tok = null, read = false) 
   if (!DESTS.has(k) && !read) return {};
   if (!DESTS.has(k)) { const p = destRead(c, a); DESTS.set(k, { p }); p.then((v) => { DESTS.set(k, { p, v, at: Date.now() }); again(); }); }
   const v = DESTS.get(k).v;
-  return v ? (v.unread ? { unread: v.at } : destSays(c, v, tok)) : { pending: true };
+  return v ? (v.unread ? { unread: v.at, down: v.down } : destSays(c, v, tok)) : { pending: true };
 }
 // Checked again as the button is pressed, waiting for the read; one that could not be read is tried once more.
 async function destGate(c, a, tok = null) {
@@ -8497,7 +8504,7 @@ async function destGate(c, a, tok = null) {
   if (n.refuse) throw new Error(n.refuse);
   let v = await DESTS.get(k).p;
   if (v.unread) { DESTS.delete(k); destNote(c, a, () => {}, null, true); v = await DESTS.get(k).p; }
-  if (v.unread) throw new Error(`Could not check that address on ${v.at.full}, so nothing was sent. Try again in a moment.`);
+  if (v.unread) throw new Error(v.down ? `The private route is not answering, so that address was not checked on ${v.at.full} and nothing was sent. Try again in a moment, or let this page reach the nodes directly under Endpoints.` : `Could not check that address on ${v.at.full}, so nothing was sent. Try again in a moment.`);
   const s = destSays(c, v, tok);
   if (s.ack && !TAKES.has(takeKey(c, a, tok))) throw new Error(s.warn);
 }
@@ -8714,7 +8721,6 @@ function renderWalletSheet() {
 }
 // Post-quantum privacy, in the wallet sheet. Off: turn it on (24 new words, three of them asked back before anything is made
 // with them) or bring the words from another device. On: the words again, or forget them on this device.
-const PQUI = { step: null, root: null, ask: null, err: '' };
 const PQ_ONLY = 'Notes sealed under your words show only on tacit.wei (and apps that add post-quantum support).', PQ_ID = 'Have a tacit.finance PQ ID? Its 24 words work here too.';
 // Offered to a signed-in key with no words, unless "Not now" was pressed for this key in the past week.
 const pqLaterKey = () => `tacit-wei-pq-later:${lgKid()}`;
@@ -8819,11 +8825,11 @@ function pqAdopt() {
 }
 function renderSettings() {
   const el = $('#settings-body');
-  mount(el, html`<p class="lede">Add your own node and the reads about you go only to it, names included. Enter two, separated by a space, and both must agree.</p>
+  mount(el, html`<p class="lede">Add your own node and the reads about you go to it, names included; the pool's event logs also go to the page's nodes when yours cannot serve a range. Enter two, separated by a space, and both must agree.</p>
     <p class="note">A relay sends payments for you; it cannot change where one goes. Saved in this browser.</p>
     ${CHAINS.map((c) => html`<label class="lbl" for="e-rpc-${c.chainId}"><span>${c.full} · your own node</span></label><textarea id="e-rpc-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.rpc?.[c.chainId] || []).join(' ')}</textarea>
       <label class="lbl" for="e-relay-${c.chainId}"><span>${c.full} relay</span></label><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:78px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
-    <label class="lbl nw"><input type="checkbox" id="e-direct" ${ends.direct ? 'checked' : ''}> <span>Reach the relay directly, not through the private route (the relay then sees your address; for when no forwarder answers)</span></label>
+    <label class="lbl nw"><input type="checkbox" id="e-direct" ${ends.direct ? 'checked' : ''}> <span>Reach the relay and the nodes directly, not through the private route (they then see your address, and the addresses you pay; for when no forwarder answers)</span></label>
     <label class="lbl" for="e-points"><span>Catch-up registry · an address, or none</span></label><input id="e-points" spellcheck="false" placeholder="${CHECKPOINTS} · or none" value="${/^none$/i.test(ends.points || '') ? 'none' : /^0x[0-9a-fA-F]{40}$/.test(ends.points || '') ? ends.points : ''}">
     <label class="lbl" for="e-wc"><span>WalletConnect project ID and relay</span></label><input id="e-wc" spellcheck="false" placeholder="32 characters, and/or wss://… (optional)" value="${[ends.wc, ends.wcrelay].filter(Boolean).join(' ')}">
     <label class="lbl" for="e-copies"><span>Copy nodes · Base Sepolia nodes for the onchain copy of the proving key</span></label><textarea id="e-copies" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.copies || []).join(' ')}</textarea>
@@ -8884,7 +8890,7 @@ $$('dialog.sheet').forEach((d) => { let down = null; d.addEventListener('close',
 mount($('#contracts'), html`${CHAINS.map((c) => html`<a href="${c.explorer}/address/${POOL}" rel="noopener">${c.name}</a>`)}`);
 // The contract this page is stored in: an <address>.<gateway> host names it, and a <name>.wei.limo or <name>.gwei.limo
 // host is resolved through WNS or GNS on Ethereum. A newer version is pointed to only when tacit.wei itself now resolves to it, so the lineage alone
-// (one steward key) cannot steer earlier versions anywhere; nothing is redirected.
+// (whoever the steward is) cannot steer earlier versions anywhere; nothing is redirected.
 const WNS = '0x0000000000696760e15f265e828db644a0c242eb';
 async function servedBy() {
   // A WNS or GNS name's id is its namehash under .wei or .gwei (what each registry's computeId gives), so only resolve() is asked.
@@ -8898,7 +8904,7 @@ async function servedBy() {
   mount($('#served'), html`tacit.wei · stored in <a href="https://etherscan.io/address/${here}#code" rel="noopener">${short(here)}</a> on Ethereum`);
   const [tip, home] = await Promise.all([quorum(here, '0x' + hex(selector('latest()'))).then(addrOf), homeAt]);
   HOST.ok ??= here === home || tip === home;
-  if (!BigInt(tip) || tip === here || home !== tip) return;
+  if (!isAddr(tip) || !BigInt(tip) || tip === here || home !== tip) return;
   const href = lc(location.href).includes(here.slice(2)) ? location.href.replace(new RegExp(here.slice(2), 'i'), tip.slice(2)) : `https://${tip}.w4eth.io/`;
   mount($('#newer'), html`A newer version of this page is at <a href="${href}">${short(tip)}</a>.`);
   $('#newer').hidden = false;
@@ -9663,6 +9669,8 @@ const TC = (() => {
     const h = await read('eth_feeHistory', ['0xa', 'latest', [50]]);
     let tip = feeRows(h);
     if (tip < MIN_TIP) tip = MIN_TIP;
+    // One node's word: a tip above the cap would go to whoever builds the block, out of what a sweep sends.
+    if (tip > MAX_TIP_CAP) tip = MAX_TIP_CAP;
     return { maxFeePerGas: quantity(h.baseFeePerGas.at(-1)) * up / 4n + tip, maxPriorityFeePerGas: tip };
   }
   function priceWithinBounds(price, ref) {
@@ -9962,7 +9970,7 @@ const TC = (() => {
   const many = (read, calls) => (read.batch ? read.batch(calls) : Promise.all(calls.map(([m, p]) => read(m, p).then((result) => ({ result }), (error) => ({ error })))));
   // `book` (poolBook): whether a note is in its pool, or spent, is looked for in what it read, so no node is asked about a
   // note; with none, `noteRead` (the reader's own node) or `read` is asked directly.
-  function makeFlow({ read, wallet = null, account = null, session = newSession(), store = null, sendTx = null, waitTx = null, poll = 3000, timeout = 10 * 60 * 1000, seed = null, scheme = seed ? 'k' : 'w', book = null, noteRead = null, onFound = null }) {
+  function makeFlow({ read, wallet = null, account = null, session = newSession(), store = null, sendTx = null, waitTx = null, poll = 3000, timeout = 10 * 60 * 1000, seed = null, scheme = seed ? 'k' : 'w', book = null, noteRead = null, apart = null, onFound = null }) {
     const sigs = session.sigs;
     const asks = (nonce) => !seed && !sigs.has(nonce);
     const rsAt = async (nonce) => (seed ? seedRS(seed, nonce) : canonicalRS(await signNonce(nonce)));
@@ -9983,7 +9991,8 @@ const TC = (() => {
       const x = d || (l && depositOf(l));
       return x ? { block: x.block, index: x.index } : {};
     };
-    const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + b32(BigInt(root)).slice(2))) !== 0n;
+    // `apart`, when the page gives one, carries the question to a node without the reader's address (it names a pool, just before a withdrawal from it).
+    const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + b32(BigInt(root)).slice(2), apart || read)) !== 0n;
     // A root the pool knows: its last root, read for every pool at once (the request names none), else asked of the pool.
     const rootOk = async (pool, root) => {
       const r = await many(read, ALL_POOLS.map((p) => ['eth_call', [{ to: p.address, data: SEL.lastRoot }, 'latest']])).catch(() => []);
@@ -9991,12 +10000,22 @@ const TC = (() => {
     };
     const needWallet = () => { if (!wallet || !account) throw new Error('Connect your wallet first.'); };
     const rawSign = (nonce) => { needWallet(); return wallet('eth_signTypedData_v4', [account, JSON.stringify(noteTypedData(nonce))]); };
+    // The signature is checked against the account, as a sign-in's is: a wallet that signs with another account would make notes
+    // this account cannot find again.
+    const typedBy = (sigHex, nonce) => {
+      const b = hexBytes(sigHex), v = b[64] >= 27 ? b[64] - 27 : b[64];
+      if (b.length !== 65 || (v !== 0 && v !== 1)) return false;
+      const dom = keccak(cat(keccak(utf8('EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)')), keccak(utf8('TornadoCash Keychain')), keccak(utf8('1')), be(CHAIN_ID), keccak(utf8('tornado'))));
+      const digest = keccak(cat(Uint8Array.of(0x19, 0x01), dom, keccak(cat(keccak(utf8('TornadoCashNote(uint64 nonce)')), be(BigInt(nonce))))));
+      try { const [x, y] = secp.affine(secp.recover(digest, big(b.subarray(0, 32)), big(b.subarray(32, 64)), v)); return lc('0x' + hex(keccak(cat(be(x), be(y))).subarray(12))) === lc(account); } catch { return false; }
+    };
     // One signature per number, kept for the session. The first is asked for twice: a wallet whose signature changes from
     // one request to the next would make a note that cannot be found again.
     async function signNonce(nonce) {
       if (sigs.has(nonce)) return sigs.get(nonce);
       const sig = await rawSign(nonce);
       canonicalRS(sig);
+      if (!typedBy(sig, nonce)) throw new Error('Your wallet signed with another account than the one connected, so a note made with it could not be found again. Switch accounts and try again.');
       if (!session.checked) {
         if (hex(canonicalRS(await rawSign(nonce))) !== hex(canonicalRS(sig))) throw new Error('This wallet signs the same request differently each time, so a note made with it could not be found again.');
         session.checked = true;
@@ -10386,7 +10405,7 @@ const TC = (() => {
 // forwarder can drop or delay a request but not read, change or answer it. A relay request is never sent in the open: with
 // no forwarder answering it fails, and the page offers the wallet. A gasless note withdrawal goes to its bundler through the
 // wallet-read gateway the same way, and straight to the bundler when that road fails (a withdrawal must stay possible).
-//   request  0x02 ‖ kid (4) ‖ E (33) ‖ nonce (16) ‖ AES-256-GCM(be32(n) ‖ JSON { t, m, p, b } ‖ zeros to 4…64 KiB) ‖ tag
+//   request  0x02 ‖ kid (4) ‖ E (33) ‖ nonce (16) ‖ AES-256-GCM(be32(n) ‖ JSON { t, m, p, b } ‖ zeros to 8…64 KiB) ‖ tag
 //   reply    0x02 ‖ reply nonce (16) ‖ AES-256-GCM(be32(n) ‖ JSON { s, h, z, l } ‖ body ‖ zeros) ‖ tag
 //   s = compress(e·G), key(l) = keccak256("tacit-sealed-v2" ‖ l ‖ s ‖ E ‖ nonce [‖ reply nonce]), iv = key(l + 1)[0..12)
 const ROUTE = (() => {
@@ -10413,7 +10432,7 @@ const ROUTE = (() => {
   const setForwarders = (list) => { extra = (list || []).filter((u) => /^https:\/\/[\w.-]+(?::\d+)?$/.test(u)).slice(0, 6); };
   const te = new TextEncoder(), td = new TextDecoder();
   const TAG = te.encode('tacit-sealed-v2'), KID_TAG = te.encode('tacit-sealed-kid-v1'), DOC_TAG = te.encode('tacit-relay-gateway-v1');
-  const REQUEST_SIZES = [4096, 8192, 16384, 32768, 65536], REPLY_MIN = 1024, MAX_REPLY = 8 << 20;
+  const REQUEST_SIZES = [4096, 8192, 16384, 32768, 65536], REQUEST_MIN = 8192, REPLY_MIN = 1024, MAX_REPLY = 8 << 20;
   const be4 = (n) => Uint8Array.of(n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255);
   const rd4 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
   const keyOf = (l, s, E, nonce, extraBytes = new Uint8Array(0)) => keccak(cat(TAG, Uint8Array.of(l), s, E, nonce, extraBytes));
@@ -10426,7 +10445,7 @@ const ROUTE = (() => {
     const pub = unhex(gatewayHex), P = secp.decompress(pub), e = scalar();
     const E = secp.compress(secp.mulG(e)), s = secp.compress(secp.mul(P, e)), nonce = randomBytes(16);
     const json = te.encode(JSON.stringify({ t: Math.floor(Date.now() / 1000), m: req.method, p: req.path, b: req.body ?? null }));
-    const size = REQUEST_SIZES.find((x) => 4 + json.length <= x);
+    const size = REQUEST_SIZES.find((x) => x >= REQUEST_MIN && 4 + json.length <= x);
     if (!size) throw new Error('The request is too large for the private route.');
     const pt = new Uint8Array(size);
     pt.set(be4(json.length)); pt.set(json, 4);
@@ -10569,7 +10588,9 @@ const LG = { smallest: null, chosen: false, gas: 'note', open: false, notes: [],
 // the open: sealed under the key (the vault) while one is open, else for this tab only (Find brings them back). A plain
 // copy from before is moved in once and deleted.
 const LG_LINKS = /^tacit-wei-fixed-(notes|log|pending|next):/;
-const lgTab = { get: (k) => { try { return sessionStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); return true; } catch { return false; } } };
+const lgTab = { get: (k) => { try { return sessionStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); return true; } catch { return false; } }, del: (k) => { try { sessionStorage.removeItem(k); } catch {} } };
+// The tab's own copy goes once the vault holds the record (read back, as a write that did not land leaves the vault as it was).
+const lgTabDone = (k, v) => { if (lgTab.get(k) != null && (vget('lg') || {})[k] === v) lgTab.del(k); };
 const LG_STORE = {
   get: (k) => {
     if (!LG_LINKS.test(k)) return store.get(k);
@@ -10578,9 +10599,10 @@ const LG_STORE = {
     const all = vget('lg') || {}, was = plain ?? lgTab.get(k);
     if (!(k in all) && was != null) { all[k] = was; vset('lg', all); }
     if (plain != null) store.del(k);
+    if (all[k] != null) lgTabDone(k, all[k]);
     return all[k] ?? null;
   },
-  set: (k, v) => { if (!LG_LINKS.test(k)) return store.set(k, v); if (!S.key) return lgTab.set(k, v); const all = vget('lg') || {}; all[k] = v; vset('lg', all); store.del(k); return true; },
+  set: (k, v) => { if (!LG_LINKS.test(k)) return store.set(k, v); if (!S.key) return lgTab.set(k, v); const all = vget('lg') || {}; all[k] = v; vset('lg', all); store.del(k); lgTabDone(k, v); return true; },
 };
 const lgChain = () => CHAINS[0];
 const lgRead = Object.assign((method, params = []) => rpcOn(lgChain())(method, params), { batch: (calls) => rpcOn(lgChain()).batch(calls) });
@@ -10603,6 +10625,8 @@ const lgBook = () => (lgOwn() ? null : (LG_BOOK ||= lgNewBook()));
 // Notes one node says are spent and others have not confirmed: listed, not hidden.
 const LG_MAYBE = new Set();
 const lgNoteRead = () => (lgOwn() ? lgOwnRead() : null);
+// A read that names a pool or an address of this reader's notes, sealed to the wallet-read gateway (the reader's own node when set).
+const lgApart = (method, params) => readApart(lgChain(), method, params, () => lgRead(method, params));
 // Registry flag bits: 0 split on deposit, 1 gasless note withdrawals, 2 making notes, 3 stops relays from the open RelayRegistry
 // (the page's own and TacitPayRegistry's remain), 4 and 5 and 6 the swaps and the forwarder, 7 hybrid memos, 8 turning words on.
 const lgOff = (bit) => (BigInt(/^\d{1,20}$/.test(String(REG.flags ?? '')) ? REG.flags : 0) >> BigInt(bit)) & 1n ? true : false;
@@ -10619,7 +10643,7 @@ function lgFlow(s = S.key?.pq ? 'q' : S.key ? 'k' : 'w', bk = lgBook()) {
   if (s !== 'w' && !seed) throw new Error(s === 'q' ? 'This note was made from your post-quantum words: enter them in the wallet sheet to take it out.' : 'This note was made from a sign-in: sign in to take it out.');
   if (!LG.sessions.has(lc(account))) LG.sessions.set(lc(account), TC.newSession());
   return TC.makeFlow({
-    seed, scheme: s, read: lgRead, book: bk, noteRead: lgNoteRead(), onFound: (f) => lgKeep(f), wallet: (method, params) => ask(S.provider, method, params), account, session: LG.sessions.get(lc(account)), store: LG_STORE,
+    seed, scheme: s, read: lgRead, book: bk, noteRead: lgNoteRead(), apart: lgApart, onFound: (f) => lgKeep(f), wallet: (method, params) => ask(S.provider, method, params), account, session: LG.sessions.get(lc(account)), store: LG_STORE,
     sendTx: async (tx) => {
       const c = lgChain();
       await onChain(c.chainId);
@@ -10634,7 +10658,7 @@ function lgFlow(s = S.key?.pq ? 'q' : S.key ? 'k' : 'w', bk = lgBook()) {
     waitTx: async (h) => ({ rc: await walletMined(lgChain(), h, 'transaction') }),
   });
 }
-const lgReader = () => TC.makeFlow({ read: lgRead, book: lgBook(), noteRead: lgNoteRead() });
+const lgReader = () => TC.makeFlow({ read: lgRead, book: lgBook(), noteRead: lgNoteRead(), apart: lgApart });
 
 // ── the smallest note: 0.1 ETH, raised while a note's deposit gas is over 2% of it, unless chosen ──
 async function lgGasPrice() {
@@ -11118,8 +11142,9 @@ function lgConfirm({ fee, receive, denomination, route }, { what, to, swap, fres
       <div class="row"><button class="btn sm" type="button" id="lg-yes">Send</button><button class="btn ghost sm" type="button" id="lg-no">Cancel</button></div></div></div>`);
     const fin = (ok) => { clearTimeout(t); ask.hidden = true; mount(ask, ''); resolve(ok); if (LG.dirty) { LG.dirty = false; lgPaint(); } };
     const t = setTimeout(() => fin(false), 180_000);
-    // An address that already holds something, has sent before or carries code links more easily than a fresh one (one request).
-    if (to && !fresh) lgRead.batch([['eth_getBalance', [to, 'latest']], ['eth_getTransactionCount', [to, 'latest']], ['eth_getCode', [to, 'latest']]]).then((r) => r.map((x) => x.result)).then(([b, n, code]) => {
+    // An address that already holds something, has sent before or carries code links more easily than a fresh one. The three reads
+    // name where the note goes, so they are read apart like the destination check; one that cannot be read says nothing.
+    if (to && !fresh) Promise.all([['eth_getBalance', [to, 'latest']], ['eth_getTransactionCount', [to, 'latest']], ['eth_getCode', [to, 'latest']]].map(([m, p]) => readApart(lgChain(), m, p, () => lgRead(m, p)))).then(([b, n, code]) => {
       if (BigInt(b) === 0n && BigInt(n) === 0n && (code === '0x' || !code)) return;
       const box = $('.lg-fee > div', ask);
       if (box && !$('[data-used]', box)) box.insertAdjacentHTML('afterbegin', html`<p class="note warn" data-used>This address has been used before. A fresh address links less to you.</p>`.s);
@@ -11280,7 +11305,7 @@ function lgAskForm(n, pasted, left = false) {
   mount(ask, html`${pasted != null ? html`<div class="lbl"><span>Note</span></div><div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Note" style="width:100%;font:inherit;resize:vertical;border:0;background:none;padding:12px 14px"></textarea></div>` : ''}
     <div class="lbl"><span>To</span><span>${pasted != null ? 'empty: your deposit address' : ''}</span></div>
     <div class="amt text"><input id="lg-to" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="To" data-1p-ignore data-lpignore="true"></div>
-    <p class="note">${left ? `Sent from the note’s one-time address, which pays its own gas.${lgSigns([n])}` : pasted != null ? 'The note stays in this page; nothing is signed by your wallet.' : 'As ETH. To take it as a token, use Withdraw.'}</p>
+    <p class="note">${left ? `Sent from the note’s one-time address, which pays its own gas. This browser sends it, so a node sees your connection beside it.${lgSigns([n])}` : pasted != null ? 'The note stays in this page; nothing is signed by your wallet.' : 'As ETH. To take it as a token, use Withdraw.'}</p>
     <div class="row"><button class="btn sm" type="button" id="lg-go">${left ? 'Send it on' : 'Withdraw'}</button><button class="btn ghost sm" type="button" id="lg-cancel">Cancel</button></div>`);
   $('#lg-cancel', ask).onclick = lgCloseAsk;
   const go = $('#lg-go', ask);

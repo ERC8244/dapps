@@ -205,7 +205,7 @@ page asks the Ethereum nodes to agree before it shows which contract serves it a
 | --- | --- | --- |
 | public JSON-RPC nodes, 2 to 4 per chain (replaceable under *Endpoints*) | every read and send, and names | the next node is tried; the page remembers the one that answered |
 | a wallet (EIP-1193, EIP-6963), or a wallet app joined by WalletConnect through `relay.walletconnect.org` | gas for wallet-sent spends and shielding | relayed spends and reading need none |
-| the proving key and witness program, 33 MB, from tacit.finance, Filebase, ipfs.orbitor.dev or the Pinata gateway, from its onchain copy on Base Sepolia, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
+| the proving key and witness program, 33 MB, from tacit.finance, a repository mirror (GitHub), Filebase or ipfs.orbitor.dev, from its onchain copy on Base Sepolia, or from disk | the first payment on a device | any mirror will do, each file is accepted only by its pinned SHA-256; or load both from disk |
 | a relay (optional) | spends with no gas, deposit-address sweeps, a fast first read | the wallet route and chain logs |
 | a gateway to serve the page | getting the page | any ERC-8244 gateway, or `html()` from any node |
 

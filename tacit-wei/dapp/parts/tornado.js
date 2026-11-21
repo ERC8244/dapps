@@ -602,6 +602,8 @@ const TC = (() => {
     const h = await read('eth_feeHistory', ['0xa', 'latest', [50]]);
     let tip = feeRows(h);
     if (tip < MIN_TIP) tip = MIN_TIP;
+    // One node's word: a tip above the cap would go to whoever builds the block, out of what a sweep sends.
+    if (tip > MAX_TIP_CAP) tip = MAX_TIP_CAP;
     return { maxFeePerGas: quantity(h.baseFeePerGas.at(-1)) * up / 4n + tip, maxPriorityFeePerGas: tip };
   }
   function priceWithinBounds(price, ref) {
@@ -901,7 +903,7 @@ const TC = (() => {
   const many = (read, calls) => (read.batch ? read.batch(calls) : Promise.all(calls.map(([m, p]) => read(m, p).then((result) => ({ result }), (error) => ({ error })))));
   // `book` (poolBook): whether a note is in its pool, or spent, is looked for in what it read, so no node is asked about a
   // note; with none, `noteRead` (the reader's own node) or `read` is asked directly.
-  function makeFlow({ read, wallet = null, account = null, session = newSession(), store = null, sendTx = null, waitTx = null, poll = 3000, timeout = 10 * 60 * 1000, seed = null, scheme = seed ? 'k' : 'w', book = null, noteRead = null, onFound = null }) {
+  function makeFlow({ read, wallet = null, account = null, session = newSession(), store = null, sendTx = null, waitTx = null, poll = 3000, timeout = 10 * 60 * 1000, seed = null, scheme = seed ? 'k' : 'w', book = null, noteRead = null, apart = null, onFound = null }) {
     const sigs = session.sigs;
     const asks = (nonce) => !seed && !sigs.has(nonce);
     const rsAt = async (nonce) => (seed ? seedRS(seed, nonce) : canonicalRS(await signNonce(nonce)));
@@ -922,7 +924,8 @@ const TC = (() => {
       const x = d || (l && depositOf(l));
       return x ? { block: x.block, index: x.index } : {};
     };
-    const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + b32(BigInt(root)).slice(2))) !== 0n;
+    // `apart`, when the page gives one, carries the question to a node without the reader's address (it names a pool, just before a withdrawal from it).
+    const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + b32(BigInt(root)).slice(2), apart || read)) !== 0n;
     // A root the pool knows: its last root, read for every pool at once (the request names none), else asked of the pool.
     const rootOk = async (pool, root) => {
       const r = await many(read, ALL_POOLS.map((p) => ['eth_call', [{ to: p.address, data: SEL.lastRoot }, 'latest']])).catch(() => []);
@@ -930,12 +933,22 @@ const TC = (() => {
     };
     const needWallet = () => { if (!wallet || !account) throw new Error('Connect your wallet first.'); };
     const rawSign = (nonce) => { needWallet(); return wallet('eth_signTypedData_v4', [account, JSON.stringify(noteTypedData(nonce))]); };
+    // The signature is checked against the account, as a sign-in's is: a wallet that signs with another account would make notes
+    // this account cannot find again.
+    const typedBy = (sigHex, nonce) => {
+      const b = hexBytes(sigHex), v = b[64] >= 27 ? b[64] - 27 : b[64];
+      if (b.length !== 65 || (v !== 0 && v !== 1)) return false;
+      const dom = keccak(cat(keccak(utf8('EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)')), keccak(utf8('TornadoCash Keychain')), keccak(utf8('1')), be(CHAIN_ID), keccak(utf8('tornado'))));
+      const digest = keccak(cat(Uint8Array.of(0x19, 0x01), dom, keccak(cat(keccak(utf8('TornadoCashNote(uint64 nonce)')), be(BigInt(nonce))))));
+      try { const [x, y] = secp.affine(secp.recover(digest, big(b.subarray(0, 32)), big(b.subarray(32, 64)), v)); return lc('0x' + hex(keccak(cat(be(x), be(y))).subarray(12))) === lc(account); } catch { return false; }
+    };
     // One signature per number, kept for the session. The first is asked for twice: a wallet whose signature changes from
     // one request to the next would make a note that cannot be found again.
     async function signNonce(nonce) {
       if (sigs.has(nonce)) return sigs.get(nonce);
       const sig = await rawSign(nonce);
       canonicalRS(sig);
+      if (!typedBy(sig, nonce)) throw new Error('Your wallet signed with another account than the one connected, so a note made with it could not be found again. Switch accounts and try again.');
       if (!session.checked) {
         if (hex(canonicalRS(await rawSign(nonce))) !== hex(canonicalRS(sig))) throw new Error('This wallet signs the same request differently each time, so a note made with it could not be found again.');
         session.checked = true;

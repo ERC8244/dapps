@@ -26,8 +26,8 @@ pragma solidity ^0.8.30;
 ///   The shielded pool, its router, its Groth16 verifier and its zap (the constants below), the Tornado Cash ETH
 ///   pools, the split forwarder and split zap, and the Kohaku pool paymaster through public ERC-4337 bundlers, by
 ///   `eth_call`, `eth_getLogs` and transactions the reader's own wallet signs. Endpoint lists and off switches come
-///   from an owned onchain registry (TacitPayRegistry) behind the page's own values; it names no address that
-///   receives funds. To
+///   from an owned onchain registry (TacitPayRegistry) behind the page's own values; it names no address a payment
+///   goes to or a spender (the relays and paymasters it lists are paid a fee the page caps). To
 ///   shield or withdraw as a token it also uses zRouter (the swap aggregator) with routes found by its onchain
 ///   quoter zQuoter, the token list at token.list.wei, and Permit2, all read and called at their public addresses.
 ///   Chain state comes from public nodes the reader can replace, or from the reader's wallet.
@@ -40,8 +40,8 @@ pragma solidity ^0.8.30;
 ///
 ///   The proving key of the pool's circuit (28.5 MB, from a 176-contribution ceremony sealed by a Bitcoin block)
 ///   and the circuit's witness program (4.9 MB) are too large to store here. The page fetches them once from
-///   whichever mirror answers (tacit.finance, then IPFS gateways, then a copy stored as contract code on Base
-///   Sepolia), accepts them only if their SHA-256 equals the pins below, and keeps them in the browser. A reader can
+///   whichever mirror answers (tacit.finance, a repository mirror, IPFS gateways, then a copy stored as contract
+///   code on Base Sepolia), accepts them only if their SHA-256 equals the pins below, and keeps them in the browser. A reader can
 ///   also load the two files from disk. The Tornado Cash withdrawal prover (11.5 MB) is fetched the same way, from
 ///   IPFS and repository mirrors, then copies stored as contract code on Base Sepolia and Sepolia.
 ///
@@ -49,8 +49,8 @@ pragma solidity ^0.8.30;
 ///   It never sends a key anywhere: the Tacit key is derived in the tab from the wallet's signature over a fixed
 ///   message (the same in every Tacit app) and is never stored. The Tacit pool's prover, its field arithmetic
 ///   (WebAssembly the page writes itself), Poseidon (constants derived in the page), the curves and the hashes are
-///   all in the document; the one piece of code it fetches is the Tornado Cash withdrawal prover above, run only when
-///   its SHA-256 equals the page's pin. A proof the wallet sends is checked against the pool's verifier through the wallet's node first;
+///   all in the document; the code it fetches is two WebAssembly programs, the circuit's witness program and the
+///   Tornado Cash withdrawal prover above, each run only when its SHA-256 equals the page's pin. A proof the wallet sends is checked against the pool's verifier through the wallet's node first;
 ///   one the relay sends is checked by the relay.
 ///
 /// HOW TO READ THE DAPP
@@ -166,6 +166,15 @@ contract TacitPay8244 {
             // One byte is the STOP prefix, so a chunk holding nothing but its prefix carries no page.
             uint256 size = chunks[i].code.length;
             if (size < 2) revert InvalidData();
+            // And the prefix is a STOP: a chunk that runs when called, or an account whose code is a delegation that its
+            // owner can change, is not a chunk.
+            address chunk = chunks[i];
+            uint256 first;
+            assembly ("memory-safe") {
+                extcodecopy(chunk, 0, 0, 1)
+                first := byte(0, mload(0))
+            }
+            if (first != 0) revert InvalidData();
             for (uint256 j = i + 1; j != n; ++j) {
                 if (chunks[i] == chunks[j]) revert InvalidData();
             }

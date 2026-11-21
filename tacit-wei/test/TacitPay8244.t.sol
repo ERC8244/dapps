@@ -141,6 +141,23 @@ contract TacitPay8244Test is Test {
         new TacitPay8244(steward, address(0), withEmpty, pageHash);
     }
 
+    /// @dev A chunk whose first byte is not STOP would run when called; an account delegating by EIP-7702 (code
+    ///      0xef0100 and an address) can have its code changed or cleared later. Neither is a chunk.
+    function testRejectsAChunkNotPrefixedByStop() public {
+        address[] memory withBad = new address[](chunks.length + 1);
+        for (uint256 i; i != chunks.length; ++i) withBad[i] = chunks[i];
+        // runtime: INVALID, 0x41, 0x42
+        withBad[chunks.length] = _deploy(hex"61000380600a5f395ff3fe4142");
+        vm.expectRevert(TacitPay8244.InvalidData.selector);
+        new TacitPay8244(steward, address(0), withBad, pageHash);
+
+        address delegating = address(0xD3E6);
+        vm.etch(delegating, abi.encodePacked(hex"ef0100", address(0xBEEF)));
+        withBad[chunks.length] = delegating;
+        vm.expectRevert(TacitPay8244.InvalidData.selector);
+        new TacitPay8244(steward, address(0), withBad, pageHash);
+    }
+
     /// @dev A predecessor that did not deploy this contract cannot be claimed:
     ///      any non-zero `previous` must be the caller, and only `deployNext`
     ///      ever calls as one.

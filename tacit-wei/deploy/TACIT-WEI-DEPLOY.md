@@ -40,16 +40,21 @@ CREATE2 (so the successor's `PREVIOUS` is unforgeable) from creation code built 
    (to the live version, value 0, data), its op id, and the `execute` call. Two owners sign the op id;
    `node deploy/deploy-next-helper.mjs --execute deployNext 0x<signatures>` prints the `execute` calldata to send to the
    multisig. After the delay, `--plan` prints the `executeQueued` call (gas limit 3.5M), which any account may send.
+   Before signing, each owner rebuilds the page and the contract (steps 1 and 2) and checks that the successor address
+   and the call's target and data are the ones printed here, and that the op id their own multisig tool shows for that
+   call and nonce equals the printed one: the helper takes the op id from one RPC.
 5. **setAddr.** Offered only once the live version's `successor()` is the predicted address and the successor reads back
    with this page's `PAGE_HASH`, the multisig as steward and the live version as `PREVIOUS`. Queue and release it the
    same way (`--execute setAddr 0x<signatures>`, then `executeQueued`).
 6. **setGwei.** `tacit.gwei` (GNS `0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6`, served at `https://tacit.gwei.limo/`) is
    pointed the same way: `setAddr(namehash("tacit.gwei"), successor)` on GNS. While the name's owner is an account rather
    than the multisig, that account sends this one transaction (the helper prints it, about 41k gas); once the multisig
-   owns the name, it is queued like setAddr. Until it is sent, tacit.gwei.limo keeps serving the earlier version, which
-   shows its "newer version" link.
-7. **Read back.** `--plan` reports `done` once `tacit.wei` resolves to the successor and `https://tacit.wei.limo/` serves
-   bytes with the manifest's SHA-256, and prints the `deployment` record for `manifest.json`. Then
+   owns the name, it is queued like setAddr. The page names `tacit.gwei.limo` among the hosts to sign in on, so the name
+   belongs with the multisig before this version is deployed (until it does, one account can repoint it). Until the
+   record is set, tacit.gwei.limo keeps serving the earlier version, whose page does not show a "newer version" link on
+   that host.
+7. **Read back.** `--plan` reports `done` once `tacit.wei` and `tacit.gwei` resolve to the successor and
+   `https://tacit.wei.limo/` and `https://tacit.gwei.limo/` serve bytes with the manifest's SHA-256, and prints the `deployment` record for `manifest.json`. Then
    `node deploy/check-deployment.mjs https://ethereum-rpc.publicnode.com <successor> dapp/page.min.html`, verify the
    successor on Sourcify and Etherscan (solc 0.8.30, 200 runs, prague), and check the "newer version" link on
    `https://0x000000000009dde9bb333bbad42ad74bbacc2bd6.w4eth.io/`.

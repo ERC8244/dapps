@@ -219,10 +219,11 @@ async function status() {
     if (gOwner === getAddress(OPS)) return { ...head, next, resolved, gResolved, ...(await stepCall('setGwei', GNS, setGweiData)) };
     return { ...head, next, resolved, gResolved, step: 'setGwei', call: { from: gOwner, to: GNS, value: '0', data: setGweiData }, note: `${GNAME} is owned by ${gOwner}, not the multisig: that account sends this one transaction (or moves the name to the multisig first)` };
   }
-  let limo;
-  try { const b = Buffer.from(await (await fetch(LIMO, { signal: AbortSignal.timeout(60_000) })).arrayBuffer()); limo = { bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') }; limo.same = limo.sha256 === manifest.sha256; } catch (e) { limo = { error: String(e.message || e) }; }
-  return { ...head, step: limo.same ? 'done' : 'serving', next, resolved, limo,
-    note: limo.same ? `${NAME} serves this page from ${succ}` : `${NAME} resolves to ${succ}; ${LIMO} does not serve this page yet (it may hold a page for a few minutes)`,
+  // What each host serves, by the SHA-256 of its bytes.
+  const served = async (url) => { try { const b = Buffer.from(await (await fetch(url, { signal: AbortSignal.timeout(60_000) })).arrayBuffer()); const r = { bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') }; r.same = r.sha256 === manifest.sha256; return r; } catch (e) { return { error: String(e.message || e) }; } };
+  const [limo, glimo] = await Promise.all([served(LIMO), served(GLIMO)]);
+  return { ...head, step: limo.same && glimo.same ? 'done' : 'serving', next, resolved, limo, glimo,
+    note: limo.same && glimo.same ? `${NAME} and ${GNAME} serve this page from ${succ}` : `${NAME} and ${GNAME} resolve to ${succ}; ${limo.same ? '' : LIMO + ' '}${glimo.same ? '' : GLIMO + ' '}does not serve this page yet (a host may hold a page for a few minutes)`,
     deployment: { chainId: 1, contract: succ, previous: base, steward: OPS, pageSha256: manifest.sha256, chunkContracts: finalChunks, routes: [
       { kind: 'erc8244', url: 'https://' + lc(succ) + '.w4eth.io/', serves: 'exact' }, { kind: 'wns', url: LIMO, serves: 'exact' }, { kind: 'gns', url: GLIMO, serves: 'exact' }] } };
 }

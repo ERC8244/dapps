@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { register } from 'node:module';
 import { webcrypto } from 'node:crypto';
 import { loadTC } from './tornado-lib.mjs';
+import { Wallet, Transaction } from 'ethers';
 
 const TACIT = process.env.TACIT || '/Users/z/tacit-wt-tacitwei';
 register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify('file://' + TACIT + '/dapp')};
@@ -57,6 +58,31 @@ await test('a high-s signature gives the same note as its low-s twin', () => {
   eq(TC.deriveSecrets(flip, v.pool).commitment, TC.deriveSecrets(v.signature, v.pool).commitment);
 });
 await test('the typed data is the app\'s, byte for byte', () => { for (const n of [0, 1, 99, 123456]) eq(JSON.stringify(TC.noteTypedData(n)), JSON.stringify(N.noteTypedData(n, 1))); });
+// a wallet that answers eth_signTypedData_v4 with `key`'s signature, whatever account it is asked for
+const typedWallet = (key) => { const w = new Wallet(key); return async (method, params) => { const td = JSON.parse(params[1]), types = { ...td.types }; delete types.EIP712Domain; return w.signTypedData(td.domain, types, td.message); }; };
+await test('a typed-data signature is taken only when it is the connected account\'s', async () => {
+  const mine = new Wallet('0x' + '11'.repeat(32)), other = '0x' + '22'.repeat(32), noRead = () => { throw new Error('no read'); };
+  const good = TC.makeFlow({ read: noRead, wallet: typedWallet(mine.privateKey), account: mine.address });
+  eq(typeof (await good.signNonce(0)), 'string', 'the account\'s own signature');
+  const bad = TC.makeFlow({ read: noRead, wallet: typedWallet(other), account: mine.address });
+  let said = '';
+  try { await bad.signNonce(0); } catch (e) { said = e.message; }
+  eq(/another account/.test(said), true, 'another key\'s signature refused: ' + said);
+});
+await test('a sweep signs a tip no higher than the cap, whatever one node says of the fees', async () => {
+  const sent = [], read = async (method, params) => {
+    if (method === 'eth_getBalance') return '0x' + E.toString(16);
+    if (method === 'eth_getTransactionCount') return '0x0';
+    if (method === 'eth_feeHistory') return { baseFeePerGas: Array(11).fill('0x3b9aca00'), reward: Array(10).fill(['0x' + (10n ** 15n).toString(16)]) };   // a tip of a million gwei
+    if (method === 'eth_estimateGas') return '0x5208';
+    if (method === 'eth_sendRawTransaction') { sent.push(params[0]); return '0x' + '11'.repeat(32); }
+    throw new Error('unexpected ' + method);
+  };
+  await TC.sweepThrowaway({ read, key: rnd(32), to: '0x' + 'ab'.repeat(20) });
+  const tx = Transaction.from(sent[0]);
+  eq(tx.maxPriorityFeePerGas <= 20_000_000_000n, true, 'tip ' + tx.maxPriorityFeePerGas);
+  eq(tx.value + tx.gasLimit * tx.maxFeePerGas <= E, true, 'it never sends more than the account holds');
+});
 await test('a note that is not one, or of another shape, is refused', () => {
   for (const bad of ['', 'tornado-eth-1-1-0x00', 'tornado-eth-1-1-0x' + 'g'.repeat(124), 'tornado-eth-1-1-0x' + 'a'.repeat(126)]) { let threw = false; try { TC.parseNote(bad); } catch { threw = true; } eq(threw, true, bad.slice(0, 20)); }
 });

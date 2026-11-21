@@ -6839,17 +6839,20 @@ const laterFeeRow = (fee, x) => (x && x.rest === 0n ? kvRow('Fee, each later par
 const sameNote = (a) => (cur().W?.history().some((r) => r.ext && BigInt(r.ext) === a) ? html`${NOTE_WARN}You shielded exactly this amount before, so the two can be matched. A different amount hides it better.</p>` : '');
 // Paying `a` out to an address, as a receipt: whole notes first (the largest that fit), the rest from the private balance.
 // → { x, p } when it can be paid as shown, else null (said why).
+// The switch under a payout's receipt: whole notes first (the default), or ready to pay only, the notes kept.
+const keepRow = (x) => (x || LG.keep ? html`<p class="note">${BTN_LINK} id="f-keep">${LG.keep ? 'Use whole notes first' : 'Pay from ready to pay only (keep the notes)'}</button></p>` : '');
+document.addEventListener('click', (e) => { if (e.target.closest?.('#f-keep') && !S.busy) { LG.keep = !LG.keep; FORM.check?.(); } });
 function outRows(say, tab, a, fee, bal, where, d) {
   const x = lgExitPlan(a);
   lgTreeSoon(x?.notes[0]);
   // the relay line is about the part paid from the balance: with the whole amount from notes (each pays its own gas) it says nothing true
   const rt = $('#form .route'); if (rt) rt.hidden = !!(x && x.rest === 0n);
-  if (x && x.rest === 0n) { say(html`${where}${lgExitRows(x)}${staysRow(bal, null, x)}${d.lines}${sameNote(a)}`); return { x }; }
+  if (x && x.rest === 0n) { say(html`${where}${lgExitRows(x)}${staysRow(bal, null, x)}${d.lines}${sameNote(a)}${keepRow(x)}`); return { x }; }
   if (fee == null) { say(html`${where}${x ? lgExitRows(x) : ''}${relayUp() ? html`${NOTE}Reading the relay’s fee…</p>` : ''}`); return null; }
   const part = x ? x.rest : a, p = plan(part, fee);
-  if (bal != null && !p) { cannotPay(say, tab, part, fee, bal, true, x); return null; }
+  if (bal != null && !p) { if (LG.keep && lgOut().length) { say(html`${where}${NOTE_ERR}Ready to pay does not cover this with the notes kept.</p>${keepRow(null)}`); return null; } cannotPay(say, tab, part, fee, bal, true, x); return null; }
   say(html`${where}${x ? lgExitRows(x) : kvRow('Arrives', `${fmt(a, 18)} ETH`)}${feeRow(fee)}
-    ${mergeRow(p, fee)}${staysRow(bal, p, x)}${d.lines}${feeBig(part, fee)}${sameNote(a)}`);
+    ${mergeRow(p, fee)}${staysRow(bal, p, x)}${d.lines}${feeBig(part, fee)}${sameNote(a)}${keepRow(x)}`);
   return { x, p };
 }
 // Notes sent whose withdrawals the chain does not show yet: the payment stops there, held as a send not yet confirmed.
@@ -11538,10 +11541,11 @@ function lgNoteQuote(c, t, x) {
   return LG_NQ.key === key ? LG_NQ.v : null;
 }
 // ── the Withdraw form's notes part ──
-// For an amount of a whole note or more, whole notes go first (the largest that fit), the rest from the Tacit balance.
+// For an amount of a whole note or more, whole notes go first (the largest that fit), the rest from the Tacit balance;
+// none while the reader keeps the notes for this visit (LG.keep: paid from ready to pay only).
 function lgExitPlan(amount, swap = false) {
   const live = lgOut(swap);
-  if (!live.length || !amount) return null;
+  if (LG.keep || !live.length || !amount) return null;
   const dens = live.map((n) => TC.poolOf(n.pool).denomination), { picks, total } = TC.planExit(amount, dens);
   return picks.length ? { notes: picks.map((i) => live[i]), total, rest: amount - total } : null;
 }

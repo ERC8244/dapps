@@ -130,8 +130,10 @@ console.log('\nholds made again on the same notes, and holds taken back');
 console.log('\na destination whose code could not be read');
 {
   const code = cut('const CODES = new Map()', '// The receipt');
-  const mk = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', `${code}\nreturn { destGate, destNote };`)(
-    () => ['n1', 'n2'], () => async (m, p) => reads(p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}]);
+  // no own node and no wallet-read gateway: the reads go to the chain's nodes
+  const mk = (reads) => new Function('ownNodes', 'rpcAt', 'S', 'walletRead', 'lc', 'REQ', 'FORM', 'CHAINS', 'ROUTE', 'mineOf', 'ends', 'timeoutSignal', `${code}\nreturn { destGate, destNote };`)(
+    () => ['n1', 'n2'], () => async (m, p) => reads(p[0]), {account: null, key: null}, async () => { throw new Error('no wallet'); }, (x) => String(x).toLowerCase(), {v: null}, {}, [{chainId: 1}],
+    {OWN: {rpc: null}, forwarders: () => []}, () => [], {}, () => undefined);
   const ETH = {chainId: 1, full: 'Ethereum'}, SAFE = '0x' + '5a'.repeat(20);
   const down = mk(async () => { throw new Error('rate limited'); });
   const e1 = await down.destGate(ETH, SAFE).then(() => null, (e) => e);

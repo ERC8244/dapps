@@ -5376,7 +5376,7 @@ const openWithWallet = (say = () => {}) => {
   return (signing = keyFromWallet((m) => { signNow = m; signSay(m); }).finally(() => { signing = null; signNow = null; }));
 };
 async function keyFromWallet(say) {
-  const was = S.key, a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
+  const asked = !S.account, was = S.key, a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
   const had = stayGet(a);
   if (had) { if (S.key !== was) throw new Quiet('another key was opened meanwhile'); return setKey(had, a, false, p); }
   const code = await walletAsk(p, 'eth_getCode', [a, 'latest']).catch(() => '0x');
@@ -5395,6 +5395,9 @@ async function keyFromWallet(say) {
   };
   const kept = first && HALF?.who === who && Date.now() - HALF.at < 600_000 ? HALF.sig : null;
   HALF = null;
+  // A wallet that has just shown its connect prompt can drop a request sent while that prompt closes (Rainbow does): the
+  // signature is asked once the page has its focus back.
+  if (asked && !kept) await popupClosed();
   const sig = kept || await signed(first ? 'Sign “Tacit identity” in your wallet to open your Tacit key (1 of 2).' : 'Sign “Tacit identity” in your wallet to open your Tacit key.');
   const P = secp.recover(keccak(cat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg)), big(sig.subarray(0, 32)), big(sig.subarray(32, 64)), sig[64] - 27);
   const [x, y] = secp.affine(P);

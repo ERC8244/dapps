@@ -72,7 +72,10 @@ export const split = (m, bytes) => {
     if (!payload.length) continue;
     const runtime = Buffer.concat([prefix, payload]);
     if (runtime.length > EIP170) {
-      console.error(`${m.name}: chunk ${i + 1} is ${runtime.length} B, over EIP-170 (${EIP170})`);
+      console.error(
+        `${m.name}: chunk ${i + 1} is ${runtime.length} B, over EIP-170 (${EIP170})` +
+          (m.chunks.count ? `; the page has outgrown its ${m.chunks.count} chunks: raise chunks.count in the manifest on purpose` : "")
+      );
       process.exit(1);
     }
     parts.push({n: i + 1, payload, runtime, initcode: Buffer.concat([stub(runtime.length), runtime])});

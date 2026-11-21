@@ -9,7 +9,7 @@
   "sha256": "28599f92d392ed4d5a3966e2fb3e04447980f96c6bcdd3da76873460bb20aef5",
   "chunks": {
     "artifact": "TacitPay8244",
-    "maxPayload": 24575,
+    "count": 22,
     "prefix": "00"
   },
   "deployment": {

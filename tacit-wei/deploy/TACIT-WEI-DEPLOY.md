@@ -23,7 +23,11 @@ Each version serves its own bytes forever. `deployNext(initcode, salt)` on the l
 CREATE2 (so the successor's `PREVIOUS` is unforgeable) from creation code built from `src/TacitPay8244.sol`; then
 `tacit.wei` is pointed at it. The page shows a "newer version" link only when a version's `latest()` is what
 `tacit.wei` resolves to. The page's code is minified as a whole, so a new build usually changes every chunk: plan on all
-21 (about 114M gas) plus about 2.45M for `deployNext`.
+22 (about 115M gas) plus about 2.6M for `deployNext` (2,599,834 estimated from the multisig with all 22 in place).
+
+The chunk count is pinned in the manifest (`chunks.count`, 22): the page is spread evenly over them, each about 1.1 KB
+under EIP-170, which leaves room for about 24 KB more page. A build that outgrows them stops with an error; the count is
+raised on purpose (the contract takes any number of chunks), and this section's numbers with it.
 
 1. **Build.** After `npm ci` at the repo root: `bash deploy/repin.sh` writes `dapp/page.min.html`, the manifest's size and
    hash, and the chunks in `out/`, and checks that they reassemble and carry their pins. Then `forge build` (never

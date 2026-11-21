@@ -382,7 +382,7 @@ await p.click('#req-tokok');
 ok(await p.$eval('#req-pay', (b) => !b.disabled && /Pay from my private balance/.test(b.textContent)), 'then it is paid from the private balance');
 await p.click('#req-pay');
 await p.waitForSelector('#f-wamt');
-ok((await p.inputValue('#f-wto')) === 'bob.wei' && (await p.inputValue('#f-wamt')) === '12.5' && /TUSD/.test(await p.textContent('#f-tok')) && await p.$eval('#form [data-unit="tok"]', (b) => b.getAttribute('aria-selected') === 'true'), 'which opens Withdraw as a swap into the token, to the name, for the amount, in the token');
+ok((await p.inputValue('#f-wto')) === 'bob.wei' && (await p.inputValue('#f-wamt')) === '12.5' && /TUSD/.test(await p.textContent('#f-tok')) && await p.$eval('#form [data-unit="tok"]', (b) => b.getAttribute('aria-pressed') === 'true'), 'which opens Withdraw as a swap into the token, to the name, for the amount, in the token');
 ok(/Amount to arrive, at least/.test(await p.textContent('#form')), 'the amount reading as the least that arrives');
 await p.fill('#f-wamt', '1.1234567');
 ok(await p.waitForFunction(() => /TUSD has 6 decimals/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, {timeout: 10e3}).then(() => true, () => false), 'an amount past the token’s decimals is refused there too, not rounded');

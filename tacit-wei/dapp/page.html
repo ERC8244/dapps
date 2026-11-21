@@ -75,8 +75,8 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 0 0 var(--sp2); }
 .seg button { min-width: 0; min-height: var(--tap); padding: 8px 10px; background: none; border: 0; cursor: pointer; line-height: 1.25; white-space: nowrap; }
 .seg button small { overflow: hidden; text-overflow: ellipsis; display: block; font-size: 11px; font-variant-numeric: tabular-nums; }
-.seg button:hover:not([aria-selected="true"], :disabled) { color: var(--ink); }
-.seg button:active:not([aria-selected="true"], :disabled) { background: var(--chip); }
+.seg button:hover:not([aria-selected="true"], [aria-pressed="true"], :disabled) { color: var(--ink); }
+.seg button:active:not([aria-selected="true"], [aria-pressed="true"], :disabled) { background: var(--chip); }
 .seg button:disabled { cursor: not-allowed; }
 /* A mark in a tab (a chain's) beside its name. */
 .seg .tk.sm, .seg img { width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px; border-radius: 50%; }
@@ -251,7 +251,7 @@ dialog.sheet::backdrop { background: var(--scrim, rgba(0, 0, 0, .45)); }
 html:has(dialog[open]) { overflow: hidden; }
 dialog.sheet[open], .toast { animation: up .15s ease-out; }
 @media (forced-colors: active) {
-  .seg button[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
+  .seg button:is([aria-selected="true"], [aria-pressed="true"]) { outline: 2px solid Highlight; outline-offset: -2px; }
   .dot.on, .dot.live, .meter i { forced-color-adjust: none; background: Highlight; }
   .amt:focus-within { outline: 2px solid Highlight; }
 }
@@ -357,11 +357,11 @@ code, .id, .num.nw, .addr, .amt input, .bal .v, .chip code { font-family: var(--
 .seg { border: 0; background: var(--well); border-radius: var(--r2); padding: 4px; gap: 4px; }
 .seg button { border-radius: var(--r3); font-family: var(--sans); font-weight: 500; color: var(--mute); }
 .seg button + button { border-left: 0; }
-.seg button[aria-selected="true"] { background: var(--sel, var(--card)); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--sel-ring, var(--hair)); }
+.seg button:is([aria-selected="true"], [aria-pressed="true"]) { background: var(--sel, var(--card)); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--sel-ring, var(--hair)); }
 .seg.sub { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--well); padding: 4px; border: 0; border-radius: var(--r2); gap: 4px; }
 .seg.sub button { width: 100%; justify-self: stretch; text-align: center; border-radius: var(--r3); font-size: 14px; }
 .seg.sub button + button { border: 0; }
-.seg.sub button[aria-selected="true"] { background: var(--sel, var(--card)); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--sel-ring, var(--hair)); }
+.seg.sub button:is([aria-selected="true"], [aria-pressed="true"]) { background: var(--sel, var(--card)); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--sel-ring, var(--hair)); }
 .amt .seg.sub.unit { grid-auto-columns: auto; padding: 3px; margin-right: 8px; }
 .amt .seg.sub.unit button { width: auto; padding: 6px 10px; font-size: 13px; }
 /* fields: a soft well with a rounded edge; the amount large in the mono */
@@ -6992,7 +6992,7 @@ function routeLegsOk(t, r, stand) {
 const withDest = (r, to, refund = to) => { let data = r.data.split(r.stand).join(lc(to).slice(2)); if (r.back) data = data.split(r.back).join(lc(refund).slice(2)); return { ...r, data, stand: null, back: null }; };
 // The slippage choice: a label, then three equal cells. It sits outside `.lbl`, whose button style is for links.
 const slipRow = () => html`<div class="lbl"><span>Slippage</span><span class="slipnote">the most the price may move</span></div>
-  <div class="seg sub slip" role="tablist" aria-label="Slippage">${[10n, 50n, 100n].map((v) => html`<button type="button" role="tab" data-sl="${v}" aria-selected="${String(S.slip === v)}">${Number(v) / 100}%</button>`)}</div>`;
+  <div class="seg sub slip" role="group" aria-label="Slippage">${[10n, 50n, 100n].map((v) => html`<button type="button" data-sl="${v}" aria-pressed="${String(S.slip === v)}">${Number(v) / 100}%</button>`)}</div>`;
 const SWAPQ = { key: '', r: null, fee: null, err: null, busy: false, at: 0, got: 0, timer: 0 };
 // The line under an amount is written only when what it says changed, so a screen reader hears it once.
 const capMount = (v) => { const e = $('#f-cap'), s = part(v); if (e && e.capS !== s) { e.capS = s; mount(e, new Raw(s)); } };
@@ -7017,7 +7017,7 @@ function formSwap(f, seg) {
     <div class="lbl"><span>Address</span>${S.account ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
     <div class="amt text"><input id="f-wto" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient address or name"></div>
     <div class="lbl"><span>${inTok ? 'Amount to arrive, at least' : 'Amount of ETH to swap'}</span>${MAX}</div>
-    <div class="amt"><input id="f-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${inTok ? `Amount of ${t.sym} to arrive, at least` : 'Amount of ETH to swap'}"><span class="seg sub unit" role="tablist" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`<button type="button" role="tab" data-unit="${v}" aria-selected="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
+    <div class="amt"><input id="f-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${inTok ? `Amount of ${t.sym} to arrive, at least` : 'Amount of ETH to swap'}"><span class="seg sub unit" role="group" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`<button type="button" data-unit="${v}" aria-pressed="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
     <p class="cap" id="f-cap" aria-live="polite"></p>
     ${slipRow()}
     ${routeLine(tab, false)}
@@ -7396,7 +7396,7 @@ function formShieldToken(f, seg) {
   const inTok = !!S.payIn;
   mount(f, html`${seg}
     <div class="lbl"><span>${inTok ? 'Amount to spend' : 'Amount to shield'}</span><button type="button" id="f-max">Wallet <span id="f-tb" class="num">…</span> ${t.sym}</button></div>
-    <div class="amt"><input id="f-samt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${inTok ? `Amount of ${t.sym} to spend` : 'Amount of ETH to shield'}"><span class="seg sub unit" role="tablist" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`<button type="button" role="tab" data-unit="${v}" aria-selected="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
+    <div class="amt"><input id="f-samt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${inTok ? `Amount of ${t.sym} to spend` : 'Amount of ETH to shield'}"><span class="seg sub unit" role="group" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`<button type="button" data-unit="${v}" aria-pressed="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
     <p class="cap" id="f-cap" aria-live="polite"></p>
     ${slipRow()}
     <div id="f-via"></div>
@@ -7724,7 +7724,7 @@ function formReceive(f) {
       <p class="note err" id="f-rerr" hidden>${tok && !tok.dec ? 'Enter the amount as a whole number.' : `Enter the amount as a number, up to ${tok?.dec ?? 18} decimals.`}</p></div>
     <div class="blk"><div class="lbl"><span>Get paid by link</span><span>${tok ? 'paid from a private balance' : 'any wallet can pay it'}</span></div>
       <div class="row2"><button class="btn" type="button" id="f-link">Copy link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>
-      ${!tok && bi != null ? html`<div class="lbl"><span>QR code for</span></div><div class="seg sub qrfor" role="tablist" aria-label="What scans the code" id="f-qrfor">${[['link', 'A phone camera'], ['wallet', 'A wallet app']].map(([v, l]) => html`<button type="button" role="tab" data-qf="${v}" aria-selected="${String(qrFor() === v)}">${l}</button>`)}</div>` : ''}
+      ${!tok && bi != null ? html`<div class="lbl"><span>QR code for</span></div><div class="seg sub qrfor" role="group" aria-label="What scans the code" id="f-qrfor">${[['link', 'A phone camera'], ['wallet', 'A wallet app']].map(([v, l]) => html`<button type="button" data-qf="${v}" aria-pressed="${String(qrFor() === v)}">${l}</button>`)}</div>` : ''}
       <div class="qrbox" id="f-qr"></div>
       <div class="rlink"><code id="f-rlink"></code></div>
       <div id="f-qrnote"></div>
@@ -7741,7 +7741,7 @@ function formReceive(f) {
         <div class="lbl"><span>What it’s for (optional)</span></div>
         <div class="amt text"><input id="f-rfor" maxlength="60" placeholder="Dinner, rent, invoice 42…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="What it’s for (optional)"></div>
         ${tok ? '' : html`<div class="lbl"><span>How it is paid</span></div>
-        <div class="seg sub" role="tablist" aria-label="How it is paid" id="f-rkind">${[['box', 'Plain transfer'], ['proved', 'Private proof']].map(([v, l]) => html`<button type="button" role="tab" data-rk="${v}" aria-selected="${String(RECV.kind === v)}">${l}</button>`)}</div>`}
+        <div class="seg sub" role="group" aria-label="How it is paid" id="f-rkind">${[['box', 'Plain transfer'], ['proved', 'Private proof']].map(([v, l]) => html`<button type="button" data-rk="${v}" aria-pressed="${String(RECV.kind === v)}">${l}</button>`)}</div>`}
       <p class="note">Your pool address (ID <span class="num nw">${addressId(k.pool.address)}</span>) is paid the same way: <button class="link" type="button" data-copy="${k.pool.address}">copy it</button></p>
       ${tok ? '' : html`<p class="note">Paid from an exchange, or a wallet that cannot open this page? <button class="link" type="button" id="f-toexch">Give them a one-time deposit address</button> instead.</p>`}</details>`);
   $('#f-ropts').addEventListener('toggle', (e) => { RECV.opts = e.currentTarget.open; });

@@ -53,7 +53,7 @@ console.log('2. 0.2 ETH with the smallest note 0.1: two whole notes in one forwa
   await amount(p, '0.2');
   await until(p, () => /2 × 0\.1 ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 10e3);
   check(/2 × 0\.1 ETH/.test(await split(p)) && /whole notes/.test(await split(p)), 'the split card shows "2 × 0.1 ETH" whole notes', await split(p));
-  check(!/your private balance/.test(await split(p)), 'and no remainder row', await split(p));
+  check(!/ready to pay/.test(await split(p)), 'and no remainder row', await split(p));
   check((await p.inputValue('#lg-min')) === String(10n ** 17n), 'the select says 0.1 ETH (from the stored choice)');
   check(/Into whole notes ?0\.2 ETH/.test(await rcpt(p)) && !/Into your private balance/.test(await rcpt(p)), 'the receipt says "Into whole notes 0.2 ETH" and nothing into the balance', await rcpt(p));
   await p.click('#f-go');
@@ -89,19 +89,19 @@ console.log('3. 2.37 ETH with the smallest note 0.1: notes and the rest; the sel
   await amount(p, '2.37');
   await until(p, () => /2 × 1 ETH \+ 3 × 0\.1 ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 10e3);
   check(/2 × 1 ETH \+ 3 × 0\.1 ETH/.test(await split(p)), 'the card shows "2 × 1 ETH + 3 × 0.1 ETH"', await split(p));
-  check(/0\.07 ETH ?your private balance/.test(await split(p)), 'and "0.07 ETH your private balance"', await split(p));
+  check(/0\.07 ETH ?ready to pay/.test(await split(p)), 'and "0.07 ETH ready to pay"', await split(p));
   check(await until(p, () => /Network fee about [\d.]+ ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 10e3), 'with a network-fee line once the gas price is read', await split(p));
   // depositGas(5, rest) = 5 × 0.8M + 0.48M at 1 gwei
   check(/Network fee about 0\.00448 ETH/.test(await split(p)), 'the fee is 4.48M gas at 1 gwei (0.00448 ETH)', /Network fee[^.]*\.[^.]*\./.exec(await split(p))?.[0]);
-  check(/Into whole notes ?2\.3 ETH/.test(await rcpt(p)) && /Into your private balance ?0\.07 ETH/.test(await rcpt(p)), 'the receipt: 2.3 ETH into whole notes, 0.07 ETH into the balance', await rcpt(p));
+  check(/Into whole notes ?2\.3 ETH/.test(await rcpt(p)) && /Ready to pay ?0\.07 ETH/.test(await rcpt(p)), 'the receipt: 2.3 ETH into whole notes, 0.07 ETH ready to pay', await rcpt(p));
   await p.selectOption('#lg-min', String(E)); await p.waitForTimeout(500);
-  check(/2 × 1 ETH/.test(await split(p)) && !/0\.1 ETH ?whole/.test(await split(p)) && !/3 ×/.test(await split(p)) && /0\.37 ETH ?your private balance/.test(await split(p)), 'smallest 1 ETH: "2 × 1 ETH" and 0.37 ETH to the balance', await split(p));
+  check(/2 × 1 ETH/.test(await split(p)) && !/0\.1 ETH ?whole/.test(await split(p)) && !/3 ×/.test(await split(p)) && /0\.37 ETH ?ready to pay/.test(await split(p)), 'smallest 1 ETH: "2 × 1 ETH" and 0.37 ETH to the balance', await split(p));
   check((await p.evaluate(() => localStorage.getItem('tacit-wei-fixed-min'))) === String(E), 'the choice is kept');
   // a choice that leaves no whole note: the card goes (formShield's onChange resets splitKey to '', the key of no card)
   await p.selectOption('#lg-min', String(10n * E)); await p.waitForTimeout(500);
   check((await p.$eval('#f-split', (e) => e.innerHTML.trim())) === '' && /Into your private balance ?2\.37 ETH/.test(await rcpt(p)), 'smallest 10 ETH for 2.37: the card goes, all into the balance', `${await split(p)} | ${await rcpt(p)}`);
   await amount(p, '12');
-  check(await until(p, () => /1 × 10 ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 10e3) && /2 ETH ?your private balance/.test(await split(p)), '12 ETH with smallest 10: "1 × 10 ETH" and 2 ETH to the balance', await split(p));
+  check(await until(p, () => /1 × 10 ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 10e3) && /2 ETH ?ready to pay/.test(await split(p)), '12 ETH with smallest 10: "1 × 10 ETH" and 2 ETH to the balance', await split(p));
   await p.selectOption('#lg-min', '0'); await p.waitForTimeout(500);
   check(!/whole notes ·|× /.test(await split(p)) && /Split into whole notes: off/.test(await split(p)) && !!(await p.$('#f-split #lg-min')) && /Into your private balance ?12 ETH/.test(await rcpt(p)), 'Off: the parts are hidden, one line says the split is off (with the select to turn it on), all 12 ETH into the balance', `${await split(p)} | ${await rcpt(p)}`);
   await p.selectOption('#lg-min', '100000000000000000'); await p.waitForTimeout(500);
@@ -175,7 +175,7 @@ console.log('6. Withdraw: whole notes first, the rest from the balance');
   await until(p, () => /fee/i.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 15e3);
   const r = await rcpt(p);
   check(/From whole notes \(1\) ?1 ETH/.test(r), 'amount 1.5: "From whole notes (1) 1 ETH"', r);
-  check(/From your private balance ?0\.5 ETH/.test(r) || /Reading the relay/.test(r), 'and "From your private balance 0.5 ETH"', r);
+  check(/From ready to pay ?0\.5 ETH/.test(r) || /Reading the relay/.test(r), 'and "From ready to pay 0.5 ETH"', r);
   await p.fill('#f-wamt', '0.5'); await p.waitForTimeout(800);
   const r2 = await rcpt(p);
   check(!/whole notes/.test(r2) && /Arrives ?0\.5 ETH/.test(r2), 'amount 0.5: no notes rows, it arrives from the balance', r2);

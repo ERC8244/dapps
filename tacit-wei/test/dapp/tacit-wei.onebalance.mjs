@@ -45,7 +45,7 @@ console.log('1. a new balance: post-quantum privacy first, inline; "Not now" put
   await p.click('#tabs [data-tab="shield"]');
   check(await until(p, () => document.querySelectorAll('#f-pq .pq-words li').length === 24, null, 10e3), 'Shield shows the 24 words inline, before the form', await txt(p, '#form'));
   const form = await txt(p, '#form');
-  check(/Not now \(ordinary privacy\)/.test(form) && /I have words already/.test(form) && /tacit\.finance PQ ID\? Its 24 words work here too/.test(form), 'with "Not now (ordinary privacy)", "I have words already" and the PQ ID line', form.slice(0, 400));
+  check(/Not now \(ordinary privacy\)/.test(form) && /Enter your 24 words instead/.test(form) && /tacit\.finance PQ ID\? Its 24 words work here too/.test(form), 'with "Not now (ordinary privacy)", "I have words already" and the PQ ID line', form.slice(0, 400));
   check(/show only on tacit\.wei \(and apps that add post-quantum support\)/.test(form), 'and that notes sealed under the words show only on tacit.wei and apps that support it');
   check(!(await p.$('#f-samt')), 'the amount field waits');
   await p.click('#tabs [data-tab="send"]');
@@ -60,6 +60,29 @@ console.log('1. a new balance: post-quantum privacy first, inline; "Not now" put
   await L.close(p);
 }
 
+console.log('1b. a form with an amount in it is not taken away for the words: the press brings them');
+{
+  const env = mkEnv(); L.lgState(env); env.C[1].balances.set(DEV.address.toLowerCase(), 5n * E);
+  const p = await L.open(env, {connected: true});
+  await signIn(p); await ready(p);
+  await p.click('#tabs [data-tab="shield"]');
+  await until(p, () => /\d/.test(document.querySelector('#f-wb')?.textContent || ''), null, 15e3);
+  await p.fill('#f-samt', '0.5');
+  // the first read of a new balance ends while the amount is typed: the words step would turn on now
+  await p.evaluate(() => { window.__pqAsk = true; });
+  await p.click('#bal-re');
+  await p.waitForTimeout(2000);
+  check(!(await p.$('#f-pq')) && (await p.inputValue('#f-samt')) === '0.5', 'the form stays, with the amount in it', await txt(p, '#form'));
+  await until(p, () => !document.querySelector('#f-go')?.disabled, null, 10e3);
+  await p.click('#f-go');
+  check(await until(p, () => document.querySelectorAll('#f-pq .pq-words li').length === 24, null, 5e3), 'the press brings the 24 words, before the wallet is asked', await txt(p, '#form'));
+  check(env.C[1].sent.length === 0, 'and nothing is sent');
+  await p.click('#pq-later');
+  check(await until(p, () => document.querySelector('#f-samt')?.value === '0.5', null, 5e3), '"Not now" gives the form back with the amount still in it');
+  noErrors(p, 'scenario 1b');
+  await L.close(p);
+}
+
 console.log('2. turning it on inline');
 {
   const env = mkEnv(); L.lgState(env);
@@ -70,7 +93,7 @@ console.log('2. turning it on inline');
   const words = await p.$$eval('#f-pq .pq-words li', (l) => l.map((x) => x.textContent.trim()));
   const shownNow = () => p.$$eval('#f-pq .pq-words li', (l) => l.map((x) => x.textContent.trim()).join(' '));
   await p.click('#f-pq #pq-enter');
-  check(await until(p, () => !!document.querySelector('#f-pq #pq-text'), null, 5e3), '"I have words already" asks for them');
+  check(await until(p, () => !!document.querySelector('#f-pq #pq-text'), null, 5e3), '"Enter your 24 words instead" asks for them');
   await p.click('#f-pq #pq-back');
   await until(p, () => document.querySelectorAll('#f-pq .pq-words li').length === 24, null, 5e3);
   check(await shownNow() === words.join(' '), 'Cancel comes back to the same words');
@@ -222,6 +245,7 @@ console.log('8. ETH at a one-time deposit address (a note moved in): the relay t
   const row = await txt(p, '#form .rows'), bal = await txt(p, '#bal-note');
   check(/The relay moves it in shortly, or take it in now from your wallet/.test(row), 'its row says the relay moves it in, the wallet only as a choice', row);
   check(/0\.0997 ETH is waiting at your deposit addresses on Ethereum; the relay moves it into your balance within minutes/.test(bal) && !(await p.$('#bal-note .callout')), 'the balance line says the relay moves it in (a line, not a call to act)', bal);
+  check(/0\.17 ready to pay/.test(await txt(p, '#bal')) && /0\.0997 arriving/.test(await txt(p, '#bal')), 'and the total\'s own line says 0.0997 is arriving, so a dip while a note lands has its reason', await txt(p, '#bal'));
   check(env.C[1].sent.length === 0, 'nothing sent');
   noErrors(p, 'scenario 8');
   await L.close(p);

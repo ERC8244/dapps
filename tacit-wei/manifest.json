@@ -5,8 +5,8 @@
   "source": "dapp/page.html",
   "page": "dapp/page.min.html",
   "minify": true,
-  "bytes": 511313,
-  "sha256": "945c5df335a304d873b3729c6dac561279ccd987b774758fcf0cef6af2329188",
+  "bytes": 512486,
+  "sha256": "ff6b31dce695b7ee403bc078116801f1090ecccfbe6a8cf62b8a775ea6da4317",
   "chunks": {
     "artifact": "TacitPay8244",
     "maxPayload": 24575,

@@ -173,6 +173,35 @@ console.log('one wallet: a first sign-in, then a later visit');
   await p.context().close();
 }
 
+console.log('a button that says "Sign in" starts it: one press from the form, not two');
+{
+  const p = await open([ALPHA]);
+  await p.click('#f-go');
+  ok(await until(p, () => /^Sign in · /.test(document.querySelector('#wallet-label').textContent)), 'the wallet is connected and not signed in');
+  await p.fill('#f-samt', '0.5');
+  ok(await until(p, () => /Sign in to shield to yourself/.test(document.querySelector('#f-go')?.textContent || '')), 'the form says "Sign in to shield to yourself"');
+  await p.click('#f-go');
+  ok(await opened(p), 'the one press opens the key', (await log(p)).join());
+  ok((await log(p)).filter((x) => x === '0:personal_sign').length === 2 && !(await p.$('#sheet-wallet[open]')), 'with the first sign-in\'s two signatures, and the sheet closed after', (await log(p)).join());
+  ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
+  await p.context().close();
+}
+
+console.log('a second press while a sign-in waits takes over its line');
+{
+  const p = await open([{...ALPHA, modes: {personal_sign: 'hang'}}]);
+  await signInFromHeader(p);
+  ok(await until(p, () => /Sign “Tacit identity”/.test(document.querySelector('#sheet-wallet [data-say]')?.textContent || '')), 'the sheet says what the wallet is asked');
+  await p.click('#sheet-wallet [data-close]');
+  await p.click('#tabs [data-tab="send"]');
+  await p.click('#g-in [data-in="eth"]');
+  ok(await until(p, () => /Sign “Tacit identity”/.test(document.querySelector('#g-in [data-say]')?.textContent || ''), null, 4000), 'the button in the form shows the same line at once');
+  ok(await until(p, () => !!document.querySelector('#g-in [data-unstick]'), null, 14_000), 'and the nudge with "Stop waiting" shows there too');
+  ok((await log(p)).filter((x) => x === '0:personal_sign').length === 1, 'the wallet was asked once', (await log(p)).join());
+  ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
+  await p.context().close();
+}
+
 console.log('a wallet whose popup drops a request that comes as the last one closes');
 for (const [ms, how] of [[500, 'the pause between the two signatures'], [1500, '"Ask again"']]) {
   const p = await open([{...ALPHA, dropQuick: ms}]);

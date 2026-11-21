@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-L0toUUdotyigiZctIgbxamdACSeVZCL80ao+BOilRQA=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-PR8yXCksV0gSBgLLSNfiEpCythcXKrxexfrEftxSHzg=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -5288,7 +5288,15 @@ const DRIFTED = 'This wallet signed “Tacit identity” differently the second 
 // Before the second signature: the first one's popup has closed (the page has the focus again, or three seconds passed) and
 // a moment more, as a wallet whose popup is still closing can drop a request that comes at once.
 const popupClosed = async () => { for (let i = 0; i < 30 && !document.hasFocus(); i++) await sleep(100); await sleep(700); };
-const openWithWallet = (say = () => {}) => (signing ||= keyFromWallet(say).finally(() => { signing = null; }));
+// A press while a sign-in is under way (another button, the sheet closed and opened again) takes over its line: what it says
+// now is said there, and its later words (a nudge, "Ask again") too, rather than only where the first press was.
+let signSay = () => {}, signNow = null;
+const openWithWallet = (say = () => {}) => {
+  signSay = say;
+  if (signing) { if (signNow != null) say(signNow); return signing; }
+  signNow = null;
+  return (signing = keyFromWallet((m) => { signNow = m; signSay(m); }).finally(() => { signing = null; signNow = null; }));
+};
 async function keyFromWallet(say) {
   const was = S.key, a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
   const code = await walletAsk(p, 'eth_getCode', [a, 'latest']).catch(() => '0x');
@@ -5314,7 +5322,8 @@ async function keyFromWallet(say) {
   if (big(sig.subarray(32, 64)) > SN / 2n) throw new Error('Your wallet returned a signature in an unusual form, so no key was opened. Try another wallet.');
   if (first) {
     HALF = { a, sig, at: Date.now() };
-    if (!kept) await popupClosed();
+    // said at once: the first prompt has closed, and the old line would still say it is open while the pause runs
+    if (!kept) { say('Got the first signature. Your wallet will ask once more, to confirm (2 of 2).'); await popupClosed(); }
     const again = await signed('Sign once more to confirm your wallet gives the same key (2 of 2, only the first time on a device).');
     HALF = null;
     if (!same(again, sig)) { DRIFT.add(who); throw new Error(DRIFTED); }
@@ -5468,7 +5477,7 @@ function setKey(key, account, first = false, via = null) {
   if (!store.set('tacit-pay-probe-v1', '1')) toast('This browser will not let the page save anything. Keep this tab open until each payment shows done: one still under way is forgotten if you reload.', true); else store.del('tacit-pay-probe-v1');
   Object.assign(TIMES, vget('times') || {});
   for (const c of CHAINS) CH[c.chainId] = { last: vget('seen')?.[c.chainId] ?? null };
-  toast(`Signed in as ${short(S.key.address, 8)}`);
+  if (!first) toast('Signed in');
   mount($('#status'), '');
   render(); syncAll(true); warmBoxes(pool);
   if (first) mount($('#status'), html`<span class="ok">Signed in. Your Address ID is <b class="num nw">${addressId(S.key.address)}</b>; payers see it too.</span>`);
@@ -5650,10 +5659,11 @@ const whyNot = (a, fee, bal, notes) => (plan(a, fee, notes) ? null : bal >= a + 
 // balance, and the most it can send, so a fee larger than the amount is not a surprise. `max`: the form has a Max.
 // A relay's fee with room for gas to move between the quote and the send: a fifth and a hair.
 const withHeadroom = (fee, hair = 10n ** 12n) => (fee ? fee * 6n / 5n + hair : 0n);
-const shortSay = (a, fee, bal, max = true) => {
-  if (bal >= a + fee) return 'More than your private balance covers with the fee.';
+// `ready`: whole notes are held too, so "your private balance" would read as all of it: the part that is ready to pay is named.
+const shortSay = (a, fee, bal, max = true, ready = false) => {
+  if (bal >= a + fee) return `More than ${ready ? 'what is ready to pay' : 'your private balance'} covers with the fee.`;
   const most = max ? maxSpend(withHeadroom(fee)) : 0n;
-  return `This takes ${fmt(a + fee)} ETH${fee ? `: ${fmt(a)} for what you asked and ${ethStr(fee)} for the relay` : ''}. Your private balance is ${fmt(bal)} ETH.${most > 0n && most < a ? ` The most it can take now is ${fmt(most, 6, true)} ETH: Max fills it in.` : ''}`;
+  return `This takes ${fmt(a + fee)} ETH${fee ? `: ${fmt(a)} for what you asked and ${ethStr(fee)} for the relay` : ''}. ${ready ? 'What is ready to pay is' : 'Your private balance is'} ${fmt(bal)} ETH.${most > 0n && most < a ? ` The most it can take now is ${fmt(most, 6, true)} ETH: Max fills it in.` : ''}`;
 };
 // Said in a form whose amount `a` the balance cannot pay with `fee`: held in more parts than one payment combines (with the
 // way to combine them, as that form sends), or short, and by how much. `max`: the form has a Max.
@@ -5662,7 +5672,7 @@ const cannotPay = (say, tab, a, fee, bal, max = true, x = null) => {
   const held = lgHeld(), small = lgLive().reduce((m, n) => { const d = TC.poolOf(n.pool).denomination; return m == null || d < m ? d : m; }, null);
   const notes = x ? `${fmt(x.total)} ETH of this comes from whole notes, and the other ${fmt(a)} ETH from your balance. ` : '';
   const more = x || !held ? '' : tab === 'send' ? ` Whole notes hold ${fmt(held)} ETH more: move one into your balance under Whole notes.` : ` Whole notes go out only whole, and your smallest is ${TC.ethWords(small)} ETH.`;
-  say(html`<p class="note err">${whyNot(a, fee, bal, cur().notes || []) === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `${notes}${shortSay(a, fee, bal, max && !x)}${more}${heldHint()}`}</p>`);
+  say(html`<p class="note err">${whyNot(a, fee, bal, cur().notes || []) === 'parts' ? html`Your balance here is in ${combinePlan(fee).parts} parts, more than one payment can combine by itself. <button class="link" type="button" id="f-combine">Combine them first</button>.` : `${notes}${shortSay(a, fee, bal, max && !x, held > 0n)}${more}${heldHint()}`}</p>`);
   $('#f-combine')?.addEventListener('click', () => combineFirst(tab));
 };
 // "Combine them first" in a form: combined the way that form sends, from the wallet when it is set to send from it.
@@ -5921,6 +5931,9 @@ const staysRow = (bal, p, x = null) => (bal != null && (p || x) ? kvRow('Left in
 const STEPS = { proving: 'Proving in your browser', 'sending through the relay': 'Sending through the relay', 'waiting for the block': 'Waiting for the block', 'confirm in your wallet': 'Confirm in your wallet', 'combining two notes first': 'Combining your balance first', [RACED_STEP]: 'Another payment landed first; proving again' };
 let FORM = { check: null };
 const DRAFT = {};
+// A form with the cursor in a field, or something typed in it: not taken away for the words' step as the first read of a new
+// balance ends. The step comes at the press (act) instead.
+const formInUse = () => { const a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && $('#form')?.contains(a)) || Object.values(DRAFT).some(Boolean); };
 const dropAmts = () => { for (const k of ['f-amt', 'f-wamt', 'f-samt', 'f-ramt']) delete DRAFT[k]; };
 
 function render() { paintWallet(); paintReq(); paintBal(); paintTabs(); renderForm(); lgRender(); paintActivity(); paintDevice(); }
@@ -5940,7 +5953,7 @@ function paint() {
     const live = new Set(hw.notes().map((n) => String(n.nf))), back = rb.dataset.id.split('|').some((nf) => live.has(nf));
     mount($('#status'), html`<span class="${back ? 'warn' : 'ok'}">${back ? 'The held payment did not land, so nothing was paid. Its part of your balance is free again.' : 'The held payment is settled: its notes are spent. Activity shows it.'}</span>`);
   }
-  if (FORM.gate !== undefined && FORM.gate !== pqGate()) return renderForm();
+  if (FORM.gate !== undefined && FORM.gate !== pqGate() && !(pqGate() && formInUse())) return renderForm();
   // A new fee redraws the relay line only, not a field being typed in.
   if (FORM.relay !== undefined && FORM.relay !== relayKey()) {
     const rt = S.tab, r = $('#form .route'), had = r?.contains(document.activeElement) ? document.activeElement.dataset.route : null;
@@ -6001,7 +6014,9 @@ function paintBal() {
   // to a Tacit address offers to move in when the balance falls short.
   const held = lgHeld(), tot = (x) => (held > 0n ? x + held : x);
   const v = st.bal != null ? ethStr(tot(st.bal)) : st.last != null ? html`<span class="stale">${ethStr(tot(st.last))}</span>` : st.err ? html`<span class="mute">—</span>` : html`<span class="sk" style="--w:8ch"></span>`;
-  const parts = held > 0n && st.bal != null ? html`<div class="u"><b class="num">${fmt(st.bal)}</b> ready to pay · <b class="num">${fmt(held)}</b> in ${lgLive().length === 1 ? 'a whole note' : `${lgLive().length} whole notes`} · ${LG_TORNADO}</div>` : '';
+  // What is on its way in (a note moved in, or a deposit, waiting at one of the key's addresses) is said beside the parts, so a
+  // total that dips while a move lands has its reason in view.
+  const parts = (held > 0n || w > 0n) && st.bal != null ? html`<div class="u"><b class="num">${fmt(st.bal)}</b> ready to pay${held > 0n ? html` · <b class="num">${fmt(held)}</b> in ${lgLive().length === 1 ? 'a whole note' : `${lgLive().length} whole notes`} · ${LG_TORNADO}` : ''}${w > 0n ? html` · <b class="num">${fmt(w)}</b> arriving` : ''}</div>` : '';
   mount($('#bal'), html`${tkOn(html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg>`, c)}<div><div class="v num">${v}</div><div class="u">ETH, private</div>${parts}${held > 0n && st.bal == null ? lgBalLine() : ''}${poolLine}</div>
     <div class="side">${st.err ? html`<span class="err">${errText(st.err)}</span><br>` : ''}<button class="link" type="button" id="bal-re">${st.syncing && (st.asked || st.bal == null) ? `reading…${readPct(st)}` : 'refresh'}</button>${olderPct(st) ? html`<br><span class="u">${olderPct(st)}</span>` : ''}</div>`);
   // Refresh reads the chain again, past a read that found nothing new.
@@ -6022,10 +6037,13 @@ function paintTabs() {
 // and a host that names a contract in tacit.wei's line of versions (checked by servedBy); null until that is known.
 const HOST = { ok: ['tacit.wei.limo', 'tacit.gwei.limo', 'tacit.finance', 'www.tacit.finance'].includes(location.hostname) || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || null };
 const hostNote = () => html`<p class="note${HOST.ok === false ? ' err' : ''}">Sign it only on tacit.wei.limo, tacit.gwei.limo or tacit.finance: the signature opens your balance.${HOST.ok === false ? ` This page is on ${location.hostname}: open tacit.wei.limo to sign in.` : HOST.ok == null ? ` This page is on ${location.hostname}, which has not been checked against tacit.wei yet.` : ''}</p>`;
+// A browser that has opened no key before asks the wallet for the signature twice: said before it is pressed, not only as it happens.
+const firstOnDevice = () => { try { for (let i = localStorage.length; i--;) { const k = localStorage.key(i) || ''; if (k.startsWith('tacit-pay-anchor-v2:') || k.startsWith('tacit-eth-identity-anchor:')) return false; } return true; } catch { return false; } };
 function signIn(id) {
   const who = S.account;
   return html`<div class="opts" id="${id}">
     <button class="opt main" type="button" data-in="eth"><span class="opt-t">${ethIcon}${who ? `Continue with ${whoShort(who)}` : 'Sign in with your Ethereum wallet'}</span><span class="opt-m">Opens your Tacit key, the same as on tacit.finance.</span></button>
+    ${firstOnDevice() ? html`<p class="note">First time on this device: your wallet is asked to sign the same message twice, which confirms it gives the same key every time.</p>` : ''}
     ${hostNote()}
     <p class="note" data-say role="status" hidden></p>
     ${S.wallet && S.account ? html`<p class="note">${S.wallet.info.name} · ${whoShort(S.account)} · <button class="link" type="button" data-in="switch">use another wallet</button></p>` : !installed().length ? html`<p class="note">${NO_WALLET}</p>` : ''}
@@ -6234,6 +6252,8 @@ const wireHeld = (root) => $$('[data-retry]', root).forEach((b) => b.onclick = (
 // One action at a time, with the chain held: its progress in the status line, its result there and in a toast.
 async function act(btn, fn, target = '#status') {
   if (S.busy) return;
+  // A form kept on screen while its balance was read (formInUse) gives way to the words' step now, before anything is asked.
+  if (!FORM.gate && pqGate() && btn.closest?.('#form')) { toast('One step first: your 24 words.'); return renderForm(); }
   const status = $(target), c = S.chain;
   ACT = target;
   S.busy = true; paintTabs();
@@ -6430,7 +6450,7 @@ function formShield(f) {
       <p class="note">${pal('face')}From your wallet on ${c.full}: no relay fee, just gas.${S.key ? '' : html` To shield into your own balance, <button class="link" type="button" id="f-open">sign in</button>.`}</p>`);
     let wb = null;
     const amt = $('#f-samt'), to = $('#f-sto'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
-    $('#f-open')?.addEventListener('click', () => openSheet());
+    $('#f-open')?.addEventListener('click', () => openSheet(true));
     // The wallet answers only for the chain it is on, so with another chain selected the balance becomes a button that
     // moves the wallet here.
     const readWb = () => walletRead(c, 'eth_getBalance', [S.account, 'latest']).then((b) => { wb = BigInt(b); const e = $('#f-wb'); if (e) e.textContent = fmt(wb, 4); FORM.check?.(); }).catch((e) => {
@@ -6478,12 +6498,12 @@ function formShield(f) {
       if (!a || !t || t.error) { go.textContent = !a ? 'Enter an amount' : 'Enter who it is for'; return who || badAmt(amt) ? say(badAmt(amt)) : undefined; }
       if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
       const p = splitOf(a, t);
-      say(p ? html`${kvRow('Into whole notes', `${fmt(p.noteTotal)} ETH`)}${p.remainder ? kvRow('Into your private balance', `${fmt(p.remainder, 18)} ETH`) : ''}` : html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a, 18)} ETH`)}`);
+      say(p ? html`${kvRow('Into whole notes', `${fmt(p.noteTotal)} ETH`)}${p.remainder ? kvRow('Ready to pay', `${fmt(p.remainder, 18)} ETH`) : ''}` : html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a, 18)} ETH`)}`);
       go.disabled = false;
     };
     go.onclick = () => {
       if (!S.account) return connectHere();
-      if (!S.key && !to?.value.trim()) return openSheet();
+      if (!S.key && !to?.value.trim()) return openSheet(true);
       const seen = target();
       act(go, async (step) => {
         const a = parseEth(amt.value), t = await recipientNow(seen);
@@ -7589,12 +7609,12 @@ function formShieldToken(f, seg) {
     // With the zap there, the relay is only for amounts it moves in itself.
     if (zap && byRelay() && (least == null || a < least)) return say(html`<p class="note err">${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
     const sp = !byRelay() && splitOk ? lgPlan(a) : null;
-    say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Into your private balance', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
+    say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Ready to pay', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
       ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${ws ? kvRow('Your wallet', walletAsks(c, t, ws, r.limit, byRelay() ? ZROUTER : sp ? SPLITZAP : ZAP, batch)) : ''}${sp ? html`<p class="note mute">Whole notes · ${LG_TORNADO}, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words' : 'sign-in'} (nothing extra to sign)` : 'made from your wallet\'s signatures (a short message each, nothing sent)'}, in the same transaction as the swap.</p>` : ''}`);
     go.disabled = false;
   };
   go.onclick = () => {
-    if (!S.key) return openSheet();
+    if (!S.key) return openSheet(true);
     // The route shown as the button was pressed: one found again at the press may take no more than it showed.
     if ($('#f-max')?.disabled) return;
     const a0 = ethAmt(), seen = shownR?.key === routeKey(a0) ? shownR.r : null, seenAt = seen ? shownR.at : 0;
@@ -8128,7 +8148,7 @@ function paintTokReq(r, body, head, wire, was) {
   $('#req-shield')?.addEventListener('click', () => { if (S.busy) return; Object.assign(S, { tab: 'shield', from: 'wallet', chain: c }); render(); $('#form').scrollIntoView({ behavior: smooth(), block: 'start' }); });
   $('#req-pay').onclick = () => {
     if (S.busy || !r.tokOk) return;
-    if (!S.key) return openSheet();
+    if (!S.key) return openSheet(true);
     if (t.added) keepAdded(c, t);
     showChain(c);
     Object.assign(S, { tab: 'withdraw', outWas: null, outIn: { c: c.chainId, addr: t.addr } });
@@ -8668,7 +8688,13 @@ function loadFromDisk() {
 }
 
 // ── the wallet sheet and endpoints ──
-function openSheet() { renderWalletSheet(); $('#sheet-wallet').showModal(); }
+// `start`: from a button that says "sign in", with a wallet already connected: the sign-in begins as the sheet opens, which shows
+// how it goes (one press, not two). With no wallet connected the sheet is the way to pick one (or to paste a key).
+function openSheet(start = false) {
+  renderWalletSheet(); $('#sheet-wallet').showModal();
+  const go = !S.key && $('#sheet-wallet [data-in="eth"]');
+  if (go) start && S.account ? go.click() : go.focus({ preventScroll: true });   // Enter or Space signs in
+}
 function renderWalletSheet() {
   const el = $('#wallet-body');
   if (!S.key) { mount(el, html`<p class="lede">Sign in to use your private balance.</p>${signIn('ws-in')}`); return wireSignIn(el, () => $('#sheet-wallet').close()); }
@@ -8712,11 +8738,11 @@ function pqSection(inline = false) {
     ${PQUI.step === 'off' ? html`<p class="note warn">Until you enter the words again, this device will not show or spend the part of your balance and the whole notes made with them. They stay yours. Have the words written down first.</p><div class="row2"><button class="btn ghost sm" type="button" id="pq-off-yes">Forget them here</button><button class="btn ghost sm" type="button" id="pq-back">Keep them</button></div>`
       : html`<div class="row2"><button class="btn ghost sm" type="button" id="pq-show">${PQUI.step === 'show' ? 'Hide the words' : 'Show the 24 words'}</button><button class="btn ghost sm" type="button" id="pq-off">Forget them here</button></div>`}${err}`;
   if (step === 'new') return html`<div class="kv"><span>Post-quantum privacy</span><b class="mute">step 1 of 2</b></div>
-    ${inline ? html`<p class="note">First, 24 words of your own. They seal your Tacit balance and change, so a quantum computer reading today’s chain cannot open them later.</p>` : ''}
+    ${inline ? html`<p class="note">First, 24 words of your own. They seal your Tacit balance and change, so a quantum computer reading today’s chain cannot open them later.</p><p class="note">Used tacit.wei before, on another device? <button class="link" type="button" id="pq-enter">Enter your 24 words instead</button>, so you do not make new ones.</p>` : ''}
     ${pqWords(PQUI.root)}<p class="note">Write them on paper, in order: with your wallet, they let any device see these notes. They are not a wallet phrase; never import them into a wallet.</p>
     <p class="note mute">${PQ_ONLY}</p>
     <div class="row2"><button class="btn sm" type="button" id="pq-wrote">I wrote them down</button>${inline ? '' : html`<button class="btn ghost sm" type="button" id="pq-back">Not now</button>`}</div>
-    ${inline ? html`<p class="note"><button class="link" type="button" id="pq-enter">I have words already</button> · <button class="link" type="button" id="pq-later">Not now (ordinary privacy)</button></p><p class="note mute">${PQ_ID}</p>` : ''}`;
+    ${inline ? html`<p class="note"><button class="link" type="button" id="pq-later">Not now (ordinary privacy)</button></p><p class="note mute">${PQ_ID}</p>` : ''}`;
   if (step === 'check') return html`<div class="kv"><span>Post-quantum privacy</span><b class="mute">step 2 of 2</b></div>
     <p class="note">To check your paper, enter these three words from it.</p>
     ${PQUI.ask.map((i) => html`<label class="lbl" for="pq-w${i}"><span>Word ${i + 1}</span></label><input id="pq-w${i}" autocomplete="off" autocapitalize="off" spellcheck="false">`)}
@@ -8847,7 +8873,7 @@ function applyEndpoints(next) {
   toast('Saved.');
   render(); syncAll(true);
 }
-$('#wallet').onclick = openSheet;
+$('#wallet').onclick = () => openSheet();
 $('#settings-open').onclick = () => { renderSettings(); $('#sheet-settings').showModal(); };
 // The footer says when the reader's own endpoints are in use, so a setting made long ago is not forgotten.
 const endsMark = () => { $('#settings-open').textContent = Object.values(ends.rpc || {}).some((x) => x?.length) || Object.keys(ends.relay || {}).length || ends.mirror || ends.wc || ends.wcrelay || ends.copies?.length || ends.points ? 'Endpoints: yours' : 'Endpoints'; };
@@ -10662,7 +10688,7 @@ function lgSplitCard(p, { swapped = false } = {}) {
   return html`<div class="lg-split"><div class="lbl"><span>Split</span><span>${LG.chosen || LG.pick ? lgSmallestSelect() : html`Smallest note ${TC.ethWords(lgSmallest())} ETH · <button class="link" type="button" id="lg-change">Change</button>`}</span></div>
     <div class="lg-parts" role="group" aria-label="How the deposit is split">
       <div class="lg-part"><b class="num">${p.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)} ETH`).join(' + ')}</b><span>whole ${p.noteCount === 1 ? 'note' : 'notes'} · ${LG_TORNADO}</span></div>
-      ${p.remainder > 0n ? html`<div class="lg-part"><b class="num">${fmt(p.remainder, 18)} ETH</b><span>your private balance</span></div>` : ''}
+      ${p.remainder > 0n ? html`<div class="lg-part"><b class="num">${fmt(p.remainder, 18)} ETH</b><span>ready to pay</span></div>` : ''}
     </div>${sizes}
     ${fee != null ? html`<p class="note mute">Network fee about ${ethStr(fee)} ETH${swapped ? ' plus the swap' : ''}, paid by your wallet. ${LG_FORWARDER_OK.v === false || lgOff(6) ? `${p.noteCount + (p.remainder ? 1 : 0)} transactions.` : S.key ? '' : 'One transaction.'}</p>` : ''}
     ${dust ? html`<p class="note warn">The ${fmt(p.remainder, 18)} ETH left over costs about as much gas to deposit as it is worth. <button class="link" type="button" id="lg-drop">Leave it in my wallet</button></p>` : ''}
@@ -10756,7 +10782,7 @@ async function lgDeposit(c, p, step) {
       throw lgMaybe(e) ? lgSays(e, 'The deposit may still land: its notes show under Whole notes once it does (Find brings them back too).') : lgSays(e, 'None of it was deposited.');
     }
     lgKeep(out.notes);
-    return { h: out.hash, text: p.remainder > 0n ? `${placed(out.notes)}, and ${fmt(p.remainder, 18)} ETH went into your private balance, in one transaction.` : `${placed(out.notes)}, in one transaction.` };
+    return { h: out.hash, text: p.remainder > 0n ? `${placed(out.notes)}, and ${fmt(p.remainder, 18)} ETH is ready to pay, in one transaction.` : `${placed(out.notes)}, in one transaction.` };
   }
   let out;
   try { out = await flow.deposit(p, { onStep: (s) => step(lgSaid(s)), onNotes: lgPend }); } catch (e) {
@@ -10772,7 +10798,7 @@ async function lgDeposit(c, p, step) {
   lgKeep(out.notes);
   if (p.remainder === 0n) return { h: null, text: `${placed(out.notes)}.` };
   DRAFT['f-samt'] = plain(p.remainder);
-  try { const h = await walletOn(c).deposit({ amount: p.remainder, onStep: step }); delete DRAFT['f-samt']; return { h, text: `${placed(out.notes)}, and ${fmt(p.remainder, 18)} ETH went into your private balance.` }; } catch (e) {
+  try { const h = await walletOn(c).deposit({ amount: p.remainder, onStep: step }); delete DRAFT['f-samt']; return { h, text: `${placed(out.notes)}, and ${fmt(p.remainder, 18)} ETH is ready to pay.` }; } catch (e) {
     keepShield(e?.unconfirmed);
     throw lgSays(e, lgMaybe(e) ? `${placed(out.notes)}. The other ${fmt(p.remainder, 18)} ETH may still land.` : `${placed(out.notes)}. The other ${fmt(p.remainder, 18)} ETH did not go in, and the amount is now that.`);
   }
@@ -10936,7 +10962,7 @@ function lgPaint() {
   const sent = LG.notes.filter((n) => n.o && !LG.spent.get(n.nh)), shut = lgShut(), lefts = LG.notes.filter((n) => n.acct && n.left && LG.spent.get(n.nh) === true && LG_LEFT.get(n.acct) !== 0n);
   const early = live.map((n) => LG.seen.get(n.c)).filter((s) => s?.low), keep = $('#lg-intake', host);
   mount(host, html`<div class="card-h"><h2>Whole notes</h2><span><button class="link" type="button" id="lg-find">${S.account || S.key ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button>${live.length ? html` · <button class="link" type="button" id="lg-save">Save as text</button>` : ''}</span></div>
-    <p class="note mute">${LG_TORNADO} notes, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words, not from your wallet’s key (the Tornado Cash pools themselves are not post-quantum)' : 'sign-in'}: Find brings them back on any device, with nothing to sign. Notes made with your wallet’s signatures can be found too (your wallet signs once per note).` : 'made with your wallet’s signatures: Find brings them back, your wallet signing once per note.'}</p>
+    <p class="note mute">${LG_TORNADO} notes, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words, not from your wallet’s key (the Tornado Cash pools themselves are not post-quantum)' : 'sign-in'}: Find brings them back on any device, with nothing to sign.` : 'made with your wallet’s signatures: Find brings them back, your wallet signing once per note.'}</p>
     ${rows.length ? rows : html`<p class="note">None found in this browser. Find looks for notes made ${S.key ? 'from this sign-in' : 'with this wallet'}.</p>`}
     ${early.length ? html`<p class="note warn">${early.length === 1 ? early[0].nudge : 'Few deposits have come after some of these. The more do, the better they blend in.'}</p>` : ''}
     ${((m) => (m.length ? html`<p class="note">${m.length === 1 ? 'A note' : `${m.length} notes`} (${fmt(m.reduce((s, n) => s + TC.poolOf(n.pool).denomination, 0n))} ETH) may be spent: one node says so, the others have not confirmed it, so ${m.length === 1 ? 'it is' : 'they are'} not counted. <button class="link" type="button" id="lg-recheck">Check again</button></p>` : ''))(LG.notes.filter((n) => LG_MAYBE.has(n.nh) && LG.spent.get(n.nh) !== true && lgOpenable(n)))}
@@ -10948,7 +10974,8 @@ function lgPaint() {
     <div id="lg-intake"></div>
     <details class="lg-how"><summary class="note">How it works</summary>
       <p class="note">A deposit of a whole note or more puts whole notes (0.1, 1, 10 or 100 ETH) into ${LG_TORNADO}'s pools, where every deposit is the same size and the crowd is large, and the rest into your Tacit balance, which takes any amount and pays inside itself.</p>
-      <p class="note">Take a note out to any address, as ETH or a token, or move it into your balance to pay from there. Waiting first helps: the more deposits after yours, the better it blends in.</p></details>`);
+      <p class="note">Take a note out to any address, as ETH or a token, or move it into your balance to pay from there. Waiting first helps: the more deposits after yours, the better it blends in.</p>
+      ${S.key ? html`<p class="note">Notes made with your wallet’s signatures (earlier ones, or from another app) can be found too: Find offers to look for them, and your wallet signs once per note.</p>` : ''}</details>`);
   LG.ask = $('#lg-ask', host);
   // the card for making notes from the balance keeps what is typed in it across a redraw
   if (keep?.dataset.k === (lgKid() || '')) $('#lg-intake', host).replaceWith(keep); else { lgIntakeCard(host); $('#lg-intake', host).dataset.k = lgKid() || ''; }
@@ -11310,7 +11337,7 @@ function lgExitRows(x, { swap = null } = {}) {
   const seens = x.notes.map((n) => LG.seen.get(n.c)), warnText = TC.exitWarning(seens);
   // notes that went in together (one deposit, or minutes apart) and would go out together to one address: anyone can match the two sets
   const together = TC.together(x.notes), least = (lgWal(swap) ? x.total : x.total * (100n - TC.MAX_FEE_PERCENT) / 100n) + x.rest;
-  return html`${kvRow(`From whole notes (${x.notes.length})`, `${fmt(x.total)} ETH`)}${x.rest > 0n ? kvRow('From your private balance', `${fmt(x.rest, 18)} ETH`) : ''}${swap ? '' : kvRow('Arrives, at least', `${fmt(least, 6, true)} ETH`)}
+  return html`${kvRow(`From whole notes (${x.notes.length})`, `${fmt(x.total)} ETH`)}${x.rest > 0n ? kvRow('From ready to pay', `${fmt(x.rest, 18)} ETH`) : ''}${swap ? '' : kvRow('Arrives, at least', `${fmt(least, 6, true)} ETH`)}
     <p class="note mute">${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : lgOff(1) ? 'Gas from the note is off for now, so your wallet sends each note and shows as the sender.' : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%; no wallet needed.`}${x.notes.length + (x.rest > 0n ? 1 : 0) > 1 && together < 2 ? ` Paid to one address together, the notes${x.rest > 0n ? ' and the part from your balance' : ''} can be linked by their timing and amounts; spreading them out over time hides them better.` : ''}${lgSigns(x.notes)}${swap || lgOff(1) ? '' : html` <button class="link" type="button" data-lg-gas>${LG.gas === 'wallet' ? 'Take the gas from the notes' : 'Pay the gas from my wallet instead'}</button>`}</p>
     ${together > 1 ? html`<p class="note warn">${together} of these notes went in together, in one deposit or minutes apart. Taken out together to one address, anyone can match the two. Take one now and the rest later, or send them to different addresses. <button class="link" type="button" id="lg-one" data-amt="${plain(TC.poolOf(x.notes[0].pool).denomination)}">Take one now</button></p>` : ''}
     ${warnText ? html`<p class="note warn">${warnText}</p>` : ''}`;
@@ -11362,10 +11389,10 @@ function lgIntakeCard(f) {
     if (live) st.open = live.open;
     const wei = parseEth(st.amount), p = wei ? TC.planSplit(wei, { min: lgSmallest() || 10n ** 17n }) : null, total = p ? p.notes.reduce((t, n) => t + n.denomination * BigInt(n.count), 0n) : 0n;
     const have = CH[lgChain().chainId].bal;
-    mount(host, html`<details ${st.open ? 'open' : ''}><summary class="note">Make whole notes from your private balance</summary>
+    mount(host, html`<details ${st.open ? 'open' : ''}><summary class="note">Make whole notes from ready-to-pay ETH</summary>
       <div class="amt text"><input id="lg-iamt" inputmode="decimal" placeholder="ETH to move into notes" autocomplete="off" aria-label="ETH to move into notes" value="${st.amount}"></div>
-      ${p?.noteCount ? html`${p.notes.map((n) => kvRow(`${n.count} × ${TC.ethWords(n.denomination)} ETH`, 'whole notes'))}${p.remainder ? kvRow(`${fmt(p.remainder, 18)} ETH`, 'stays in your balance') : ''}
-        ${have != null && have < total ? html`<p class="note err">Your private balance holds ${fmt(have, 6, true)} ETH, less than ${fmt(total)} ETH.</p>` : ''}
+      ${p?.noteCount ? html`${p.notes.map((n) => kvRow(`${n.count} × ${TC.ethWords(n.denomination)} ETH`, 'whole notes'))}${p.remainder ? kvRow(`${fmt(p.remainder, 18)} ETH`, 'stays ready to pay') : ''}
+        ${have != null && have < total ? html`<p class="note err">What is ready to pay holds ${fmt(have, 6, true)} ETH, less than ${fmt(total)} ETH.</p>` : ''}
         <div class="lbl"><span>Sent by</span><span><select id="lg-ivia" aria-label="Who sends it"><option value="relay" ${st.via === 'relay' ? 'selected' : ''}>the relay (a fee for each note)</option><option value="wallet" ${st.via === 'wallet' ? 'selected' : ''}>my wallet (it shows as the sender)</option></select></span></div>
         <button class="btn ghost" type="button" id="lg-igo" ${have != null && have < total ? 'disabled' : ''}>Move ${fmt(total)} ETH into ${p.noteCount} ${p.noteCount === 1 ? 'note' : 'notes'}</button>` : html`<p class="note">${wei ? `Less than the smallest note, ${TC.ethWords(lgSmallest() || 10n ** 17n)} ETH.` : 'Move part of your balance into whole notes. The relay sends it, so no wallet of yours shows.'}</p>`}
     </details>`);
@@ -11409,7 +11436,7 @@ async function lgIntake(c, step, p, via) {
   lgKeep(placed);
   lgLog({ k: 'mk', v: placed.reduce((s, n) => s + n.pool.denomination, 0n), n: placed.length });
   LG.intake.amount = '';
-  mount($('#status'), html`<span class="ok">${placed.length === 1 ? 'The note is' : `The ${placed.length} notes are`} in the large pools, made from your private balance.</span>`);
+  mount($('#status'), html`<span class="ok">${placed.length === 1 ? 'The note is' : `The ${placed.length} notes are`} in the large pools, made from ready-to-pay ETH.</span>`);
 }
 
 // ── start ──

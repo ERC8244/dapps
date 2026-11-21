@@ -424,6 +424,20 @@ console.log('the pools read without naming a note');
       eq(notes.some((x) => /0\.1 ETH pool's deposits read did not add up/.test(x)), true, notes.join(' | '));
     }
   });
+  await test('a cache file that begins before the read holds earlier deposits: they are left out, and the read adds up', async () => {
+    // the hot head starts at F - 5 and holds a deposit at F - 3 (leaf 1); the read from F begins at the count at F - 1
+    const early = { ...raw, [kb]: Buffer.from([dep(P01, 7n, 1, F - 3), dep(P01, 6n, 2, F + 10), dep(P01, n0.commitment, 3, F + 20)].map((x) => JSON.stringify(x)).join('\n') + '\n') };
+    const ix = JSON.parse(JSON.stringify(index));
+    ix.availableProtocols['tornado-cash-1-eth-0.1'].hotHead.digest.data = '0x' + hex(D.sha256(early[kb]));
+    const fe = async (u) => { const name = decodeURIComponent(u.slice('https://c.example/'.length)); return name === 'index.json' ? new Response(JSON.stringify(ix)) : early[name] ? new Response(gzipSync(early[name])) : new Response('no', { status: 404 }); };
+    const counts = { [P01.address]: [P01.deployBlock + 1, F - 3, F + 10, F + 20, F + 200], [P1.address]: [F + 300] };
+    const r = async (m, p) => { if (m === 'eth_call' && p[0].data === '0xfc7e9c6f') return '0x' + w32((counts[p[0].to] ?? []).filter((x) => x <= Number(BigInt(p[1]))).length); return '0x' + '0'.repeat(64); };
+    const nodeLogs = [dep(P01, n1.commitment, 4, F + 200), dep(P1, n2.commitment, 0, F + 300)], notes = [];
+    const b = TC.poolBook({ getLogs: getLogsOf(nodeLogs), blockNumber: async () => HEAD, read: r, caches: ['https://c.example'], fetchImpl: fe });
+    await b.deposits(TC.ALL_POOLS, F, (p) => { if (p.note) notes.push(p.note); });
+    eq(notes.filter((x) => /did not add up/.test(x)).length, 0, notes.join(' | '));
+    eq(!!b.deposit(P01, n0.commitment) && !!b.deposit(P01, n1.commitment) && !b.deposit(P01, 7n), true, 'the deposits from F on, not the earlier one');
+  });
   await test('two reads at once fetch each file once', async () => {
     const seen = [], b = TC.poolBook({ getLogs, blockNumber: async () => HEAD, read, caches: ['https://c.example'], fetchImpl: async (u) => { seen.push(u); return fetchImpl(u); } });
     await Promise.all([b.deposits(TC.ALL_POOLS, F), b.deposits(TC.ALL_POOLS, F)]);

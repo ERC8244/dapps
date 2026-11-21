@@ -345,7 +345,9 @@ const TC = (() => {
         for (const base of caches) {
           try { got = await readChunkCache({ base, pool: p, fetchImpl, onProgress, from: start, until, manifest: await manifestOf(base) }); break; } catch (e) { onProgress({ note: `cache: ${e.message}` }); }
         }
-        for (const d of got?.deposits ?? []) s.byC.set(d.commitment, { index: d.index, block: d.block });
+        // a file can begin before `start`: only its deposits from `start` on are kept, so the leaf numbers read begin at the
+        // pool's count at the block before it
+        for (const d of got?.deposits ?? []) if (d.block >= start) s.byC.set(d.commitment, { index: d.index, block: d.block });
         // with no cache, the node reads from the new start; a cache that ends before what was read leaves the gap to the tail
         s.upTo = !got ? start : until === Infinity || got.upTo < until ? got.upTo : s.upTo;
         const joins = got && s.cw && got.upTo >= until;

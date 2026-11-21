@@ -5479,7 +5479,8 @@ function setKey(key, account, first = false, via = null) {
   dropOldAnchors();
   if (!store.set('tacit-pay-probe-v1', '1')) toast('This browser will not let the page save anything. Keep this tab open until each payment shows done: one still under way is forgotten if you reload.', true); else store.del('tacit-pay-probe-v1');
   Object.assign(TIMES, vget('times') || {});
-  for (const c of CHAINS) CH[c.chainId] = { last: vget('seen')?.[c.chainId] ?? null };
+  // The balance kept from the last visit is kept as a decimal string: read back as a number, or not at all.
+  for (const c of CHAINS) { const v = vget('seen')?.[c.chainId]; CH[c.chainId] = { last: /^\d{1,30}$/.test(v) ? BigInt(v) : null }; }
   if (!first) toast('Signed in');
   mount($('#status'), '');
   render(); syncAll(true); warmBoxes(pool);
@@ -10530,11 +10531,12 @@ const ROUTE = (() => {
         for (const d of Array.isArray(docs) ? docs : []) { const k = verifyDoc(d, relayer); if (k) return k; }
       } catch { /* the next forwarder */ }
     }
-    throw new Error('This relay\'s private route key could not be shown and checked, so it is not reached.');
+    throw Object.assign(new Error('This relay\'s private route key could not be shown and checked, so it is not reached.'), { nokey: true });
   }
   function listedFetch(url, relayer) {
     const k = lc(relayer), root = new URL(url).origin;
-    if (!KEYS.has(k)) KEYS.set(k, gatewayOf(relayer).then((g) => sealedFetch(root, g, (fw) => `${fw}/r/1/${relayer}`)).catch((e) => { KEYS.delete(k); throw e; }));
+    // A relay whose key could not be shown is passed over for ten minutes, not asked again at every quote.
+    if (!KEYS.has(k)) KEYS.set(k, gatewayOf(relayer).then((g) => sealedFetch(root, g, (fw) => `${fw}/r/1/${relayer}`)).catch((e) => { setTimeout(() => KEYS.delete(k), 600_000); throw e; }));
     return KEYS.get(k);
   }
   // fetch for a relay: the page's own through its gateway, a listed one (`relayer`: the address it is listed under) through
@@ -10543,7 +10545,7 @@ const ROUTE = (() => {
   function relayFetch(url, init, relayer) {
     const u = String(url);
     if (u.startsWith(OWN.keeper + '/')) return own(u, init);
-    if (isAddr(relayer || '') && RL.usable(u.replace(/\/(?:quote|relay|reserve|cancel|head|point|events|receive)[^/]*$/, ''))) return listedFetch(u, relayer).then((f) => f(u, init)).catch((e) => { KEYS.delete(lc(relayer)); throw e; });
+    if (isAddr(relayer || '') && RL.usable(u.replace(/\/(?:quote|relay|reserve|cancel|head|point|events|receive)[^/]*$/, ''))) return listedFetch(u, relayer).then((f) => f(u, init)).catch((e) => { if (!e?.nokey) KEYS.delete(lc(relayer)); throw e; });
     return Promise.reject(new Error('The private route does not reach this relay.'));
   }
   // A bundler call through the wallet-read gateway (it sends to the fixed bundler of the chain); straight to the bundler

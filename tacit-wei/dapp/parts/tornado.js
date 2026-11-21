@@ -1145,7 +1145,7 @@ const TC = (() => {
       // Each paymaster that holds code, in order (the seed first). One whose bundler refuses before anything was sent is
       // followed by the next, the proof made again for its address; the key and the fee ceiling stay the same.
       const vetted = await vetPaymasters(paymasters, read);
-      if (!vetted.length) throw new Error('No paymaster could be reached, so nothing was sent. Choose your wallet for the gas.');
+      if (!vetted.length) throw new Error('No paymaster could be reached, so nothing was sent. Try again in a minute, or pay the gas from your wallet.');
       let last = null;
       for (const pm of vetted) {
         try { return { ...(await through(pm.address)), paymaster: pm.address }; } catch (e) {

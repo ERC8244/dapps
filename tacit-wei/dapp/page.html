@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-/C+dhuN5w2PuYbmucWI92cQrxPkjs4iZly8icbuoTCM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-k9vYkL/2g+uBtE9BZL+i/sA0JbU4fmPVuhDIBNMw6/w=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -5718,6 +5718,10 @@ const boxIndexes = (st) => [...new Set([0, ...boxes().issued.map((x) => x.i), ..
 // With a root, what waits at the classical address of each index (from before it, still paid by older links), by index.
 const waitC = (st) => (S.key?.pq ? st.boxWc || {} : {});
 const waitKey = (st = cur()) => JSON.stringify([...Object.entries(st.boxW || {}), ...Object.entries(waitC(st)).map(([i, v]) => ['c' + i, v])].filter(([, v]) => v > 0n).map(([i, v]) => [i, String(v)]));
+// Whether the relay takes in `w` waiting at a deposit address by itself (it is up, and `w` is at least its minimum); and what
+// the page says of such ETH, which a wallet can also take in.
+const relayTakes = (c, w) => w > 0n && relayUp(c) && !(BigInt(CH[c.chainId].quote.receiveMin ?? 0) > w);
+const takeSay = (rel) => `${rel ? 'The relay moves it in shortly, or take it in now from your wallet' : 'Take it in from your wallet'}: no relay fee, just gas. Your wallet then shows beside this address on chain.`;
 const waitingTotal = (st = cur()) => [...Object.values(st.boxW || {}), ...Object.values(waitC(st))].reduce((a, v) => a + (v > 0n ? v : 0n), 0n);
 // The addresses to show: those issued here, and any other that has money at it.
 const boxList = (st) => {
@@ -5953,7 +5957,7 @@ function paintBal() {
   const flying = S.key && st.W ? st.W.inflight() : [];
   const flyTo = (p) => (p.why?.swap ? `as ${p.why.swap.sym} to ${short(p.why.dest, 8)}` : `to ${short(p.to, 8)}`);
   const flyLine = (x) => html`<div class="callout held"><span>${x.pay.merge ? html`A step combining parts of your balance into one of ${fmt(BigInt(x.pay.amount))} ETH` : html`${x.pay.kind === 'send' ? 'A payment' : 'A withdrawal'} of ${fmt(BigInt(x.pay.amount))} ETH ${flyTo(x.pay)}`} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
-  mount($('#bal-note'), html`${stuck.map((e) => stuckLine(c, e))}${flying.map(flyLine)}${flying.length && st.W?.storageFull() ? html`<p class="note warn">This browser is out of room to save, so what is held above is kept only while this tab stays open.</p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>` : ''}${pointNudge(c)}${pqAsk() && !pqGate() && (st.bal > 0n || lgHeld() > 0n) ? html`<p class="note">Post-quantum privacy: keep new payments to you sealed under 24 words of your own. Your current balance can be sealed after, a relay fee each step. <button class="link" type="button" id="bal-pq">Turn it on</button> · <button class="link" type="button" id="bal-pq-later">Not now</button></p>` : ''}`);
+  mount($('#bal-note'), html`${stuck.map((e) => stuckLine(c, e))}${flying.map(flyLine)}${flying.length && st.W?.storageFull() ? html`<p class="note warn">This browser is out of room to save, so what is held above is kept only while this tab stays open.</p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${w > 0n ? (relayTakes(c, w) ? html`<p class="note">${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}; the relay moves it into your balance within minutes. <button class="link" type="button" id="bal-take">See them</button></p>` : html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>`) : ''}${pointNudge(c)}${pqAsk() && !pqGate() && (st.bal > 0n || lgHeld() > 0n) ? html`<p class="note">Post-quantum privacy: keep new payments to you sealed under 24 words of your own. Your current balance can be sealed after, a relay fee each step. <button class="link" type="button" id="bal-pq">Turn it on</button> · <button class="link" type="button" id="bal-pq-later">Not now</button></p>` : ''}`);
   const bq = $('#bal-pq'), bl = $('#bal-pq-later');
   if (bq) bq.onclick = () => { if (S.busy) return; PQUI.root ||= randomBytes(32); Object.assign(PQUI, { step: 'new', err: '' }); openSheet(); };
   if (bl) bl.onclick = pqLater;
@@ -6372,12 +6376,12 @@ function formShield(f) {
       $('#f-recheck')?.addEventListener('click', () => { st.boxOk = undefined; renderForm(); });
       return;
     }
-    const min = st.quote?.receiveMin ? BigInt(st.quote.receiveMin) : null, relayTakes = waiting > 0n && relayUp(c) && (min == null || waiting >= min);
+    const min = st.quote?.receiveMin ? BigInt(st.quote.receiveMin) : null;
     mount(f, html`${seg}
       <div class="blk"><div class="lbl"><span>Your deposit address</span><span>reusing it links your deposits</span></div>
         <div class="addr"><code>${box}</code><button class="link" type="button" data-copy="${box}">copy</button></div>
         <p class="note">Send ETH here from an exchange or any wallet, on Ethereum; a token, or ETH on another network, cannot be collected. ${relayOf(c) ? html`The relay moves it into your private balance within minutes, for up to 0.25%${min ? html` (at least ${fmtUp(min)} ETH on ${c.full})` : ''}.` : 'Take it in below once it arrives.'}</p></div>
-      ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${relayTakes ? 'The relay moves it in shortly, or take it in now from your wallet: no relay fee, just gas.' : 'Take it in from your wallet: no relay fee, just gas.'} Your wallet then shows beside this address on chain.</span><button class="btn ghost sm" type="button" id="f-sweep">Take it in</button></div>` : ''}
+      ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${takeSay(relayTakes(c, waiting))}</span><button class="btn ghost sm" type="button" id="f-sweep">Take it in</button></div>` : ''}
       <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button>${S.key.pq ? html` · <button class="link" type="button" id="f-oldcheck" ${OLDQ[c.chainId] ? 'disabled' : ''}>${OLDQ[c.chainId] ? 'Checking older addresses…' : 'Check older addresses'}</button>` : ''}</p>
       <div class="blk"><div class="lbl"><span>One-time addresses</span><span>one for each person who pays you</span></div>
         <p class="note">Taken in by the relay, nothing on chain ties them together.</p>
@@ -6385,7 +6389,7 @@ function formShield(f) {
         <ul class="rows">${boxList(st).map((x) => { const addr = W.receiveBox(x.i, !!x.c), w = (x.c ? waitC(st) : st.boxW || {})[x.i] ?? 0n;
           return html`<li><div class="h"><b>${x.label || `Address ${x.i}`}</b><span>${w > 0n ? html`<span class="in">${fmt(w)} ETH waiting</span>` : ''}</span></div>
             <div class="addr"><code>${addr}</code><button class="link" type="button" data-copy="${addr}">copy</button></div>
-            ${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting here on ${c.full}.</span><button class="btn ghost sm" type="button" data-take="${x.i}"${x.c ? html` data-c="1"` : ''}>Take it in</button></div>` : ''}</li>`; })}</ul></div>`);
+            ${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting here on ${c.full}. ${takeSay(relayTakes(c, w))}</span><button class="btn ghost sm" type="button" data-take="${x.i}"${x.c ? html` data-c="1"` : ''}>Take it in</button></div>` : ''}</li>`; })}</ul></div>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
     $('#f-newbox').onclick = (e) => e.detail < 2 && issueBox($('#f-boxlabel').value.trim());
     FORM.hist = historyRead();
@@ -6523,7 +6527,7 @@ function formSend(f) {
   $('#f-max').onclick = () => {
     const fee = feeOf(tab); if (fee == null) return feeWait();
     const v = maxSpend(withHeadroom(fee));
-    if (target()?.addr) return maxPublic(amt, v + (lgNoGas() ? 0n : lgOutHeld()), 'private');
+    if (target()?.addr) return maxPublic(amt, v + lgOutHeld(), 'private');
     amt.value = v > 0n ? plain(v) : ''; amt.dispatchEvent(new Event('input'));
   };
   const target = () => {
@@ -6533,11 +6537,12 @@ function formSend(f) {
     const t = recipientOf(raw);
     return t.r && same(t.r.raw, S.key.pool.raw) ? { error: 'That is your own address.', name: t.name } : t;
   };
-  let shown = null;
+  // `mv`: the whole notes the button moves in before it pays, when the balance alone falls short
+  let shown = null, mv = null;
   FORM.check = () => {
     if (S.busy) return;
     const a = parseEth(amt.value), t = target(), fee = feeOf(tab), bal = cur().bal;
-    shown = fee;
+    shown = fee; mv = null;
     rc.hidden = true; go.disabled = true; go.textContent = t?.addr ? `Pay ${short(t.addr)}` : 'Send privately';
     mount($('#f-note'), html`${pal(t?.addr ? 'face' : 'ninja')}${t?.addr
       ? 'Paid out of the pool to this address; your balance stays private.'
@@ -6558,17 +6563,10 @@ function formSend(f) {
     if (fee == null) return say(relayUp() ? html`<p class="note">Reading the relay’s fee…</p>` : '');
     const p = plan(a, fee);
     if (bal != null && !p) {
-      const mv = whyNot(a, fee, bal, cur().notes || []) === 'parts' ? null : lgCover(a, fee);
+      mv = whyNot(a, fee, bal, cur().notes || []) === 'parts' ? null : lgCover(a, fee);
       if (!mv) return cannotPay(say, tab, a, fee, bal);
       say(html`${feeRow(fee)}${lgCoverSay(mv, bal)}`);
-      $('#f-move', rc).onclick = (e) => { const seen = target(); let n = 0; act(e.currentTarget, async (step) => {
-        if (!seen || seen.error || seen.pending || seen.addr) throw new Error(seen?.error || 'Enter who to pay.');
-        const a = parseEth(amt.value);
-        try {
-          await lgMoveThen(c, step, mv, () => { const f = feeOf(tab); return f != null && !!plan(a, f); }, (k) => { n = k; });
-          await pay(step, seen, fee);
-        } catch (x) { if (n) throw lgSays(x, `${n} of ${mv.length} ${mv.length === 1 ? 'note' : 'notes'} moved into your balance;`); throw x; }
-      }); };
+      go.textContent = lgCoverGo(mv); go.disabled = false;
       return;
     }
     say(html`${kvRow('They receive', `${fmt(a, 18)} ETH`)}${feeRow(fee)}
@@ -6593,7 +6591,17 @@ function formSend(f) {
     if (REQ.v?.r && same(t.r.raw, REQ.v.r.raw)) REQ.v.paid = { h, c, a };
     done(c, h, `Sent ${fmt(a, 18)} ETH privately.`);
   };
-  go.onclick = () => { const seen = target(), fee0 = shown; act(go, (step) => pay(step, seen, fee0)); };
+  // the notes moved in first when the button said so, then the payment
+  const moveThen = async (step, seen, fee0, notes) => {
+    if (!seen || seen.error || seen.pending || seen.addr) throw new Error(seen?.error || 'Enter who to pay.');
+    const a = parseEth(amt.value);
+    let n = 0;
+    try {
+      await lgMoveThen(c, step, notes, () => { const f = feeOf(tab); return f != null && !!plan(a, f); }, (k) => { n = k; });
+      await pay(step, seen, fee0);
+    } catch (x) { if (n) throw lgSays(x, `${n} of ${notes.length} ${notes.length === 1 ? 'note' : 'notes'} moved into your balance;`); throw x; }
+  };
+  go.onclick = () => { const seen = target(), fee0 = shown, notes = mv; act(go, (step) => (notes ? moveThen(step, seen, fee0, notes) : pay(step, seen, fee0))); };
   lgOneOn(rc, amt);
 }
 
@@ -6617,7 +6625,7 @@ function formWithdraw(f) {
   lgWarm();
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
   $('#f-me')?.addEventListener('click', () => { to.value = S.account; to.dispatchEvent(new Event('input')); });
-  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return feeWait(); maxPublic(amt, maxSpend(withHeadroom(fee)) + (lgNoGas() ? 0n : lgOutHeld()), 'private'); };
+  $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return feeWait(); maxPublic(amt, maxSpend(withHeadroom(fee)) + lgOutHeld(), 'private'); };
   lgOneOn(rc, amt);
   let shown = null;
   FORM.check = () => {
@@ -10155,7 +10163,7 @@ const TC = (() => {
       // Each paymaster that holds code, in order (the seed first). One whose bundler refuses before anything was sent is
       // followed by the next, the proof made again for its address; the key and the fee ceiling stay the same.
       const vetted = await vetPaymasters(paymasters, read);
-      if (!vetted.length) throw new Error('No paymaster could be reached, so nothing was sent. Choose your wallet for the gas.');
+      if (!vetted.length) throw new Error('No paymaster could be reached, so nothing was sent. Try again in a minute, or pay the gas from your wallet.');
       let last = null;
       for (const pm of vetted) {
         try { return { ...(await through(pm.address)), paymaster: pm.address }; } catch (e) {
@@ -10556,7 +10564,6 @@ const lgOff = (bit) => (BigInt(/^\d{1,20}$/.test(String(REG.flags ?? '')) ? REG.
 // What the large pools are and who reads the notes, in two marks drawn inline, each beside its name.
 const LG_MARK = (box, body) => html`<svg width="14" height="14" viewBox="0 0 ${box} ${box}" aria-hidden="true" focusable="false" style="vertical-align:-2px;margin-right:4px">${new Raw(body)}</svg>`;
 const LG_TORNADO = html`<span class="nw">${LG_MARK(39.9, '<path d="M40,19.4A17.3,17.3,0,0,0,22.8,2.8,17.1,17.1,0,0,0,8.6,10.4,11.3,11.3,0,0,1,19.3,0,17.1,17.1,0,0,0,2.8,17.1a16.8,16.8,0,0,0,7.7,14.2A11.3,11.3,0,0,1,0,20.6a17.1,17.1,0,0,0,31.3,9A11.4,11.4,0,0,1,20.6,39.9,17.1,17.1,0,0,0,37.1,22.8,17.3,17.3,0,0,0,29.5,8.6,11.8,11.8,0,0,1,40,19.4ZM20,27.2a7.4,7.4,0,0,1-5.2-2.1,7.1,7.1,0,0,1-2-5.1A7.2,7.2,0,1,1,20,27.2Z" fill="currentColor"/>')}Tornado Cash</span>`;
-LG.gas = store.get('tacit-wei-fixed-gas') === 'wallet' ? 'wallet' : 'note';
 { const v = store.get('tacit-wei-fixed-min'); if (v === '0' || TC.SMALLEST.some((d) => String(d) === v)) { LG.smallest = BigInt(v); LG.chosen = true; } }
 
 // ── the wallet's flows ──
@@ -10640,7 +10647,7 @@ function lgSplitCard(p, { swapped = false } = {}) {
     </div>${sizes}
     ${fee != null ? html`<p class="note mute">Network fee about ${ethStr(fee)} ETH${swapped ? ' plus the swap' : ''}, paid by your wallet. ${LG_FORWARDER_OK.v === false || lgOff(6) ? `${p.noteCount + (p.remainder ? 1 : 0)} transactions.` : S.key ? '' : 'One transaction.'}</p>` : ''}
     ${dust ? html`<p class="note warn">The ${fmt(p.remainder, 18)} ETH left over costs about as much gas to deposit as it is worth. <button class="link" type="button" id="lg-drop">Leave it in my wallet</button></p>` : ''}
-    <p class="note">${S.key ? html`The notes come from your ${S.key.pq ? 'post-quantum words' : 'sign-in'}, so there is nothing extra to sign and Find brings them back on any device. Your wallet confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.` : html`Your wallet first signs a short message for each note${lgSessionChecked() ? '' : ', and one more to check it signs the same way each time'} (nothing is sent: they make the notes, so only your wallet can find them again), then confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.`}</p></div>`;
+    <p class="note">${S.key ? html`Both parts are one balance here: Send and Withdraw use either. The notes come from your ${S.key.pq ? 'post-quantum words' : 'sign-in'}, so there is nothing extra to sign and Find brings them back on any device. Your wallet confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.` : html`Your wallet first signs a short message for each note${lgSessionChecked() ? '' : ', and one more to check it signs the same way each time'} (nothing is sent: they make the notes, so only your wallet can find them again), then confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.`}</p></div>`;
 }
 const lgSessionChecked = () => !!LG.sessions.get(lc(S.account))?.checked;
 // The card's live bits: the select, the pool sizes as they come in, the leftover choice. `onChange()` redraws the form.
@@ -10878,8 +10885,12 @@ async function lgSeen() {
 }
 // (a note one node calls spent is not counted until others say it is not: a balance is never shown higher than it is)
 const lgLive = () => LG.notes.filter((n) => LG.spent.get(n.nh) !== true && !n.o && !LG_MAYBE.has(n.nh) && lgOpenable(n)).sort((a, b) => a.nonce - b.nonce);
-// What gas from the note can take out: not the newer 0.01 and 0.03 ETH notes, whose 3% covers the gas only under about 0.2 gwei.
-const lgOut = (swap = false) => lgLive().filter((n) => (LG.gas === 'wallet' && !swap) || TC.poolOf(n.pool).denomination >= 10n ** 17n);
+// Whether a note goes out sent by the wallet: when chosen for this visit (never kept), or while the registry has gas from the
+// note off (bit 1); a swap-out always pays from the note.
+const lgWal = (swap) => !swap && (LG.gas === 'wallet' || lgOff(1));
+// What can be taken out: with gas from the note, not the newer 0.01 and 0.03 ETH notes, whose 3% covers the gas only under
+// about 0.2 gwei.
+const lgOut = (swap = false) => lgLive().filter((n) => lgWal(swap) || TC.poolOf(n.pool).denomination >= 10n ** 17n);
 const lgOutHeld = (swap = false) => lgOut(swap).reduce((t, n) => t + TC.poolOf(n.pool).denomination, 0n);
 // The kept notes that do not count now, and why.
 const lgShut = () => LG.notes.filter((n) => LG.spent.get(n.nh) !== true && !lgOpenable(n));
@@ -10915,8 +10926,6 @@ function lgPaint() {
     ${lefts.map((n) => html`<div class="callout"><span>${LG_LEFT.get(n.acct) ? `${fmt(LG_LEFT.get(n.acct))} ETH is left at note ${n.nonce}'s one-time address (unused gas, or a swap that did not go through).` : `Note ${n.nonce} went out as a token: unused gas, or the ETH of a swap that did not go through, waits at its one-time address.`}</span><button class="btn ghost sm" type="button" data-lg-left="${lgKeyOf(n)}">Send it on</button></div>`)}
     ${done.length ? html`<details class="lg-spent"><summary class="note mute">${done.length} spent</summary>${done.map((n) => html`<div class="kv"><span>${TC.ethWords(TC.poolOf(n.pool).denomination)} ETH <span class="mute">· note ${n.nonce}</span></span><b class="mute">spent</b></div>`)}</details>` : ''}
     <div id="lg-ask" hidden></div>
-    ${live.length ? html`<div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note" ${LG.gas === 'note' ? 'selected' : ''}>the note</option><option value="wallet" ${LG.gas === 'wallet' ? 'selected' : ''}>my wallet</option></select></label></span></div>
-      <p class="note">${LG.gas === 'wallet' ? 'Your wallet sends each withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (at most ${TC.MAX_FEE_PERCENT}%), and it is sent for you, so no wallet shows.`}</p>` : ''}
     <div id="lg-intake"></div>
     <details class="lg-how"><summary class="note">How it works</summary>
       <p class="note">A deposit of a whole note or more puts whole notes (0.1, 1, 10 or 100 ETH) into ${LG_TORNADO}'s pools, where every deposit is the same size and the crowd is large, and the rest into your Tacit balance, which takes any amount and pays inside itself.</p>
@@ -10929,8 +10938,6 @@ function lgPaint() {
   $('#lg-recheck', host)?.addEventListener('click', () => lgChecks().then(lgPaint));
   $('#lg-paste', host).onclick = () => lgAskPaste();
   $('#lg-save', host)?.addEventListener('click', (e) => lgSave(e.currentTarget));
-  const g = $('#lg-gas', host);
-  if (g) g.onchange = () => { LG.gas = g.value === 'wallet' ? 'wallet' : 'note'; store.set('tacit-wei-fixed-gas', LG.gas); lgPaint(); if (S.tab === 'withdraw') renderForm(); };
   const pick = (v) => LG.notes.find((n) => lgKeyOf(n) === v);
   $$('[data-lg-move]', host).forEach((b) => b.onclick = () => lgMove(b, pick(b.dataset.lgMove)));
   $$('[data-lg-out]', host).forEach((b) => b.onclick = () => lgAskOut(pick(b.dataset.lgOut)));
@@ -11028,13 +11035,12 @@ const lgExitSaid = (s) => (s.step === 'read' ? (s.note ? 'the deposit history ca
 
 // One note out, inside act(). `n`: a stored note or { text }; `to`: an address; `swap`: { t (token), slip } for a token.
 // `confirm(info)` → bool is asked once the fee is fixed. → { receive, route, hash, spent, account }
-async function lgExitOne(c, step, n, to, { confirm, swap = null, prover = null } = {}) {
-  const fromWallet = LG.gas === 'wallet' && !swap, flow = lgFlow(), own = prover || lgProver();
+async function lgExitOne(c, step, n, to, { confirm, swap = null, prover = null, wal = lgWal(swap) } = {}) {
+  const flow = lgFlow(), own = prover || lgProver();
   try {
     const text = await lgText(c, step, n);
     const caches = lgCaches();
-    if (fromWallet) { await walletReady(c, step); return await flow.withdraw({ noteText: text, recipient: to, prover: own, confirm, cache: LG_TREES, caches, onStep: (s) => step(lgExitSaid(s)) }); }
-    if (lgOff(1)) throw new Error('Gas from the note is switched off for now. Choose your wallet for the gas.');
+    if (wal) { await walletReady(c, step); return await flow.withdraw({ noteText: text, recipient: to, prover: own, confirm, cache: LG_TREES, caches, onStep: (s) => step(lgExitSaid(s)) }); }
     let route = null;
     if (swap) {
       if (lgOff(5)) throw new Error('Taking whole notes out as a token is switched off for now. Take them out as ETH.');
@@ -11132,10 +11138,11 @@ async function lgFreshBox(c, label, step) {
   return { to: walletOn(c).receiveBox(i), back: (e) => { if (e?.cancelled || !(e?.unsure || e?.stranded || lgMaybe(e))) unissue(i); throw e; } };
 }
 // A note out to a new deposit address of this key, which the relay moves into the balance. `confirm(info, to)` → bool.
+// Gas comes from the note whatever this visit chose: a wallet sending it would show beside the deposit address.
 async function lgMoveIn(c, step, n, confirm) {
   if (!S.key) throw new Error('Sign in first: the note goes to a deposit address of yours, which your key makes.');
   const { to, back } = await lgFreshBox(c, `Note ${n.nonce}`, step);
-  const out = await lgExitOne(c, step, n, to, { confirm: (i) => confirm(i, to) }).catch((e) => { lgDoubt(n, e); return back(e); });
+  const out = await lgExitOne(c, step, n, to, { confirm: (i) => confirm(i, to), wal: lgOff(1) }).catch((e) => { lgDoubt(n, e); return back(e); });
   lgLog({ k: 'move', v: TC.poolOf(n.pool).denomination, r: out.receive, h: out.hash, pm: out.paymaster });
   return out;
 }
@@ -11148,8 +11155,8 @@ function lgMove(btn, n) {
 // The fewest notes that, moved in (less up to 3% gas and the relay's 0.25%), let the balance pay `a` with `fee`: the
 // smallest one that does, else the largest first. → notes, or null.
 function lgCover(a, fee) {
-  if (!S.key || !relayUp() || lgOff(0) || lgNoGas() || (LG.gas === 'wallet' && !S.account)) return null;
-  const den = (n) => TC.poolOf(n.pool).denomination, live = lgOut().sort((x, y) => (den(x) < den(y) ? -1 : den(x) > den(y) ? 1 : 0));
+  if (!S.key || !relayUp() || lgOff(0)) return null;
+  const den = (n) => TC.poolOf(n.pool).denomination, live = lgOut(!lgOff(1)).sort((x, y) => (den(x) < den(y) ? -1 : den(x) > den(y) ? 1 : 0));
   const ok = (picks) => !!plan(a, fee, [...(cur().notes || []), ...picks.map((n) => den(n) * 9675n / 10000n)]);
   const one = live.find((n) => ok([n]));
   if (one) return [one];
@@ -11157,10 +11164,12 @@ function lgCover(a, fee) {
   for (const n of live.reverse()) { picks.push(n); if (ok(picks)) return picks; }
   return null;
 }
-// Send's offer when the balance falls short and whole notes cover it: the notes move in, then the payment goes.
-const lgCoverSay = (notes, bal) => { const total = notes.reduce((s, n) => s + TC.poolOf(n.pool).denomination, 0n);
-  return html`<p class="note">${fmt(bal)} ETH is ready to pay. Move ${notes.length === 1 ? `a ${TC.ethWords(total)} ETH note` : `${notes.length} notes (${fmt(total)} ETH)`} into your balance first: ${LG.gas === 'wallet' ? 'your wallet pays the gas and shows as the sender; the relay takes up to 0.25%' : `gas (up to ${TC.MAX_FEE_PERCENT}%) and the relay’s fee (up to 0.25%) come out of ${notes.length === 1 ? 'it' : 'them'}`}. It takes a few minutes. A payment right after the move can be linked to it by timing and amount; waiting in between helps.</p>
-    <button class="btn" type="button" id="f-move">${notes.length === 1 ? `Move a ${TC.ethWords(total)} ETH note in, then pay` : `Move ${notes.length} notes in, then pay`}</button>`; };
+// Send's offer when the balance falls short and whole notes cover it: the form's own button moves the notes in, then pays.
+const lgCoverSay = (notes, bal) => html`<p class="note">${fmt(bal)} ETH is ready to pay now; the rest is in whole notes. The button moves ${notes.length === 1 ? 'one' : notes.length} into your balance first, then pays.</p>
+    <p class="note mute">${lgOff(1) ? 'Gas from the note is off for now, so your wallet sends the move and shows as the sender; the relay takes up to 0.25%.' : `No wallet needed: gas (up to ${TC.MAX_FEE_PERCENT}%) and the relay’s fee (up to 0.25%) come out of ${notes.length === 1 ? 'the note' : 'the notes'}.`}${lgSigns(notes)} It takes a few minutes. A payment right after the move can be linked to it by timing and amount; waiting in between helps.</p>`;
+const lgCoverGo = (notes) => (notes.length === 1 ? `Move a ${TC.ethWords(TC.poolOf(notes[0].pool).denomination)} ETH note in, then pay` : `Move ${notes.length} notes in, then pay`);
+// Said before the press when a note was made with the wallet's signature: the wallet signs again to open it.
+const lgSigns = (notes) => (notes.some((n) => (n.s || 'w') === 'w') ? ' Your wallet signs a message to open each note made with its signature; it sends nothing.' : '');
 // Inside act(): the notes moved in one by one (each within the notes' fee ceiling), then a wait until `ready()`.
 async function lgMoveThen(c, step, notes, ready, moved = () => {}) {
   for (let k = 0; k < notes.length; k++) {
@@ -11187,7 +11196,7 @@ function lgAskForm(n, pasted, left = false) {
   mount(ask, html`${pasted != null ? html`<div class="lbl"><span>Note</span></div><div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Note" style="width:100%;font:inherit;resize:vertical;border:0;background:none;padding:12px 14px"></textarea></div>` : ''}
     <div class="lbl"><span>To</span><span>${pasted != null ? 'empty: your deposit address' : ''}</span></div>
     <div class="amt text"><input id="lg-to" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="To" data-1p-ignore data-lpignore="true"></div>
-    <p class="note">${left ? 'Sent from the note’s one-time address, which pays its own gas. Your wallet signs the note’s message again if it asks; it sends nothing.' : pasted != null ? 'The note stays in this page; nothing is signed by your wallet.' : 'As ETH. To take it as a token, use Withdraw.'}</p>
+    <p class="note">${left ? `Sent from the note’s one-time address, which pays its own gas.${lgSigns([n])}` : pasted != null ? 'The note stays in this page; nothing is signed by your wallet.' : 'As ETH. To take it as a token, use Withdraw.'}</p>
     <div class="row"><button class="btn sm" type="button" id="lg-go">${left ? 'Send it on' : 'Withdraw'}</button><button class="btn ghost sm" type="button" id="lg-cancel">Cancel</button></div>`);
   $('#lg-cancel', ask).onclick = lgCloseAsk;
   const go = $('#lg-go', ask);
@@ -11233,10 +11242,9 @@ function lgNoteQuote(c, t, x) {
 }
 // ── the Withdraw form's notes part ──
 // For an amount of a whole note or more, whole notes go first (the largest that fit), the rest from the Tacit balance.
-const lgNoGas = () => LG.gas === 'note' && lgOff(1);
 function lgExitPlan(amount, swap = false) {
   const live = lgOut(swap);
-  if (!live.length || !amount || lgNoGas()) return null;
+  if (!live.length || !amount) return null;
   const dens = live.map((n) => TC.poolOf(n.pool).denomination), { picks, total } = TC.planExit(amount, dens);
   return picks.length ? { notes: picks.map((i) => live[i]), total, rest: amount - total } : null;
 }
@@ -11244,12 +11252,15 @@ function lgExitRows(x, { swap = null } = {}) {
   if (!x) return '';
   const seens = x.notes.map((n) => LG.seen.get(n.c)), warnText = TC.exitWarning(seens);
   // notes that went in together (one deposit, or minutes apart) and would go out together to one address: anyone can match the two sets
-  const together = TC.together(x.notes), least = (LG.gas === 'wallet' && !swap ? x.total : x.total * (100n - TC.MAX_FEE_PERCENT) / 100n) + x.rest;
+  const together = TC.together(x.notes), least = (lgWal(swap) ? x.total : x.total * (100n - TC.MAX_FEE_PERCENT) / 100n) + x.rest;
   return html`${kvRow(`From whole notes (${x.notes.length})`, `${fmt(x.total)} ETH`)}${x.rest > 0n ? kvRow('From your private balance', `${fmt(x.rest, 18)} ETH`) : ''}${swap ? '' : kvRow('Arrives, at least', `${fmt(least, 6, true)} ETH`)}
-    <p class="note mute">${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%.`}${x.notes.length + (x.rest > 0n ? 1 : 0) > 1 && together < 2 ? ` Paid to one address together, the notes${x.rest > 0n ? ' and the part from your balance' : ''} can be linked by their timing and amounts; spreading them out over time hides them better.` : ''}</p>
+    <p class="note mute">${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : lgOff(1) ? 'Gas from the note is off for now, so your wallet sends each note and shows as the sender.' : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%; no wallet needed.`}${x.notes.length + (x.rest > 0n ? 1 : 0) > 1 && together < 2 ? ` Paid to one address together, the notes${x.rest > 0n ? ' and the part from your balance' : ''} can be linked by their timing and amounts; spreading them out over time hides them better.` : ''}${lgSigns(x.notes)}${swap || lgOff(1) ? '' : html` <button class="link" type="button" data-lg-gas>${LG.gas === 'wallet' ? 'Take the gas from the notes' : 'Pay the gas from my wallet instead'}</button>`}</p>
     ${together > 1 ? html`<p class="note warn">${together} of these notes went in together, in one deposit or minutes apart. Taken out together to one address, anyone can match the two. Take one now and the rest later, or send them to different addresses. <button class="link" type="button" id="lg-one" data-amt="${plain(TC.poolOf(x.notes[0].pool).denomination)}">Take one now</button></p>` : ''}
     ${warnText ? html`<p class="note warn">${warnText}</p>` : ''}`;
 }
+// Gas from the wallet or from the notes, chosen in a receipt for this visit only: a paymaster's hiccup must not send later notes
+// from the wallet.
+document.addEventListener('click', (e) => { if (!S.busy && e.target.closest?.('[data-lg-gas]')) { LG.gas = LG.gas === 'wallet' ? 'note' : 'wallet'; renderForm(); } });
 // Inside act(): the notes of `x` to `to` (as `swap`'s token when given), one prover and one tree per pool for the run.
 // Each note is sent only if its fee is within the ceiling; the caller then sends `x.rest` from the Tacit balance.
 async function lgExitNotes(c, step, x, to, { swap = null } = {}) {

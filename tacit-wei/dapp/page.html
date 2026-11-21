@@ -1999,6 +1999,8 @@ function abi(types, values) {
   return cat(...heads, ...tails);
 }
 const calldata = (sig, types, values) => '0x' + hex(cat(selector(sig), abi(types, values)));
+// Multicall3's aggregate3 of [target, data] pairs, each call allowed to fail alone.
+const agg3 = (calls) => calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [calls.map(([t, d]) => [t, 1n, d])]);
 const PAIR = { tuple: ['uint256', 'uint256'] };
 const TX_TYPES = [PAIR, { tuple: [PAIR, PAIR] }, PAIR, { tuple: Array(11).fill('uint256') }, 'address', 'int256', 'address', 'uint256', 'bytes', 'bytes'];
 const TX_SIG = '(uint256[2],uint256[2][2],uint256[2],uint256[11],address,int256,address,uint256,bytes,bytes)';
@@ -2026,7 +2028,7 @@ function joinedCall(rpc, calls, tag) {
     by.set(tag, (q = { calls: [], wait: [] }));
     setTimeout(() => {
       by.delete(tag);
-      rpc('eth_call', [{ to: MULTICALL3, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [q.calls.map(([t, d]) => [t, 1n, d])]) }, tag])
+      rpc('eth_call', [{ to: MULTICALL3, data: agg3(q.calls) }, tag])
         .then((h) => { const rs = aggregate(h); if (rs.length !== q.calls.length) throw new Error('no Multicall3 here'); for (const w of q.wait) w.res(rs.slice(w.at, w.at + w.n)); })
         .catch((e) => { for (const w of q.wait) w.rej(e); });
     }, 0);
@@ -2425,7 +2427,7 @@ const RL = (() => {
 // The step a spend reports when another payment took its place in the tree first and it is proved again.
 const RACED_STEP = 'another payment landed first, proving again';
 function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed = true, proofMs = () => 0, secrets = null, pairs = null, oldHistory = true }) {
-  const asset = poolAsset(chain.chainId, chain.pool, chain.token), keeper = chain.keeper, RB = chain.refundBase ?? REFUND_BASE;
+  const asset = poolAsset(chain.chainId, chain.pool), keeper = chain.keeper, RB = chain.refundBase ?? REFUND_BASE;
   const REFUND_GAP = 20, skey = slotOf(keys.v, `pool:${chain.chainId}:${chain.pool.toLowerCase()}`), oldKey = `tacit-evm-pool-v1:${chain.chainId}:${chain.pool.toLowerCase()}:${keys.address}`;
   const bkey = slotOf(keys.v, `pool-back:${chain.chainId}:${chain.pool.toLowerCase()}`);
   // The root in use, by a tag of its ML-KEM key's hash ('' with none): its deposit addresses, and the state, are its own.
@@ -2637,9 +2639,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     } catch (x) { if (!rl && !hold) rotate(e); throw x; }   // a relay that does not answer is left alone for a while
   };
   const wantRelayer = chain.relayer === undefined ? RELAYERS[chain.chainId] : chain.relayer, maxFee = chain.maxRelayFee ?? MAX_RELAY_FEE[chain.chainId];
-  // A fee in the pool's own unit (`chain.unit`, a token pool's { dec, sym }; ETH's otherwise): the slack a fee check allows
-  // for gas moving between the quote shown and the press is a millionth of that unit, and a fee reads in it.
-  const unit = chain.unit || { dec: 18, sym: 'ETH' }, hair = 10n ** BigInt(Math.max(0, unit.dec - 6)), feeStr = (v) => `${fmt(BigInt(v) * 10n ** BigInt(18 - unit.dec), 8)} ${unit.sym}`;
+  // The slack a fee check allows for gas moving between the quote shown and the press is a millionth of an ETH; a fee reads
+  // in ETH.
+  const hair = 10n ** 12n, feeStr = (v) => `${fmt(BigInt(v), 8)} ETH`;
   // `pin`: the address the relay was listed under (a quote must name it; none for a relay the person set themselves).
   function vet(q, pin = wantRelayer) {
     const bad = (m) => Object.assign(new Error(m), { vet: true });
@@ -2651,9 +2653,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // The fee is held to the network's price too: at most 8× what the gas costs at the node's gas price now, or 0.0001 ETH
   // where gas costs next to nothing, so a relay cannot charge up to the cap while gas is cheap. The gas is the relay's own
   // figure up to what the page asked a quote for (`ask`, a call's) or RELAY_GAS, whichever is more. With no price read, the
-  // cap above still holds; a token pool's fee, in the token, is held to its cap alone.
+  // cap above still holds.
   async function vetGas(q, ask = null) {
-    if (chain.token) return q;
     const price = await chain.rpc('eth_gasPrice', []).then((x) => BigInt(x)).catch(() => null);
     if (price == null) return q;
     const top = /^\d+$/.test(String(ask ?? '')) && BigInt(ask) > RELAY_GAS ? BigInt(ask) : RELAY_GAS;
@@ -2847,13 +2848,13 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // some chains.
   async function headRead(indexes, force = false) {
     const tip = chain.head ? await chain.head(force) : Number(BigInt(await chain.rpc('eth_blockNumber'))), at = '0x' + tip.toString(16);
-    // What an address holds of the pool's asset: ETH, or the pool's token.
-    const bal = (a) => (chain.token ? [chain.token, calldata('balanceOf(address)', ['address'], [a])] : [MULTICALL3, calldata('getEthBalance(address)', ['address'], [a])]);
+    // What an address holds of the pool's asset, ETH.
+    const bal = (a) => [MULTICALL3, calldata('getEthBalance(address)', ['address'], [a])];
     const held = bal(chain.pool);
     const calls = [[chain.pool, '0x' + hex(selector('nextIndex()'))], ...indexes.map((i) => bal(boxOf(i))), held];
     let leaves = null, waiting = null, pool = null;
     try {
-      const alone = () => (chain.own || chain.rpc)('eth_call', [{ to: MULTICALL3, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [calls.map(([t, d]) => [t, 1n, d])]) }, at]).then(aggregate);
+      const alone = () => (chain.own || chain.rpc)('eth_call', [{ to: MULTICALL3, data: agg3(calls) }, at]).then(aggregate);
       const rs = chain.join ? await chain.join(calls, at, true).catch(alone) : await alone();
       if (rs.length === calls.length && rs[0].ok) {
         leaves = big(rs[0].data); waiting = Object.fromEntries(indexes.map((i, k) => [i, rs[k + 1].ok ? big(rs[k + 1].data) : null]));
@@ -2862,7 +2863,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     } catch {}
     if (leaves == null) {
       leaves = await countAt(at);
-      const one = (a) => (chain.token ? ['eth_call', [{ to: chain.token, data: bal(a)[1] }, 'latest']] : ['eth_getBalance', [a, 'latest']]);
+      const one = (a) => ['eth_getBalance', [a, 'latest']];
       const got = await (chain.own || chain.rpc).batch([...indexes.map((i) => one(boxOf(i))), one(chain.pool)]);
       waiting = Object.fromEntries(indexes.map((i, k) => [i, got[k].error ? null : BigInt(got[k].result)]));
       pool = got[indexes.length].error ? null : BigInt(got[indexes.length].result);
@@ -3550,7 +3551,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         // It ran and reverted: this proof did not move anything, so its notes are free again.
         undoHold();
         await sync().catch(() => {});
-        if (state().tree.size === tree.size) throw new Error(`The transaction failed on the network, so no ${unit.sym} moved. Your wallet paid its gas. Try again in a moment.`);
+        if (state().tree.size === tree.size) throw new Error(`The transaction failed on the network, so no ETH moved. Your wallet paid its gas. Try again in a moment.`);
       }
     }
     // Nothing landed: rebuild from the chain, so a note an index wrongly showed as unspent is dropped (not when the relay
@@ -3869,7 +3870,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       const { npk } = receiveKeys(keys, index, classical), box = boxOf(index, classical);
       for (let round = 0; round < 4; round++) {
         await sync();
-        const [bal, n] = await Promise.all([chain.token ? own()('eth_call', [{ to: chain.token, data: calldata('balanceOf(address)', ['address'], [box]) }, 'latest']) : own()('eth_getBalance', [box, 'latest']), own()('eth_call', [{ to: chain.router, data: calldata('receiveCount(address)', ['address'], [box]) }, 'latest'])]);
+        const [bal, n] = await Promise.all([own()('eth_getBalance', [box, 'latest']), own()('eth_call', [{ to: chain.router, data: calldata('receiveCount(address)', ['address'], [box]) }, 'latest'])]);
         const amount = BigInt(bal);
         if (!amount) throw new Error('Nothing is waiting at that address.');
         const eh = extDataHash({ chainId: chain.chainId, pool: chain.pool, recipient: ZERO_ADDRESS, extAmount: amount, relayer: ZERO_ADDRESS, fee: 0n, memo0: new Uint8Array(), memo1: new Uint8Array() });
@@ -3948,6 +3949,13 @@ class Raw { constructor(s) { this.s = s; } }
 const esc = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const part = (v) => (v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : v == null || v === false ? '' : String(v).replace(/[&<>"']/g, (c) => esc[c]));
 const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i - 1]) + s));
+// The opening of the page's buttons, up to their own attributes: a plain one, one drawn as a link, a small ghost one.
+const BTN = html`<button type="button"`, BTN_LINK = html`<button class="link" type="button"`, BTN_GHOST = html`<button class="btn ghost sm" type="button"`;
+// The opening of a note (plain, an error, a warning, muted) and of a field's label.
+const NOTE = html`<p class="note">`, NOTE_ERR = html`<p class="note err">`, NOTE_WARN = html`<p class="note warn">`, NOTE_MUTE = html`<p class="note mute">`, LBL = html`<div class="lbl"><span>`;
+// The attributes of a field for an address, a name or a link (no autofill, capitals or spelling help), and of one for an
+// amount.
+const TEXT_IN = html` autocomplete="off" autocapitalize="off" spellcheck="false"`, AMOUNT_IN = html` inputmode="decimal" placeholder="0.00" autocomplete="off"`;
 // Drawn again, a part keeps the keyboard focus where it was.
 const focusOf = (a) => (a.id ? '#' + CSS.escape(a.id) : [...a.attributes].filter((x) => /^(data-|href$)/.test(x.name)).map((x) => `[${x.name}="${CSS.escape(x.value)}"]`).join('') || (a.localName === 'summary' ? (a.parentElement?.id ? `#${CSS.escape(a.parentElement.id)} > summary` : 'summary') : ''));
 // Areas drawn after every read are written only when what they show changed: no layout for nothing, and focus stays put.
@@ -4953,7 +4961,7 @@ const warn = (e) => { if (!(e instanceof Quiet)) toast(errText(e), codeOf(e) !==
 let unstick = null;
 // `again`: the same request sent once more (an extension wallet's popup can drop one that came as the last one closed).
 let reask = null;
-const waited = (say, stop, again = null) => (m, app = null) => { unstick = stop; reask = again; say(html`${m} ${app ? html`<a href="${app.href}">Open ${app.name}</a> ` : ''}${again ? html`<button class="link" type="button" data-reask>Ask again</button> ` : ''}<button class="link" type="button" data-unstick>Stop waiting</button>`); $('[data-unstick]')?.scrollIntoView({ block: 'nearest', behavior: smooth() }); };
+const waited = (say, stop, again = null) => (m, app = null) => { unstick = stop; reask = again; say(html`${m} ${app ? html`<a href="${app.href}">Open ${app.name}</a> ` : ''}${again ? html`${BTN_LINK} data-reask>Ask again</button> ` : ''}${BTN_LINK} data-unstick>Stop waiting</button>`); $('[data-unstick]')?.scrollIntoView({ block: 'nearest', behavior: smooth() }); };
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-unstick]')) unstick?.(); else if (e.target.closest?.('[data-reask]')) reask?.(); });
 // While a prompt is open the wallet is asked nothing else (walletAsk waits): some drop a prompt that a read lands beside.
 let PROMPT = Promise.resolve();
@@ -5001,7 +5009,7 @@ function pickWallet(list) {
   const last = store.get(WK), rows = [...list].sort((a, b) => (b.info.rdns === last) - (a.info.rdns === last));
   return new Promise((resolve) => {
     const d = $('#sheet-pick');
-    mount($('#pick-body'), html`${rows.map((w, i) => html`<button type="button" data-i="${i}">${/^data:image\//.test(w.info.icon || '') ? html`<img src="${w.info.icon}" alt="">` : ''}<span>${w.info.name}</span>${w.info.rdns === last ? html`<small>last used</small>` : w.info.hint ? html`<small>${w.info.hint}</small>` : ''}</button>`)}`);
+    mount($('#pick-body'), html`${rows.map((w, i) => html`${BTN} data-i="${i}">${/^data:image\//.test(w.info.icon || '') ? html`<img src="${w.info.icon}" alt="">` : ''}<span>${w.info.name}</span>${w.info.rdns === last ? html`<small>last used</small>` : w.info.hint ? html`<small>${w.info.hint}</small>` : ''}</button>`)}`);
     const none = () => resolve(null);
     d.addEventListener('close', none, { once: true });
     $$('[data-i]', d).forEach((b) => b.onclick = () => { d.removeEventListener('close', none); d.close(); resolve(rows[b.dataset.i]); });
@@ -5107,7 +5115,7 @@ async function connectWc() {
   const closed = new Promise((_, no) => { shut = () => no(new Quiet('closed')); });
   closed.catch(() => {});
   d.addEventListener('close', shut, { once: true });
-  mount(body, html`<p class="note">Connecting…</p>`);
+  mount(body, html`${NOTE}Connecting…</p>`);
   d.showModal();
   try {
     const paired = client.pair(CHAINS.map((c) => c.chainId), { name: 'tacit.wei', description: 'Private ETH payments', url: location.origin, icons: ['https://tacit.finance/tac-logo.png'] });
@@ -5116,9 +5124,9 @@ async function connectWc() {
     done.catch(() => {});
     const phone = matchMedia('(pointer: coarse)').matches;
     mount(body, html`${phone
-      ? html`<p class="note">Open your wallet app to connect.</p><div class="picker">${WC_APPS.map(([name, scheme]) => html`<a href="${scheme + encodeURIComponent(uri)}"><span>${name}</span></a>`)}<a href="${uri}"><span>Another wallet app</span></a></div><p class="note"><button class="link" type="button" data-wc-qr>Show a code to scan from another device</button></p><div data-wc-qrbox></div>`
-      : html`<p class="note">In your wallet app, choose WalletConnect and scan this code.</p>${qrSvg(uri)}`}
-      <p class="note">Or <button class="link" type="button" data-wc-copy>copy the link</button> into a wallet app.</p>
+      ? html`${NOTE}Open your wallet app to connect.</p><div class="picker">${WC_APPS.map(([name, scheme]) => html`<a href="${scheme + encodeURIComponent(uri)}"><span>${name}</span></a>`)}<a href="${uri}"><span>Another wallet app</span></a></div>${NOTE}${BTN_LINK} data-wc-qr>Show a code to scan from another device</button></p><div data-wc-qrbox></div>`
+      : html`${NOTE}In your wallet app, choose WalletConnect and scan this code.</p>${qrSvg(uri)}`}
+      ${NOTE}Or ${BTN_LINK} data-wc-copy>copy the link</button> into a wallet app.</p>
       <p class="note" role="status">Waiting for your wallet…</p>`);
     $('[data-wc-copy]', body).onclick = () => copy(uri, 'Link copied');
     const qb = $('[data-wc-qr]', body); if (qb) qb.onclick = () => { mount($('[data-wc-qrbox]', body), qrSvg(uri)); qb.parentElement.remove(); };
@@ -5921,7 +5929,7 @@ const pointNudge = (c) => {
   const w = S.key && !S.busy ? CH[c.chainId].W : null, gap = w?.pointGap();
   if (!(gap >= POINT_BEHIND)) return '';
   const none = w.newestPoint() === null;
-  return html`<p class="note">${none ? html`There is no catch-up point on ${c.full} yet, so a new device reads its whole history.` : html`New devices on ${c.full} start from a catch-up point, and the newest is about ${group(gap / 2)} transactions behind what this one has read.`} <button class="link" type="button" id="bal-point">${none ? 'Post the first one' : 'Post a fresh one'}</button> from your wallet: one transaction, gas only.</p>`;
+  return html`${NOTE}${none ? html`There is no catch-up point on ${c.full} yet, so a new device reads its whole history.` : html`New devices on ${c.full} start from a catch-up point, and the newest is about ${group(gap / 2)} transactions behind what this one has read.`} ${BTN_LINK} id="bal-point">${none ? 'Post the first one' : 'Post a fresh one'}</button> from your wallet: one transaction, gas only.</p>`;
 };
 const olderPct = (st) => { const p = st.W?.older(); return p == null ? '' : `older history ${Math.floor(p * 100)}%`; };
 // `another`: a new one for another payer, though this one is not paid yet.
@@ -5956,7 +5964,7 @@ const toRows = (t, to) => (t?.r ? html`${kvRow('To', t.name ? `${t.name} · ${sh
 const pqRow = (r) => {
   const s = pqWrite() ? pqKeyOf(r, () => FORM.check?.()) : r?.kemHash ? 'off' : null;
   return !s ? '' : s === 'have' ? kvRow('Memo', 'post-quantum, to their key') : s === 'looking' ? kvRow('Memo', 'looking for their post-quantum key…')
-    : html`<p class="note">${s === 'off' ? 'Post-quantum memos are paused for now.' : s === 'unknown' ? 'Their post-quantum key could not be looked up just now.' : 'They have a post-quantum key, but it is not on chain or in this link.'} You are asked before this goes with an ordinary memo, which they still receive.</p>`;
+    : html`${NOTE}${s === 'off' ? 'Post-quantum memos are paused for now.' : s === 'unknown' ? 'Their post-quantum key could not be looked up just now.' : 'They have a post-quantum key, but it is not on chain or in this link.'} You are asked before this goes with an ordinary memo, which they still receive.</p>`;
 };
 // A receipt's rows for what a spend costs: the relay's fee (none from the wallet), each merge it makes first, and what stays.
 const feeRow = (fee) => kvRow(fee ? 'Relay fee' : 'Fee', fee ? `${ethStr(fee)} ETH` : 'none · your wallet pays the gas');
@@ -6018,7 +6026,7 @@ function paintBal() {
   const flying = S.key && st.W ? st.W.inflight() : [];
   const flyTo = (p) => (p.why?.swap ? `as ${p.why.swap.sym} to ${short(p.why.dest, 8)}` : `to ${short(p.to, 8)}`);
   const flyLine = (x) => html`<div class="callout held"><span>${x.pay.merge ? html`A step combining parts of your balance into one of ${fmt(BigInt(x.pay.amount))} ETH` : html`${x.pay.kind === 'send' ? 'A payment' : 'A withdrawal'} of ${fmt(BigInt(x.pay.amount))} ETH ${flyTo(x.pay)}`} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
-  mount($('#bal-note'), html`${stuck.map((e) => stuckLine(c, e))}${flying.map(flyLine)}${flying.length && st.W?.storageFull() ? html`<p class="note warn">This browser is out of room to save, so what is held above is kept only while this tab stays open.</p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${lgLaterSay()}${w > 0n ? (relayTakes(c, w) ? html`<p class="note">${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}; the relay moves it into your balance within minutes. <button class="link" type="button" id="bal-take">See them</button></p>` : html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>`) : ''}${pointNudge(c)}${pqAsk() && !pqGate() && (st.bal > 0n || lgHeld() > 0n) ? html`<p class="note">Post-quantum privacy: keep new payments to you sealed under 24 words of your own. Your current balance can be sealed after, a relay fee each step. <button class="link" type="button" id="bal-pq">Turn it on</button> · <button class="link" type="button" id="bal-pq-later">Not now</button></p>` : ''}`);
+  mount($('#bal-note'), html`${stuck.map((e) => stuckLine(c, e))}${flying.map(flyLine)}${flying.length && st.W?.storageFull() ? html`${NOTE_WARN}This browser is out of room to save, so what is held above is kept only while this tab stays open.</p>` : ''}${cp ? html`${NOTE}Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. ${BTN_LINK} id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`${NOTE}${BTN_LINK} id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${lgLaterSay()}${w > 0n ? (relayTakes(c, w) ? html`${NOTE}${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}; the relay moves it into your balance within minutes. ${BTN_LINK} id="bal-take">See them</button></p>` : html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span>${BTN_GHOST} id="bal-take">See them</button></div>`) : ''}${pointNudge(c)}${pqAsk() && !pqGate() && (st.bal > 0n || lgHeld() > 0n) ? html`${NOTE}Post-quantum privacy: keep new payments to you sealed under 24 words of your own. Your current balance can be sealed after, a relay fee each step. ${BTN_LINK} id="bal-pq">Turn it on</button> · ${BTN_LINK} id="bal-pq-later">Not now</button></p>` : ''}`);
   const bq = $('#bal-pq'), bl = $('#bal-pq-later');
   if (bq) bq.onclick = () => { if (S.busy) return; PQUI.root ||= randomBytes(32); Object.assign(PQUI, { step: 'new', err: '' }); openSheet(); };
   if (bl) bl.onclick = pqLater;
@@ -6054,7 +6062,7 @@ function paintBal() {
   // total that dips while a move lands has its reason in view.
   const parts = (held > 0n || w > 0n) && st.bal != null ? html`<div class="u"><b class="num">${fmt(st.bal)}</b> ready to pay${held > 0n ? html` · <b class="num">${fmt(held)}</b> in ${lgLive().length === 1 ? 'a whole note' : `${lgLive().length} whole notes`} · ${LG_TORNADO}` : ''}${w > 0n ? html` · <b class="num">${fmt(w)}</b> arriving` : ''}</div>` : '';
   mount($('#bal'), html`${tkOn(html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg>`, c)}<div><div class="v num">${v}</div><div class="u">ETH, private</div>${parts}${held > 0n && st.bal == null ? lgBalLine() : ''}${poolLine}</div>
-    <div class="side">${st.err ? html`<span class="err">${errText(st.err)}</span><br>` : ''}<button class="link" type="button" id="bal-re">${st.syncing && (st.asked || st.bal == null) ? `reading…${readPct(st)}` : 'refresh'}</button>${olderPct(st) ? html`<br><span class="u">${olderPct(st)}</span>` : ''}</div>`);
+    <div class="side">${st.err ? html`<span class="err">${errText(st.err)}</span><br>` : ''}${BTN_LINK} id="bal-re">${st.syncing && (st.asked || st.bal == null) ? `reading…${readPct(st)}` : 'refresh'}</button>${olderPct(st) ? html`<br><span class="u">${olderPct(st)}</span>` : ''}</div>`);
   // Refresh reads the chain again, past a read that found nothing new.
   $('#bal-re').onclick = () => {
     if (st.asked) return;
@@ -6066,7 +6074,7 @@ function paintBal() {
 const TABS = [['shield', 'Shield'], ['send', 'Send'], ['withdraw', 'Withdraw'], ['receive', 'Receive']];
 // Only the selected tab is in the tab order; the arrow keys, Home and End move between them (the tab-list handler).
 function paintTabs() {
-  mount($('#tabs'), html`${TABS.map(([k, l]) => html`<button type="button" role="tab" data-tab="${k}" aria-selected="${String(k === S.tab)}" tabindex="${k === S.tab ? 0 : -1}" ${S.busy ? 'disabled' : ''}>${l}</button>`)}`);
+  mount($('#tabs'), html`${TABS.map(([k, l]) => html`${BTN} role="tab" data-tab="${k}" aria-selected="${String(k === S.tab)}" tabindex="${k === S.tab ? 0 : -1}" ${S.busy ? 'disabled' : ''}>${l}</button>`)}`);
   $$('#tabs [data-tab]').forEach((b) => b.onclick = () => { if (S.busy) return; S.tab = b.dataset.tab; mount($('#status'), ''); paintTabs(); renderForm(); });
 }
 // Where signing is safe: the signature is the key and is not bound to a site. tacit.wei.limo, tacit.gwei.limo, tacit.finance,
@@ -6123,11 +6131,11 @@ function paintFlow(el) {
   if (tab === 'shield') {
     // Paid with ETH unless a token is picked; 'ex': an exchange or another wallet, paying the deposit address.
     const pf = S.inTok?.[c.chainId], coin = pf === 'ex' ? null : pf || { sym: 'ETH', addr: ZERO_ADDRESS };
-    mount(el, html`<div class="lbl"><span>From</span><button type="button" id="f-tok" class="tokchip" aria-expanded="false" aria-controls="f-toks" aria-label="From: ${coin ? `${coin.sym}, in your wallet` : 'an exchange or another wallet'}">${coin ? tokIcon(coin) : ethIcon}${coin ? coin.sym : 'Exchange or wallet'}<small>${coin ? 'wallet' : 'deposit address'}</small></button></div><div class="toks" id="f-toks" hidden></div>`);
+    mount(el, html`${LBL}From</span>${BTN} id="f-tok" class="tokchip" aria-expanded="false" aria-controls="f-toks" aria-label="From: ${coin ? `${coin.sym}, in your wallet` : 'an exchange or another wallet'}">${coin ? tokIcon(coin) : ethIcon}${coin ? coin.sym : 'Exchange or wallet'}<small>${coin ? 'wallet' : 'deposit address'}</small></button></div><div class="toks" id="f-toks" hidden></div>`);
     wireTok(el, 'inTok');
   } else if (tab === 'withdraw') {
     const coin = outFor(c) || { sym: 'ETH', addr: ZERO_ADDRESS };
-    mount(el, html`<div class="lbl"><span>To</span><button type="button" id="f-tok" class="tokchip" aria-expanded="false" aria-controls="f-toks" aria-label="To: ${coin.sym}, at an address">${tokIcon(coin)}${coin.sym}<small>to an address</small></button></div><div class="toks" id="f-toks" hidden></div>`);
+    mount(el, html`${LBL}To</span>${BTN} id="f-tok" class="tokchip" aria-expanded="false" aria-controls="f-toks" aria-label="To: ${coin.sym}, at an address">${tokIcon(coin)}${coin.sym}<small>to an address</small></button></div><div class="toks" id="f-toks" hidden></div>`);
     wireTok(el, 'outTok');
   } else mount(el, '');
 }
@@ -6169,21 +6177,33 @@ function renderForm() {
   if (back) { back.focus(); if (caret) try { back.setSelectionRange(...caret); } catch {} }
 }
 // A form's Max button, beside its amount.
-const MAX = html`<button type="button" id="f-max">Max</button>`;
-const amountField = (id, label, extra = '', unit = html`${ethIcon}ETH`) => html`<div class="lbl"><span>${label}</span>${extra}</div>
-  <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u">${unit}</span></div>`;
-const badAmt = (i) => (i?.getAttribute('aria-invalid') === 'true' ? html`<p class="note err">Enter the amount as a number, up to 18 decimals.</p>` : '');
+const MAX = html`${BTN} id="f-max">Max</button>`;
+// A withdrawal's address field, with a button that fills in the wallet's own address (wired by wireMe).
+const withdrawTo = () => html`${LBL}Address</span>${S.account ? html`${BTN} id="f-me">My wallet</button>` : ''}</div>
+  <div class="amt text"><input id="f-wto" placeholder="0x… or name.wei"${TEXT_IN} aria-label="Recipient address or name"></div>`;
+const wireMe = (to) => $('#f-me')?.addEventListener('click', () => { to.value = S.account; to.dispatchEvent(new Event('input')); });
+// An amount field typed in ETH or in token `t` (`inTok`), with the switch between the two, the caption under it and the
+// slippage row.
+const unitField = (id, label, inTok, t) => html`<div class="amt"><input id="${id}"${AMOUNT_IN} aria-label="${label}"><span class="seg sub unit" role="group" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`${BTN} data-unit="${v}" aria-pressed="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
+  <p class="cap" id="f-cap" aria-live="polite"></p>
+  ${slipRow()}`;
+// A form's receipt, filled in as the form is checked, and its button.
+const goButton = (label) => html`<div class="rcpt" id="f-rcpt" hidden></div>
+  <button class="btn" type="button" id="f-go" disabled>${label}</button>`;
+const amountField = (id, label, extra = '', unit = html`${ethIcon}ETH`) => html`${LBL}${label}</span>${extra}</div>
+  <div class="amt"><input id="${id}"${AMOUNT_IN} aria-label="${label}"><span class="u">${unit}</span></div>`;
+const badAmt = (i) => (i?.getAttribute('aria-invalid') === 'true' ? html`${NOTE_ERR}Enter the amount as a number, up to 18 decimals.</p>` : '');
 // An amount typed in token `t`, also refused past the token's own decimals.
-const badTok = (i, t) => badAmt(i) || (i && parseEth(i.value) != null && parseUnits(i.value, t.dec) == null ? html`<p class="note err">${t.dec ? `${t.sym} has ${t.dec} decimals: enter the amount with no more.` : `${t.sym} has no decimals: enter a whole number.`}</p>` : '');
+const badTok = (i, t) => badAmt(i) || (i && parseEth(i.value) != null && parseUnits(i.value, t.dec) == null ? html`${NOTE_ERR}${t.dec ? `${t.sym} has ${t.dec} decimals: enter the amount with no more.` : `${t.sym} has no decimals: enter a whole number.`}</p>` : '');
 const routeLine = (tab, showFee = true) => {
   const c = S.chain, fee = showFee ? feeOf(tab) : null;
   if (!relayOf(c)) return html`<p class="route">Sent from your wallet${S.account ? ` ${whoShort(S.account)}` : ''}, which pays the gas and shows as the sender.</p>`;
-  if (viaOf(tab) === 'self') return html`<p class="route">Sent from your wallet${S.account ? ` ${whoShort(S.account)}` : ''}, which pays the gas and shows as the sender · <button class="link" type="button" data-route="relay">use the relay</button></p>`;
+  if (viaOf(tab) === 'self') return html`<p class="route">Sent from your wallet${S.account ? ` ${whoShort(S.account)}` : ''}, which pays the gas and shows as the sender · ${BTN_LINK} data-route="relay">use the relay</button></p>`;
   const refused = !!CH[c.chainId].quoteErr?.vet;
   if (!relayUp(c) && CH[c.chainId].at == null && !CH[c.chainId].quoteErr && !CH[c.chainId].err) return html`<p class="route">Reading the relay’s fee…</p>`;
   return relayUp(c)
-    ? html`<p class="route">Sent by the relay, no gas needed${fee != null ? html` · fee <b class="num">${ethStr(fee)} ETH</b>` : ''} · <button class="link" type="button" data-route="wallet">send from my wallet instead</button></p>`
-    : html`<p class="route"><span class="warn">${refused ? CH[c.chainId].quoteErr.message : 'The relay is not answering.'}</span> <button class="link" type="button" data-route="wallet">send from my wallet instead</button></p>`;
+    ? html`<p class="route">Sent by the relay, no gas needed${fee != null ? html` · fee <b class="num">${ethStr(fee)} ETH</b>` : ''} · ${BTN_LINK} data-route="wallet">send from my wallet instead</button></p>`
+    : html`<p class="route"><span class="warn">${refused ? CH[c.chainId].quoteErr.message : 'The relay is not answering.'}</span> ${BTN_LINK} data-route="wallet">send from my wallet instead</button></p>`;
 };
 // Chosen per action and per chain, never remembered: one relay hiccup must not send later payments from the wallet.
 const wireRoute = (f, tab) => $$('[data-route]', f).forEach((b) => b.onclick = () => { S.route[tab] = b.dataset.route; renderForm(); paintBal(); });
@@ -6226,9 +6246,9 @@ function escrowsLeft(c) {
 const stuckLine = (c, e) => {
   // The key's own escrow holds 1 wei: publishing again (wallet sheet) is the way on; finished from the wallet it would show
   // the wallet beside the Tacit address on chain. Put aside here, it is not shown again.
-  if (e.label === PQ_ESCROW) return html`<div class="callout held"><span>Publishing your post-quantum key did not finish (its escrow holds 1 wei). Publish it again under Post-quantum privacy in the wallet sheet; finishing this one from your wallet would show your wallet beside your Tacit address on chain.</span><span style="display:grid;gap:8px">${S.busy ? '' : html`<button class="btn ghost sm" type="button" data-esc-drop="${e.addr}">Put it aside</button>`}</span></div>`;
+  if (e.label === PQ_ESCROW) return html`<div class="callout held"><span>Publishing your post-quantum key did not finish (its escrow holds 1 wei). Publish it again under Post-quantum privacy in the wallet sheet; finishing this one from your wallet would show your wallet beside your Tacit address on chain.</span><span style="display:grid;gap:8px">${S.busy ? '' : html`${BTN_GHOST} data-esc-drop="${e.addr}">Put it aside</button>`}</span></div>`;
   const late = Date.now() > Number(e.intent.deadline) * 1000;
-  return html`<div class="callout held"><span>${e.label}: the pool paid ${fmt(e.v)} ETH into its escrow, but the steps after that did not run, so the ETH is waiting there. ${late ? `Time is up, so it can be sent on to ${short(e.intent.refund)} as ETH, not as the token.` : 'Your wallet can run them now.'}</span><span style="display:grid;gap:8px">${S.busy ? '' : html`<button class="btn ghost sm" type="button" data-esc="${e.addr}">${late ? 'Send the ETH on' : 'Finish it from my wallet'}</button>`}</span></div>`;
+  return html`<div class="callout held"><span>${e.label}: the pool paid ${fmt(e.v)} ETH into its escrow, but the steps after that did not run, so the ETH is waiting there. ${late ? `Time is up, so it can be sent on to ${short(e.intent.refund)} as ETH, not as the token.` : 'Your wallet can run them now.'}</span><span style="display:grid;gap:8px">${S.busy ? '' : html`${BTN_GHOST} data-esc="${e.addr}">${late ? 'Send the ETH on' : 'Finish it from my wallet'}</button>`}</span></div>`;
 };
 function runEscrow(btn, c, e) {
   return act(btn, async (step) => {
@@ -6326,10 +6346,10 @@ async function act(btn, fn, target = '#status') {
     if (!e?.inflight && (e?.unconfirmed || e?.batch || e?.asked)) setSent({ ...(e.unconfirmed ? { h: e.unconfirmed } : e.batch ? { batch: e.batch } : { asked: true }), c, ...(S.key && { key: sentTag(S.key) }), ...(e.box != null && { box: e.box }), ...(e.dep && { dep: true }) });
     // A payment whose proof may already be out is only ever tried again from the same notes; a fresh one waits for the
     // user to say it is a different payment.
-    const held = e?.inflight ? html`${heldButtons(c, e.inflight)}${e.hold ? html`<button class="link" type="button" data-fresh>It is a different payment</button>` : ''}` : e?.duplicate ? html` <button class="link" type="button" data-fresh>Pay it again</button>` : '';
+    const held = e?.inflight ? html`${heldButtons(c, e.inflight)}${e.hold ? html`${BTN_LINK} data-fresh>It is a different payment</button>` : ''}` : e?.duplicate ? html` ${BTN_LINK} data-fresh>Pay it again</button>` : '';
     const offer = !e?.inflight && !e?.feeMoved && !e?.noWallet && btn.id === 'f-go' && relayTrouble(e) && viaOf(S.tab) !== 'self' && (S.tab === 'send' || S.tab === 'withdraw');
     if (e?.feeMoved || e?.unconfirmed || e?.inflight || e?.landed) syncAfter = true;
-    mount(status, e instanceof Quiet ? '' : e?.unconfirmed ? html`<span${e.wrong ? '' : html` data-unconf="${e.unconfirmed}"`}>${errText(e)}</span> ${txLink(c, e.unconfirmed)}${held}` : html`<span class="${e?.landed ? 'ok' : e?.pqPlain || e?.reseal ? 'warn' : 'err'}">${errText(e)}</span>${held}${e?.pqPlain ? html` <button class="link" type="button" data-plain>Send with an ordinary memo</button>` : ''}${e?.reseal ? html` <button class="link" type="button" data-reseal>Seal it now</button>` : ''}${offer ? html` <button class="link" type="button" id="use-wallet">Send it from my wallet instead</button>` : ''}${/from disk/.test(errText(e)) ? html` <button class="link" type="button" id="act-disk">Load them from disk</button>` : ''}`);
+    mount(status, e instanceof Quiet ? '' : e?.unconfirmed ? html`<span${e.wrong ? '' : html` data-unconf="${e.unconfirmed}"`}>${errText(e)}</span> ${txLink(c, e.unconfirmed)}${held}` : html`<span class="${e?.landed ? 'ok' : e?.pqPlain || e?.reseal ? 'warn' : 'err'}">${errText(e)}</span>${held}${e?.pqPlain ? html` ${BTN_LINK} data-plain>Send with an ordinary memo</button>` : ''}${e?.reseal ? html` ${BTN_LINK} data-reseal>Seal it now</button>` : ''}${offer ? html` ${BTN_LINK} id="use-wallet">Send it from my wallet instead</button>` : ''}${/from disk/.test(errText(e)) ? html` ${BTN_LINK} id="act-disk">Load them from disk</button>` : ''}`);
   } finally {
     // "Send with an ordinary memo" is for the one press it started, even one that stopped before the payment asked
     PLAIN = false;
@@ -6407,7 +6427,7 @@ function quoted(Q, key, fresh, clear, run, fail = (err) => ({ err })) {
 // An address and a number as ABI words, in hex, for the quoter's calls.
 const qA = (a) => hex(addrWord(a)), qU = (v) => hex(word(v));
 // What a form shows while its route is being found.
-const FINDING = html`<p class="note">Finding the best route…</p>`;
+const FINDING = html`${NOTE}Finding the best route…</p>`;
 // The chain's time, not the device's, for every deadline sent on chain (a clock minutes off would expire each route and
 // permit before it lands): the newest block's, read at most every ten minutes and carried on by the device's clock.
 const CLOCK = {};
@@ -6449,25 +6469,25 @@ function formShield(f) {
     if (st.boxOk === undefined) { st.boxOk = null; W.ready().then((ok) => { st.boxOk = ok; }, () => { st.boxOk = 'unread'; }).finally(() => { if (!S.busy && S.tab === 'shield') renderForm(); }); }
     if (st.boxOk !== true) {
       const say = st.boxOk === false ? `The pool on ${c.full} does not confirm this deposit address, so it is not shown. Try again later, or add a node under Endpoints.`
-        : st.boxOk === 'unread' ? html`Could not reach ${c.full} to check your deposit address. <button class="link" type="button" id="f-recheck">Try again</button>` : 'Checking your deposit address with the pool…';
+        : st.boxOk === 'unread' ? html`Could not reach ${c.full} to check your deposit address. ${BTN_LINK} id="f-recheck">Try again</button>` : 'Checking your deposit address with the pool…';
       mount(f, html`${seg}<p class="note${st.boxOk === null ? '' : ' err'}">${say}</p>`);
       $('#f-recheck')?.addEventListener('click', () => { st.boxOk = undefined; renderForm(); });
       return;
     }
     const min = st.quote?.receiveMin ? BigInt(st.quote.receiveMin) : null;
     mount(f, html`${seg}
-      <div class="blk"><div class="lbl"><span>Your deposit address</span><span>reusing it links your deposits</span></div>
-        <div class="addr"><code>${box}</code><button class="link" type="button" data-copy="${box}">copy</button></div>
-        <p class="note">Send ETH here from an exchange or any wallet, on Ethereum; a token, or ETH on another network, cannot be collected. ${relayOf(c) ? html`The relay moves it into your private balance within minutes, for up to 0.25%${min ? html` (at least ${fmtUp(min)} ETH on ${c.full})` : ''}.` : 'Take it in below once it arrives.'}</p></div>
-      ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${takeSay(relayTakes(c, waiting))}</span><button class="btn ghost sm" type="button" id="f-sweep">Take it in</button></div>` : ''}
-      <p class="note"><button class="link" type="button" id="f-check">Check for arrivals now</button>${S.key.pq ? html` · <button class="link" type="button" id="f-oldcheck" ${OLDQ[c.chainId] ? 'disabled' : ''}>${OLDQ[c.chainId] ? 'Checking older addresses…' : 'Check older addresses'}</button>` : ''}</p>
-      <div class="blk"><div class="lbl"><span>One-time addresses</span><span>one for each person who pays you</span></div>
-        <p class="note">Taken in by the relay, nothing on chain ties them together.</p>
-        <div class="amt text"><input id="f-boxlabel" maxlength="40" placeholder="Payer (optional)" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Payer (optional), kept on this device"><button class="link" type="button" id="f-newbox" ${historyRead() ? '' : 'disabled'}>${historyRead() ? 'new address' : 'reading your history…'}</button></div>
+      <div class="blk">${LBL}Your deposit address</span><span>reusing it links your deposits</span></div>
+        <div class="addr"><code>${box}</code>${BTN_LINK} data-copy="${box}">copy</button></div>
+        ${NOTE}Send ETH here from an exchange or any wallet, on Ethereum; a token, or ETH on another network, cannot be collected. ${relayOf(c) ? html`The relay moves it into your private balance within minutes, for up to 0.25%${min ? html` (at least ${fmtUp(min)} ETH on ${c.full})` : ''}.` : 'Take it in below once it arrives.'}</p></div>
+      ${waiting > 0n ? html`<div class="callout"><span>${fmt(waiting)} ETH is waiting at your deposit address. ${takeSay(relayTakes(c, waiting))}</span>${BTN_GHOST} id="f-sweep">Take it in</button></div>` : ''}
+      ${NOTE}${BTN_LINK} id="f-check">Check for arrivals now</button>${S.key.pq ? html` · ${BTN_LINK} id="f-oldcheck" ${OLDQ[c.chainId] ? 'disabled' : ''}>${OLDQ[c.chainId] ? 'Checking older addresses…' : 'Check older addresses'}</button>` : ''}</p>
+      <div class="blk">${LBL}One-time addresses</span><span>one for each person who pays you</span></div>
+        ${NOTE}Taken in by the relay, nothing on chain ties them together.</p>
+        <div class="amt text"><input id="f-boxlabel" maxlength="40" placeholder="Payer (optional)" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Payer (optional), kept on this device">${BTN_LINK} id="f-newbox" ${historyRead() ? '' : 'disabled'}>${historyRead() ? 'new address' : 'reading your history…'}</button></div>
         <ul class="rows">${boxList(st).map((x) => { const addr = W.receiveBox(x.i, !!x.c), w = (x.c ? waitC(st) : st.boxW || {})[x.i] ?? 0n;
           return html`<li><div class="h"><b>${x.label || `Address ${x.i}`}</b><span>${w > 0n ? html`<span class="in">${fmt(w)} ETH waiting</span>` : ''}</span></div>
-            <div class="addr"><code>${addr}</code><button class="link" type="button" data-copy="${addr}">copy</button></div>
-            ${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting here on ${c.full}. ${takeSay(relayTakes(c, w))}</span><button class="btn ghost sm" type="button" data-take="${x.i}"${x.c ? html` data-c="1"` : ''}>Take it in</button></div>` : ''}</li>`; })}</ul></div>`);
+            <div class="addr"><code>${addr}</code>${BTN_LINK} data-copy="${addr}">copy</button></div>
+            ${w > 0n ? html`<div class="callout"><span>${fmt(w)} ETH is waiting here on ${c.full}. ${takeSay(relayTakes(c, w))}</span>${BTN_GHOST} data-take="${x.i}"${x.c ? html` data-c="1"` : ''}>Take it in</button></div>` : ''}</li>`; })}</ul></div>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
     $('#f-newbox').onclick = (e) => e.detail < 2 && issueBox($('#f-boxlabel').value.trim());
     FORM.hist = historyRead();
@@ -6482,15 +6502,14 @@ function formShield(f) {
     // An amount typed in a token is not an amount of ETH.
     if (S.payIn) { S.payIn = null; delete DRAFT['f-samt']; }
     mount(f, html`${seg}
-      ${amountField('f-samt', 'Amount', S.account ? html`<button type="button" id="f-max">Wallet <span id="f-wb" class="num">…</span> ETH</button>` : '')}
-      <div class="quick" role="group" aria-label="Quick amounts">${['0.1', '1', '10'].map((v) => html`<button type="button" data-q="${v}">${v}</button>`)}</div>
+      ${amountField('f-samt', 'Amount', S.account ? html`${BTN} id="f-max">Wallet <span id="f-wb" class="num">…</span> ETH</button>` : '')}
+      <div class="quick" role="group" aria-label="Quick amounts">${['0.1', '1', '10'].map((v) => html`${BTN} data-q="${v}">${v}</button>`)}</div>
       <div id="f-split"></div>
-      <div class="lbl"><span>For</span></div>
-      <div class="amt text"><input id="f-sto" placeholder="${S.key ? 'Yourself, name.wei or tacit1…' : 'Their name.wei or tacit1…'}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="For"></div>
-      <div class="rcpt" id="f-rcpt" hidden></div>
-      <button class="btn" type="button" id="f-go" disabled>${!S.account ? 'Connect a wallet' : 'Shield'}</button>
+      ${LBL}For</span></div>
+      <div class="amt text"><input id="f-sto" placeholder="${S.key ? 'Yourself, name.wei or tacit1…' : 'Their name.wei or tacit1…'}"${TEXT_IN} aria-label="For"></div>
+      ${goButton(!S.account ? 'Connect a wallet' : 'Shield')}
       ${S.key ? '' : html`<ol class="steps" aria-label="Steps"><li class="${S.account ? 'done' : 'on'}">Connect wallet</li><li class="${S.account ? 'on' : ''}">Sign in once</li><li>Shield</li></ol>`}
-      <p class="note">${pal('face')}From your wallet on ${c.full}: no relay fee, just gas.${S.key ? '' : html` To shield into your own balance, <button class="link" type="button" id="f-open">sign in</button>.`}</p>`);
+      ${NOTE}${pal('face')}From your wallet on ${c.full}: no relay fee, just gas.${S.key ? '' : html` To shield into your own balance, ${BTN_LINK} id="f-open">sign in</button>.`}</p>`);
     let wb = null;
     const amt = $('#f-samt'), to = $('#f-sto'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
     $('#f-open')?.addEventListener('click', () => openSheet(true));
@@ -6523,7 +6542,7 @@ function formShield(f) {
       const k = p ? `${p.wei}|${lgSmallest()}|${LG.gasPrice}|${p.notes.map((n) => TC.cachedSize(TC.poolOf(n.address))?.deposits).join()}` : off ? 'off' : '';
       if (k === splitKey) return;
       splitKey = k;
-      mount(split, off ? html`<div class="lg-split"><div class="lbl"><span>Split into whole notes: off</span><span>${lgSmallestSelect()}</span></div></div>` : lgSplitCard(p));
+      mount(split, off ? html`<div class="lg-split">${LBL}Split into whole notes: off</span><span>${lgSmallestSelect()}</span></div></div>` : lgSplitCard(p));
       lgWireSplit(split, p, () => { splitKey = null; FORM.check?.(); }, { setAmount: (v) => { amt.value = plain(v); FORM.check?.(); } });
     };
     FORM.check = () => {
@@ -6534,12 +6553,12 @@ function formShield(f) {
       if (sentHolds(c)) { mount(rc, sentNote(c)); rc.hidden = false; return sentWire(renderForm, $('#f-rcpt')); }
       const who = toRows(t, to), say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
       if (!S.account) { go.disabled = false; return; }
-      if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
-      if (t?.error && (t.name || to?.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
+      if (t?.pending) return say(html`${NOTE}Reading ${t.name}…</p>`);
+      if (t?.error && (t.name || to?.value.trim().length > 8)) return say(html`${NOTE_ERR}${t.error}</p>`);
       // The button says what is still missing.
       if (a && !t && !S.key) { go.textContent = 'Sign in to shield to yourself'; go.disabled = false; return; }
       if (!a || !t || t.error) { go.textContent = !a ? 'Enter an amount' : 'Enter who it is for'; return who || badAmt(amt) ? say(badAmt(amt)) : undefined; }
-      if (wb != null && a > wb) return say(html`<p class="note err">More than your wallet holds on ${c.full}.</p>`);
+      if (wb != null && a > wb) return say(html`${NOTE_ERR}More than your wallet holds on ${c.full}.</p>`);
       const p = splitOf(a, t);
       say(p ? html`${kvRow('Into whole notes', `${fmt(p.noteTotal)} ETH`)}${p.remainder ? kvRow('Ready to pay', `${fmt(p.remainder, 18)} ETH`) : ''}` : html`${kvRow(t.self ? 'Into your private balance' : 'Into their private balance', `${fmt(a, 18)} ETH`)}`);
       go.disabled = false;
@@ -6592,12 +6611,11 @@ async function shieldTo(c, r, amount, onStep, guard = null) {
 function formSend(f) {
   const c = S.chain, tab = 'send';
   mount(f, html`
-    <div class="lbl"><span>To</span><button type="button" id="f-paste">paste</button></div>
-    <div class="amt text"><input id="f-to" placeholder="name.wei, tacit1… or 0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="To"></div>
+    ${LBL}To</span>${BTN} id="f-paste">paste</button></div>
+    <div class="amt text"><input id="f-to" placeholder="name.wei, tacit1… or 0x…"${TEXT_IN} aria-label="To"></div>
     ${amountField('f-amt', 'Amount', MAX)}
     ${routeLine(tab)}
-    <div class="rcpt" id="f-rcpt" hidden></div>
-    <button class="btn" type="button" id="f-go" disabled>Send privately</button>
+    ${goButton('Send privately')}
     <p class="note" id="f-note"></p>`);
   wireRoute(f, tab);
   const to = $('#f-to'), amt = $('#f-amt'), go = $('#f-go'), rc = $('#f-rcpt');
@@ -6626,9 +6644,9 @@ function formSend(f) {
       ? 'Paid out of the pool to this address; your balance stays private.'
       : 'Who you pay and how much stay private.'}`);
     const who = toRows(t, to), say = (v) => { mount(rc, html`${who}${v}`); rc.hidden = false; };
-    if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
-    if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`<p class="note err">${t.error}</p>`);
-    if (t?.addr && destNote(c, t.addr).refuse) return say(html`<p class="note err">${destNote(c, t.addr).refuse}</p>`);
+    if (t?.pending) return say(html`${NOTE}Reading ${t.name}…</p>`);
+    if (t?.error && (t.name || to.value.trim().length > 8)) return say(html`${NOTE_ERR}${t.error}</p>`);
+    if (t?.addr && destNote(c, t.addr).refuse) return say(html`${NOTE_ERR}${destNote(c, t.addr).refuse}</p>`);
     if (!a || !t || t.error) { go.textContent = !t || t.error ? 'Enter who to pay' : 'Enter an amount'; return who || badAmt(amt) ? say(badAmt(amt)) : undefined; }
     if (t.addr) {
       const d = destLines(c, t.addr), o = outRows(say, tab, a, fee, bal, '', d);
@@ -6638,7 +6656,7 @@ function formSend(f) {
       if (d.ok && fee && o.p && !o.p.merges && !o.x) proveSoon(c, { to: t.addr, amount: a, out: true });
       return;
     }
-    if (fee == null) return say(relayUp() ? html`<p class="note">Reading the relay’s fee…</p>` : '');
+    if (fee == null) return say(relayUp() ? html`${NOTE}Reading the relay’s fee…</p>` : '');
     const p = plan(a, fee);
     if (bal != null && !p) {
       mv = whyNot(a, fee, bal, cur().notes || []) === 'parts' ? null : lgCover(a, fee);
@@ -6692,19 +6710,17 @@ function formWithdraw(f) {
   // Arriving as a token at an address (swapped on the way).
   if (outFor(c)) return formSwap(f, seg);
   mount(f, html`${seg}
-    <div class="lbl"><span>Address</span>${S.account ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
-    <div class="amt text"><input id="f-wto" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient address or name"></div>
+    ${withdrawTo()}
     ${amountField('f-wamt', 'Amount', MAX)}
     ${routeLine(tab)}
-    <div class="rcpt" id="f-rcpt" hidden></div>
-    <button class="btn" type="button" id="f-go" disabled>Withdraw</button>
-    <p class="note">${pal('face')}Take out any part; the rest stays private.</p>
-    ${(S.account || S.key) && !lgLive().length && !lgOff(0) ? html`<p class="note mute">Whole notes made on another device or in another app? <button class="link" type="button" id="lg-open">Find them</button></p>` : ''}`);
+    ${goButton('Withdraw')}
+    ${NOTE}${pal('face')}Take out any part; the rest stays private.</p>
+    ${(S.account || S.key) && !lgLive().length && !lgOff(0) ? html`${NOTE_MUTE}Whole notes made on another device or in another app? ${BTN_LINK} id="lg-open">Find them</button></p>` : ''}`);
   wireRoute(f, tab);
   $('#lg-open')?.addEventListener('click', () => { LG.open = true; lgPaint(); $('#lg-notes')?.scrollIntoView({ behavior: smooth(), block: 'start' }); });
   lgWarm();
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
-  $('#f-me')?.addEventListener('click', () => { to.value = S.account; to.dispatchEvent(new Event('input')); });
+  wireMe(to);
   $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return feeWait(); maxPublic(amt, maxSpend(withHeadroom(fee)) + lgOutHeld(), 'private'); };
   lgOneOn(rc, amt);
   let shown = null;
@@ -6716,16 +6732,9 @@ function formWithdraw(f) {
     const say = (v) => { mount(rc, v); rc.hidden = false; };
     // A wallet deposit not confirmed yet holds a withdrawal only when the wallet would send it too.
     if (sentHolds(c) && !(S.sent.dep && viaOf(tab) !== 'self')) { say(sentNote(c)); return sentWire(renderForm, $('#f-rcpt')); }
-    // A name is read to the address it points to, and that address is what the rest of the form checks and shows.
-    const t = raw && looksName(raw) ? destOf(raw, c) : null, dest = t?.addr ?? raw;
-    if (t?.pending) return say(html`<p class="note">Reading ${t.name}…</p>`);
-    if (t?.error) return say(html`<p class="note err">${t.error}</p>`);
-    if (raw && !t && !isAddr(raw)) return /^0x[0-9a-f]{0,39}$/i.test(raw) ? void (go.textContent = 'Enter an address') : say(html`<p class="note err">${/^(bp1|tacit1)/i.test(raw) ? TACIT_HERE : ADDR_ASK}</p>`);
-    if (raw && !t && !addrOk(raw)) return say(html`<p class="note err">${ADDR_TYPO}</p>`);
-    if (dest && !payable(dest)) return say(html`<p class="note err">${t ? `${t.name} points to an address that` : 'That address'} cannot receive a withdrawal.</p>`);
-    const where = t ? html`${kvRow('To', `${t.name} · ${short(t.addr, 6)}`)}${kvRow('Address', t.addr)}` : '', refuse = dest && destNote(c, dest).refuse;
-    if (refuse) return say(html`${where}<p class="note err">${refuse}</p>`);
-    const d = dest ? destLines(c, dest, t) : { ok: true, lines: '' };
+    const w = destCheck(raw, c, say, go);
+    if (!w) return;
+    const { n: t, dest, where } = w, d = dest ? destLines(c, dest, t) : { ok: true, lines: '' };
     if (!a || !raw) { go.textContent = !raw ? 'Enter an address' : 'Enter an amount'; return t || badAmt(amt) ? say(html`${where}${badAmt(amt)}`) : undefined; }
     const o = outRows(say, tab, a, fee, bal, where, d);
     if (!o) return;
@@ -6754,7 +6763,7 @@ function outRows(say, tab, a, fee, bal, where, d) {
   // the relay line is about the part paid from the balance: with the whole amount from notes (each pays its own gas) it says nothing true
   const rt = $('#form .route'); if (rt) rt.hidden = !!(x && x.rest === 0n);
   if (x && x.rest === 0n) { say(html`${where}${lgExitRows(x)}${staysRow(bal, null, x)}${d.lines}`); return { x }; }
-  if (fee == null) { say(html`${where}${x ? lgExitRows(x) : ''}${relayUp() ? html`<p class="note">Reading the relay’s fee…</p>` : ''}`); return null; }
+  if (fee == null) { say(html`${where}${x ? lgExitRows(x) : ''}${relayUp() ? html`${NOTE}Reading the relay’s fee…</p>` : ''}`); return null; }
   const part = x ? x.rest : a, p = plan(part, fee);
   if (bal != null && !p) { cannotPay(say, tab, part, fee, bal, true, x); return null; }
   say(html`${where}${x ? lgExitRows(x) : kvRow('Arrives', `${fmt(a, 18)} ETH`)}${feeRow(fee)}
@@ -6869,7 +6878,7 @@ const pickTok = (c, slot, t) => {
 // when its decimals and its supply are a word each (a contract whose fallback answers anything has no supply to give).
 async function tokenAt(c, a) {
   const sels = ['0x313ce567', '0x95d89b41', '0x06fdde03', '0x18160ddd'];
-  const rs = aggregate(await quorum(MULTICALL3, calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [sels.map((x) => [a, 1n, x])]), ownNodes(c)));
+  const rs = aggregate(await quorum(MULTICALL3, agg3(sels.map((x) => [a, x])), ownNodes(c)));
   const [d, s, n, supply] = sels.map((_, i) => (rs[i]?.ok ? '0x' + hex(rs[i].data) : '0x'));
   if (!/^0x[0-9a-f]{64}$/i.test(d) || !/^0x[0-9a-f]{64}$/i.test(supply)) return null;
   const text = (h) => { try { return /^0x[0-9a-f]{64}$/i.test(h) ? new TextDecoder().decode(unhex(h)) : strOf(h); } catch { return ''; } };
@@ -6879,7 +6888,7 @@ async function tokenAt(c, a) {
 // exchange paying the deposit address); 'outTok', the coin a
 // withdrawal arrives as; 'askTok', the token a payment link asks for. `n` sets the ids apart where a form has two pickers;
 // `none` names the choice of no token.
-const tokRow = (c, slot = 'outTok', label = 'Arrives as', n = '', none = 'ETH') => { const t = S[slot]?.[c.chainId], name = t ? t.sym : none; return html`<div class="lbl"><span>${label}</span><button type="button" id="f-tok${n}" class="tokchip" aria-expanded="false" aria-controls="f-toks${n}" aria-label="${label}: ${name}">${t ? tokIcon(t) : slot === 'askTok' ? pethIcon : tokIcon(null)}${name}</button></div><div class="toks" id="f-toks${n}" hidden></div>`; };
+const tokRow = (c, slot = 'outTok', label = 'Arrives as', n = '', none = 'ETH') => { const t = S[slot]?.[c.chainId], name = t ? t.sym : none; return html`${LBL}${label}</span>${BTN} id="f-tok${n}" class="tokchip" aria-expanded="false" aria-controls="f-toks${n}" aria-label="${label}: ${name}">${t ? tokIcon(t) : slot === 'askTok' ? pethIcon : tokIcon(null)}${name}</button></div><div class="toks" id="f-toks${n}" hidden></div>`; };
 // The token picker: ETH, then the list's tokens and those added by address, searchable. An address pasted in is read from
 // the chain and offered.
 function wireTok(f, slot = 'outTok', n = '') {
@@ -6906,15 +6915,15 @@ function wireTok(f, slot = 'outTok', n = '') {
     build(TOKENS.rows);
     const first = { askTok: ['Private ETH', 'paid into your private balance'], inTok: ['ETH', 'in your wallet'] }[slot] || ['ETH', 'a plain withdrawal'];
     const row = (t) => {
-      const b = html`<button type="button" data-tk="${t.addr}">${tokIcon(t)}<span>${t.sym}<small>${t.name ? `${t.name} · ` : ''}${short(t.addr)}${t.fresh ? ' · not on the list' : t.added ? ' · added by you' : ''}</small></span></button>`;
-      return t.added && !t.fresh ? html`<div class="added">${b}<button class="link" type="button" data-forget="${t.addr}">forget</button></div>` : b;
+      const b = html`${BTN} data-tk="${t.addr}">${tokIcon(t)}<span>${t.sym}<small>${t.name ? `${t.name} · ` : ''}${short(t.addr)}${t.fresh ? ' · not on the list' : t.added ? ' · added by you' : ''}</small></span></button>`;
+      return t.added && !t.fresh ? html`<div class="added">${b}${BTN_LINK} data-forget="${t.addr}">forget</button></div>` : b;
     };
     const draw = (q = '') => {
       const k = q.trim().toLowerCase(), list = all.filter((t) => !k || t.sym.toLowerCase().includes(k) || t.name.toLowerCase().includes(k) || lc(t.addr) === k);
       const paste = /^0x[0-9a-f]{40}$/.test(k) && !list.length ? k : null;
       // Shield's From also offers the deposit address, for ETH sent from an exchange or another wallet.
-      const ex = slot === 'inTok' && S.key && !k ? html`<button type="button" data-tk="" data-from="exchange">${ethIcon}<span>An exchange or another wallet<small>send ETH to your deposit address</small></span></button>` : '';
-      mount($(`#f-tokl${n}`, box), html`<button type="button" data-tk="">${slot === 'askTok' ? pethIcon : tokIcon(null)}<span>${first[0]}<small>${first[1]}</small></span></button>${ex}${list.map(row)}${paste ? html`<p class="note" id="f-tokadd${n}">Reading that token on ${c.full}…</p>` : listFailed && !k ? html`<p class="note">Could not read the token list just now. Paste a token’s address to use it.</p>` : ''}`);
+      const ex = slot === 'inTok' && S.key && !k ? html`${BTN} data-tk="" data-from="exchange">${ethIcon}<span>An exchange or another wallet<small>send ETH to your deposit address</small></span></button>` : '';
+      mount($(`#f-tokl${n}`, box), html`${BTN} data-tk="">${slot === 'askTok' ? pethIcon : tokIcon(null)}<span>${first[0]}<small>${first[1]}</small></span></button>${ex}${list.map(row)}${paste ? html`<p class="note" id="f-tokadd${n}">Reading that token on ${c.full}…</p>` : listFailed && !k ? html`${NOTE}Could not read the token list just now. Paste a token’s address to use it.</p>` : ''}`);
       $$('[data-tk]', box).forEach((b) => b.onclick = async () => {
         if (b.dataset.from) { pickTok(c, slot, 'ex'); return render(); }
         const t = all.find((x) => x.addr === b.dataset.tk) || null, k = box.seq = (box.seq || 0) + 1;
@@ -7060,7 +7069,7 @@ const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df5
 async function routePays(c, t, r, stand, block) {
   const from = '0x' + hex(randomBytes(20)), to = '0x' + '0'.repeat(24) + stand;
   const kept = [null, ...HUBS.match(/.{40}/g).map((x) => '0x' + x), t.addr];
-  const holds = { from, to: MULTICALL3, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [kept.map((k) => (k ? [k, 1n, calldata('balanceOf(address)', ['address'], [ZROUTER])] : [MULTICALL3, 1n, calldata('getEthBalance(address)', ['address'], [ZROUTER])]))]) };
+  const holds = { from, to: MULTICALL3, data: agg3(kept.map((k) => (k ? [k, calldata('balanceOf(address)', ['address'], [ZROUTER])] : [MULTICALL3, calldata('getEthBalance(address)', ['address'], [ZROUTER])]))) };
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_simulateV1', params: [{ blockStateCalls: [{ stateOverrides: { [from]: { balance: '0x' + (r.value + 10n ** 18n).toString(16) } }, calls: [holds, { from, to: ZROUTER, value: '0x' + r.value.toString(16), data: r.data }, holds] }], validation: false }, block] });
   const more = (x, y) => { try { const a = aggregate(x.returnData), b = aggregate(y.returnData); return a.length !== kept.length || b.length !== kept.length || b.some((e, i) => (e.ok ? big(e.data) : 0n) > (a[i].ok ? big(a[i].data) : 0n)); } catch { return true; } };
   // Checked by nodes other than the one that found it (`r.lone`), two where there are two.
@@ -7124,8 +7133,8 @@ function routeLegsOk(t, r, stand) {
 // The route with the recipient written in for its stand-in, and where a route's leftovers go (`refund`) for theirs.
 const withDest = (r, to, refund = to) => { let data = r.data.split(r.stand).join(lc(to).slice(2)); if (r.back) data = data.split(r.back).join(lc(refund).slice(2)); return { ...r, data, stand: null, back: null }; };
 // The slippage choice: a label, then three equal cells. It sits outside `.lbl`, whose button style is for links.
-const slipRow = () => html`<div class="lbl"><span>Slippage</span><span class="slipnote">the most the price may move</span></div>
-  <div class="seg sub slip" role="group" aria-label="Slippage">${[10n, 50n, 100n].map((v) => html`<button type="button" data-sl="${v}" aria-pressed="${String(S.slip === v)}">${Number(v) / 100}%</button>`)}</div>`;
+const slipRow = () => html`${LBL}Slippage</span><span class="slipnote">the most the price may move</span></div>
+  <div class="seg sub slip" role="group" aria-label="Slippage">${[10n, 50n, 100n].map((v) => html`${BTN} data-sl="${v}" aria-pressed="${String(S.slip === v)}">${Number(v) / 100}%</button>`)}</div>`;
 const SWAPQ = { key: '', r: null, fee: null, err: null, busy: false, at: 0, got: 0, timer: 0 };
 // The line under an amount is written only when what it says changed, so a screen reader hears it once.
 const capMount = (v) => { const e = $('#f-cap'), s = part(v); if (e && e.capS !== s) { e.capS = s; mount(e, new Raw(s)); } };
@@ -7147,20 +7156,16 @@ function formSwap(f, seg) {
   if (S.outIn && (S.outIn.c !== c.chainId || lc(S.outIn.addr) !== lc(t.addr))) { S.outIn = null; delete DRAFT['f-wamt']; }
   const inTok = !!S.outIn;
   mount(f, html`${seg}
-    <div class="lbl"><span>Address</span>${S.account ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
-    <div class="amt text"><input id="f-wto" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient address or name"></div>
-    <div class="lbl"><span>${inTok ? 'Amount to arrive, at least' : 'Amount of ETH to swap'}</span>${MAX}</div>
-    <div class="amt"><input id="f-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${inTok ? `Amount of ${t.sym} to arrive, at least` : 'Amount of ETH to swap'}"><span class="seg sub unit" role="group" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`<button type="button" data-unit="${v}" aria-pressed="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
-    <p class="cap" id="f-cap" aria-live="polite"></p>
-    ${slipRow()}
+    ${withdrawTo()}
+    ${LBL}${inTok ? 'Amount to arrive, at least' : 'Amount of ETH to swap'}</span>${MAX}</div>
+    ${unitField('f-wamt', inTok ? `Amount of ${t.sym} to arrive, at least` : 'Amount of ETH to swap', inTok, t)}
     ${routeLine(tab, false)}
-    <div class="rcpt" id="f-rcpt" hidden></div>
-    <button class="btn" type="button" id="f-go" disabled>Swap and send</button>
-    <p class="note">${pal('face')}Swapped in the same transaction and sent straight to the address you give.${inTok ? ' All it buys arrives, at least the amount asked.' : ''}</p>`);
+    ${goButton('Swap and send')}
+    ${NOTE}${pal('face')}Swapped in the same transaction and sent straight to the address you give.${inTok ? ' All it buys arrives, at least the amount asked.' : ''}</p>`);
   FORM.showFee = false;
   wireRoute(f, tab);
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
-  $('#f-me')?.addEventListener('click', () => { to.value = S.account; to.dispatchEvent(new Event('input')); });
+  wireMe(to);
   wireSlip(f);
   lgOneOn(rc, amt);
   const tokAmt = () => parseUnits(amt.value, t.dec);
@@ -7235,37 +7240,31 @@ function formSwap(f, seg) {
     rc.hidden = true; go.disabled = true; go.textContent = label;
     const say = (v) => { mount(rc, v); rc.hidden = false; };
     if (sentHolds(c)) { say(sentNote(c)); return sentWire(renderForm, $('#f-rcpt')); }
-    const n = raw && looksName(raw) ? destOf(raw, c) : null, dest = n?.addr ?? raw;
-    if (n?.pending) return say(html`<p class="note">Reading ${n.name}…</p>`);
-    if (n?.error) return say(html`<p class="note err">${n.error}</p>`);
-    if (raw && !n && !isAddr(raw)) return /^0x[0-9a-f]{0,39}$/i.test(raw) ? void (go.textContent = 'Enter an address') : say(html`<p class="note err">${/^(bp1|tacit1)/i.test(raw) ? TACIT_HERE : ADDR_ASK}</p>`);
-    if (raw && !n && !addrOk(raw)) return say(html`<p class="note err">${ADDR_TYPO}</p>`);
-    if (dest && !payable(dest)) return say(html`<p class="note err">${n ? `${n.name} points to an address that` : 'That address'} cannot receive a withdrawal.</p>`);
-    const where = n ? html`${kvRow('To', `${n.name} · ${short(n.addr, 6)}`)}${kvRow('Address', n.addr)}` : '', refuse = dest && destNote(c, dest, undefined, t).refuse;
-    if (refuse) return say(html`${where}<p class="note err">${refuse}</p>`);
-    const bad = inTok ? badTok(amt, t) : badAmt(amt);
+    const w = destCheck(raw, c, say, go, t);
+    if (!w) return;
+    const { n, dest, where } = w, bad = inTok ? badTok(amt, t) : badAmt(amt);
     if (!(inTok ? x : a) || !raw) { go.textContent = !raw ? 'Enter an address' : 'Enter an amount'; return n || bad ? say(html`${where}${bad}`) : undefined; }
     if (inTok) {
       size(x);
-      if (a == null) return say(OPQ.key === sizeKey(x) && !OPQ.busy && OPQ.at ? html`${where}<p class="note err">${OPQ.err ? errText(OPQ.err) : `No route into ${t.sym} for this amount on ${c.full} right now.`}</p>` : html`${where}${FINDING}`);
+      if (a == null) return say(OPQ.key === sizeKey(x) && !OPQ.busy && OPQ.at ? html`${where}${NOTE_ERR}${OPQ.err ? errText(OPQ.err) : `No route into ${t.sym} for this amount on ${c.full} right now.`}</p>` : html`${where}${FINDING}`);
     }
-    if (a < 10n ** 13n) return say(html`${where}<p class="note">Too small to swap.</p>`);
+    if (a < 10n ** 13n) return say(html`${where}${NOTE}Too small to swap.</p>`);
     const d = destLines(c, dest, n, t);
     // Whole notes first, for an amount in ETH of a note or more: each swaps on its way out, from its own account, at no less than
     // the rate shown for them here.
     const xn = !inTok && !lgOff(5) && !lgOff(1) ? lgExitPlan(a, true) : null, aa = xn ? xn.rest : a;
     const nq = xn ? lgNoteQuote(c, t, xn) : null;
-    if (xn && !nq) return say(html`${where}${lgExitRows(xn, { swap: { t } })}<p class="note">Finding the rate for the notes…</p>`);
-    if (nq?.none) return say(html`${where}${lgExitRows(xn, { swap: { t } })}<p class="note err">No route into ${t.sym} for the notes right now. Take them out as ETH, or try again in a minute.</p>`);
+    if (xn && !nq) return say(html`${where}${lgExitRows(xn, { swap: { t } })}${NOTE}Finding the rate for the notes…</p>`);
+    if (nq?.none) return say(html`${where}${lgExitRows(xn, { swap: { t } })}${NOTE_ERR}No route into ${t.sym} for the notes right now. Take them out as ETH, or try again in a minute.</p>`);
     const noteRows = nq ? html`${kvRow('From the notes, about', `${approx(nq.r.out, t.dec)} ${t.sym}`)}${kvRow('At least', `${unitsSig(nq.floor, t.dec)} ${t.sym}`)}` : '';
     if (xn && aa === 0n) { say(html`${where}${lgExitRows(xn, { swap: { t } })}${noteRows}${staysRow(bal, null, xn)}${d.lines}`); wireTakes(); go.disabled = !d.ok; return; }
     want(aa);
     const key = routeKey(aa);
     if (SWAPQ.key !== key || (SWAPQ.busy && !SWAPQ.r)) return say(html`${where}${FINDING}`);
-    if (SWAPQ.err || !SWAPQ.r) return say(html`${where}<p class="note err">${SWAPQ.err ? errText(SWAPQ.err) : `No route into ${t.sym} for this amount on ${c.full} right now.`}</p>`);
+    if (SWAPQ.err || !SWAPQ.r) return say(html`${where}${NOTE_ERR}${SWAPQ.err ? errText(SWAPQ.err) : `No route into ${t.sym} for this amount on ${c.full} right now.`}</p>`);
     const r = SWAPQ.r, fee = SWAPQ.fee;
     // The same ETH's route, read again, that no longer pays the amount asked: the ETH is found again.
-    if (x && r.limit < x) { if (!OPQ.busy) { OPQ.at = 0; size(x); } return say(html`${where}<p class="note">The price moved. Finding the amount again…</p>`); }
+    if (x && r.limit < x) { if (!OPQ.busy) { OPQ.at = 0; size(x); } return say(html`${where}${NOTE}The price moved. Finding the amount again…</p>`); }
     shown = { fee, r, key, at: SWAPQ.got };
     const p = plan(aa, fee);
     if (bal != null && !p) {
@@ -7421,7 +7420,7 @@ async function tokenState(c, t, owner) {
   const R = { bal: '0x70a08231' + pad(owner), zap: '0xdd62ed3e' + pad(owner) + pad(ZAP), split: '0xdd62ed3e' + pad(owner) + pad(SPLITZAP), router: '0xdd62ed3e' + pad(owner) + pad(ZROUTER), permit2: '0xdd62ed3e' + pad(owner) + pad(PERMIT2), dec: '0x313ce567', ds: '0x3644e515', th: '0x30adf81f', nonce: '0x7ecebe00' + pad(owner), name: '0x06fdde03' }, ks = Object.keys(R);
   const at = (k) => [t, R[k]];
   const each = () => Promise.all(ks.map((k) => walletRead(c, 'eth_call', [{ to: at(k)[0], data: at(k)[1] }, 'latest']).then((x) => { out[k] = x; }, () => { out[k] = '0x'; })));
-  const all = walletRead(c, 'eth_call', [{ to: MULTICALL3, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [ks.map((k) => [at(k)[0], 1n, at(k)[1]])]) }, 'latest'])
+  const all = walletRead(c, 'eth_call', [{ to: MULTICALL3, data: agg3(ks.map((k) => at(k))) }, 'latest'])
     .then((h) => { const rs = aggregate(h); if (rs.length !== ks.length) throw new Error('no Multicall3 here'); ks.forEach((k, i) => { out[k] = rs[i].ok ? '0x' + hex(rs[i].data) : '0x'; }); })
     .catch((e) => { if (e?.otherChain) throw e; return each(); });
   [out.code] = await Promise.all([walletRead(c, 'eth_getCode', [owner, 'latest']).catch(() => null), all]);
@@ -7528,13 +7527,10 @@ function formShieldToken(f, seg) {
   if (S.payIn && (S.payIn.c !== c.chainId || lc(S.payIn.addr) !== lc(t.addr))) { S.payIn = null; delete DRAFT['f-samt']; }
   const inTok = !!S.payIn;
   mount(f, html`${seg}
-    <div class="lbl"><span>${inTok ? 'Amount to spend' : 'Amount to shield'}</span><button type="button" id="f-max">Wallet <span id="f-tb" class="num">…</span> ${t.sym}</button></div>
-    <div class="amt"><input id="f-samt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${inTok ? `Amount of ${t.sym} to spend` : 'Amount of ETH to shield'}"><span class="seg sub unit" role="group" aria-label="Amount in">${[['eth', 'ETH'], ['tok', t.sym]].map(([v, l]) => html`<button type="button" data-unit="${v}" aria-pressed="${String((v === 'tok') === inTok)}">${l}</button>`)}</span></div>
-    <p class="cap" id="f-cap" aria-live="polite"></p>
-    ${slipRow()}
+    ${LBL}${inTok ? 'Amount to spend' : 'Amount to shield'}</span>${BTN} id="f-max">Wallet <span id="f-tb" class="num">…</span> ${t.sym}</button></div>
+    ${unitField('f-samt', inTok ? `Amount of ${t.sym} to spend` : 'Amount of ETH to shield', inTok, t)}
     <div id="f-via"></div>
-    <div class="rcpt" id="f-rcpt" hidden></div>
-    <button class="btn" type="button" id="f-go" disabled>${!S.key ? 'Sign in to shield to yourself' : `Swap ${t.sym} and shield`}</button>
+    ${goButton(!S.key ? 'Sign in to shield to yourself' : `Swap ${t.sym} and shield`)}
     <p class="note" id="f-snote"></p>`);
   // Two ways in. Where the zap has code: one transaction from the wallet swaps and shields, with no fee (the default).
   // Or the swap pays a new deposit address of this key and the relay moves it in for up to 0.25%, the wallet paying only
@@ -7549,8 +7545,8 @@ function formShieldToken(f, seg) {
       ? `Swapped for this much ETH at a new deposit address of yours, which the relay moves into your private balance (up to 0.25%)${zap ? '' : ', or your wallet does when it is under the relay’s minimum'}.`
       : `Swapped for this much ETH and shielded in one transaction; any ${t.sym} it does not use comes back.`}`);
     if (v) mount(v, !zap || !relayOf(c) ? '' : byRelay()
-      ? html`<p class="route">The relay moves it in, up to 0.25%; your wallet pays only the swap’s gas · <button class="link" type="button" data-via="zap">shield in one transaction instead</button></p>`
-      : html`<p class="route">Swapped and shielded in one transaction from your wallet, no fee · <button class="link" type="button" data-via="relay">let the relay move it in</button></p>`);
+      ? html`<p class="route">The relay moves it in, up to 0.25%; your wallet pays only the swap’s gas · ${BTN_LINK} data-via="zap">shield in one transaction instead</button></p>`
+      : html`<p class="route">Swapped and shielded in one transaction from your wallet, no fee · ${BTN_LINK} data-via="relay">let the relay move it in</button></p>`);
     $$('[data-via]', f).forEach((b) => b.onclick = () => { S.shieldVia = b.dataset.via; note(); FORM.check?.(); });
   };
   note();
@@ -7635,25 +7631,25 @@ function formShieldToken(f, seg) {
     if (sentHolds(c)) { say(sentNote(c)); return sentWire(renderForm, $('#f-rcpt')); }
     if (inTok) {
       if (!x) { go.textContent = 'Enter an amount'; return badTok(amt, t) ? say(badTok(amt, t)) : undefined; }
-      if (tb != null && x > tb) return say(html`<p class="note err">More ${t.sym} than your wallet holds on ${c.full}.</p>`);
+      if (tb != null && x > tb) return say(html`${NOTE_ERR}More ${t.sym} than your wallet holds on ${c.full}.</p>`);
       spend(x);
-      if (a == null) return say(SPQ.key === spendKey(x) && !SPQ.busy && SPQ.at ? html`<p class="note err">No route from ${t.sym} for this amount on ${c.full} right now.</p>` : FINDING);
-      if (a < 10n ** 13n) return say(html`<p class="note">Too small to swap.</p>`);
+      if (a == null) return say(SPQ.key === spendKey(x) && !SPQ.busy && SPQ.at ? html`${NOTE_ERR}No route from ${t.sym} for this amount on ${c.full} right now.</p>` : FINDING);
+      if (a < 10n ** 13n) return say(html`${NOTE}Too small to swap.</p>`);
     } else if (!a) { go.textContent = 'Enter an amount'; return badAmt(amt) ? say(badAmt(amt)) : undefined; }
     want(a);
     const key = routeKey(a);
     if (SHQ.key !== key || (SHQ.busy && !SHQ.r)) return say(FINDING);
-    if (SHQ.err || !SHQ.r) return say(html`<p class="note err">${SHQ.err ? errText(SHQ.err) : `No route from ${t.sym} for this amount on ${c.full} right now.`}</p>`);
+    if (SHQ.err || !SHQ.r) return say(html`${NOTE_ERR}${SHQ.err ? errText(SHQ.err) : `No route from ${t.sym} for this amount on ${c.full} right now.`}</p>`);
     const r = SHQ.r;
-    if (inTok && r.limit > x) { SPQ.at = 0; spend(x); return say(html`<p class="note">The price moved, so the amount is being read again…</p>`); }
+    if (inTok && r.limit > x) { SPQ.at = 0; spend(x); return say(html`${NOTE}The price moved, so the amount is being read again…</p>`); }
     shownR = { key, r, at: SHQ.got };
-    if (zap == null || (byRelay() && least === undefined)) return say(html`<p class="note">Reading ${c.full}…</p>`);
-    if (tb != null && r.limit > tb) return say(html`${kvRow('Costs at most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}<p class="note err">More ${t.sym} than your wallet holds on ${c.full}.</p>`);
+    if (zap == null || (byRelay() && least === undefined)) return say(html`${NOTE}Reading ${c.full}…</p>`);
+    if (tb != null && r.limit > tb) return say(html`${kvRow('Costs at most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${NOTE_ERR}More ${t.sym} than your wallet holds on ${c.full}.</p>`);
     // With the zap there, the relay is only for amounts it moves in itself.
-    if (zap && byRelay() && (least == null || a < least)) return say(html`<p class="note err">${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
+    if (zap && byRelay() && (least == null || a < least)) return say(html`${NOTE_ERR}${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
     const sp = !byRelay() && splitOk ? lgPlan(a) : null;
     say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Ready to pay', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', `${SOURCES[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`)}
-      ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${ws ? kvRow('Your wallet', walletAsks(c, t, ws, r.limit, byRelay() ? ZROUTER : sp ? SPLITZAP : ZAP, batch)) : ''}${sp ? html`<p class="note mute">Whole notes · ${LG_TORNADO}, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words' : 'sign-in'} (nothing extra to sign)` : 'made from your wallet\'s signatures (a short message each, nothing sent)'}, in the same transaction as the swap.</p>` : ''}`);
+      ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${ws ? kvRow('Your wallet', walletAsks(c, t, ws, r.limit, byRelay() ? ZROUTER : sp ? SPLITZAP : ZAP, batch)) : ''}${sp ? html`${NOTE_MUTE}Whole notes · ${LG_TORNADO}, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words' : 'sign-in'} (nothing extra to sign)` : 'made from your wallet\'s signatures (a short message each, nothing sent)'}, in the same transaction as the swap.</p>` : ''}`);
     go.disabled = false;
   };
   go.onclick = () => {
@@ -7847,36 +7843,36 @@ function formReceive(f) {
   // A link for a token has none: it is paid from a private balance.
   const bi = !tok && RECV.kind === 'box' ? linkBox() : null, n = bi != null ? receiveKeys(k.pool, bi).npk : null, ns = n != null ? boxSig(k.pool, n) : null;
   // How the link is paid, in one line under it.
-  const how = tok ? html`<p class="note">Paid from the payer’s private balance and swapped to ${tok.sym} on the way, so nothing on chain ties it to them.</p>`
-    : RECV.kind === 'box' && bi === null ? html`<p class="note">No new deposit address is free just now, so a payer proves this payment in their browser (33 MB, once).</p>`
-    : RECV.kind === 'box' ? html`<p class="note">The relay moves each payment into your private balance for up to 0.25%, or you take it in from your wallet at no fee, which then shows on chain. Give each payer their own: <button class="link" type="button" id="f-rnew">new link for another payer</button>.</p>`
-    : html`<p class="note">The payer proves it in their browser, so nothing on chain shows it went to you. One link serves any number of payers.</p>`;
+  const how = tok ? html`${NOTE}Paid from the payer’s private balance and swapped to ${tok.sym} on the way, so nothing on chain ties it to them.</p>`
+    : RECV.kind === 'box' && bi === null ? html`${NOTE}No new deposit address is free just now, so a payer proves this payment in their browser (33 MB, once).</p>`
+    : RECV.kind === 'box' ? html`${NOTE}The relay moves each payment into your private balance for up to 0.25%, or you take it in from your wallet at no fee, which then shows on chain. Give each payer their own: ${BTN_LINK} id="f-rnew">new link for another payer</button>.</p>`
+    : html`${NOTE}The payer proves it in their browser, so nothing on chain shows it went to you. One link serves any number of payers.</p>`;
   mount(f, html`
-    <div class="blk"><div class="lbl"><span>Amount</span><span>optional</span></div>
-      <div class="amt"><input id="f-ramt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount (optional)"><span class="u">${tok ? html`${tokIcon(tok)}${tok.sym}` : html`${ethIcon}ETH`}</span></div>
+    <div class="blk">${LBL}Amount</span><span>optional</span></div>
+      <div class="amt"><input id="f-ramt"${AMOUNT_IN} aria-label="Amount (optional)"><span class="u">${tok ? html`${tokIcon(tok)}${tok.sym}` : html`${ethIcon}ETH`}</span></div>
       <p class="note err" id="f-rerr" hidden>${tok && !tok.dec ? 'Enter the amount as a whole number.' : `Enter the amount as a number, up to ${tok?.dec ?? 18} decimals.`}</p></div>
-    <div class="blk"><div class="lbl"><span>Get paid by link</span><span>${tok ? 'paid from a private balance' : 'any wallet can pay it'}</span></div>
+    <div class="blk">${LBL}Get paid by link</span><span>${tok ? 'paid from a private balance' : 'any wallet can pay it'}</span></div>
       <div class="row2"><button class="btn" type="button" id="f-link">Copy link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>
-      ${!tok && bi != null ? html`<div class="lbl"><span>QR code for</span></div><div class="seg sub qrfor" role="group" aria-label="What scans the code" id="f-qrfor">${[['link', 'A phone camera'], ['wallet', 'A wallet app']].map(([v, l]) => html`<button type="button" data-qf="${v}" aria-pressed="${String(qrFor() === v)}">${l}</button>`)}</div>` : ''}
+      ${!tok && bi != null ? html`${LBL}QR code for</span></div><div class="seg sub qrfor" role="group" aria-label="What scans the code" id="f-qrfor">${[['link', 'A phone camera'], ['wallet', 'A wallet app']].map(([v, l]) => html`${BTN} data-qf="${v}" aria-pressed="${String(qrFor() === v)}">${l}</button>`)}</div>` : ''}
       <div class="qrbox" id="f-qr"></div>
       <div class="rlink"><code id="f-rlink"></code></div>
       <div id="f-qrnote"></div>
       ${how}</div>
-    <div class="blk"><div class="lbl"><span>Your Tacit address</span><span>ID <b class="num nw">${addressId(k.address)}</b></span></div>
-      <div class="addr"><code class="one">${k.address}</code><button class="link" type="button" data-copy="${k.address}">copy</button></div></div>
+    <div class="blk">${LBL}Your Tacit address</span><span>ID <b class="num nw">${addressId(k.address)}</b></span></div>
+      <div class="addr"><code class="one">${k.address}</code>${BTN_LINK} data-copy="${k.address}">copy</button></div></div>
     <details class="adv" id="f-ropts" ${tok || RECV.opts || kept || DRAFT['f-rname'] || DRAFT['f-ramt'] || DRAFT['f-rfor'] ? 'open' : ''}><summary>More options</summary>
         ${tokRow(c, 'askTok', 'Arrives as', '3', 'Private ETH')}
-        ${tok ? html`<div class="lbl"><span>Arrives at</span>${S.account ? html`<button type="button" id="f-rme">My wallet</button>` : ''}</div>
-        <div class="amt text"><input id="f-rto" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Arrives at"></div>
-        <div id="f-rto-note"></div>` : html`<div class="lbl"><span>Your name (optional)</span><span>so the link reads you.wei, not a long address</span></div>
-        <div class="amt text"><input id="f-rname" placeholder="you.wei or you.eth" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your name"></div>
+        ${tok ? html`${LBL}Arrives at</span>${S.account ? html`${BTN} id="f-rme">My wallet</button>` : ''}</div>
+        <div class="amt text"><input id="f-rto" placeholder="0x… or name.wei"${TEXT_IN} aria-label="Arrives at"></div>
+        <div id="f-rto-note"></div>` : html`${LBL}Your name (optional)</span><span>so the link reads you.wei, not a long address</span></div>
+        <div class="amt text"><input id="f-rname" placeholder="you.wei or you.eth"${TEXT_IN} aria-label="Your name"></div>
         <div id="f-rname-note"></div>`}
-        <div class="lbl"><span>What it’s for (optional)</span></div>
+        ${LBL}What it’s for (optional)</span></div>
         <div class="amt text"><input id="f-rfor" maxlength="60" placeholder="Dinner, rent, invoice 42…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="What it’s for (optional)"></div>
-        ${tok ? '' : html`<div class="lbl"><span>How it is paid</span></div>
-        <div class="seg sub" role="group" aria-label="How it is paid" id="f-rkind">${[['box', 'Plain transfer'], ['proved', 'Private proof']].map(([v, l]) => html`<button type="button" data-rk="${v}" aria-pressed="${String(RECV.kind === v)}">${l}</button>`)}</div>`}
-      <p class="note">Your pool address (ID <span class="num nw">${addressId(k.pool.address)}</span>) is paid the same way: <button class="link" type="button" data-copy="${k.pool.address}">copy it</button></p>
-      ${tok ? '' : html`<p class="note">Paid from an exchange, or a wallet that cannot open this page? <button class="link" type="button" id="f-toexch">Give them a one-time deposit address</button> instead.</p>`}</details>`);
+        ${tok ? '' : html`${LBL}How it is paid</span></div>
+        <div class="seg sub" role="group" aria-label="How it is paid" id="f-rkind">${[['box', 'Plain transfer'], ['proved', 'Private proof']].map(([v, l]) => html`${BTN} data-rk="${v}" aria-pressed="${String(RECV.kind === v)}">${l}</button>`)}</div>`}
+      ${NOTE}Your pool address (ID <span class="num nw">${addressId(k.pool.address)}</span>) is paid the same way: ${BTN_LINK} data-copy="${k.pool.address}">copy it</button></p>
+      ${tok ? '' : html`${NOTE}Paid from an exchange, or a wallet that cannot open this page? ${BTN_LINK} id="f-toexch">Give them a one-time deposit address</button> instead.</p>`}</details>`);
   $('#f-ropts').addEventListener('toggle', (e) => { RECV.opts = e.currentTarget.open; });
   $('#f-toexch')?.addEventListener('click', () => { S.tab = 'shield'; (S.inTok ||= {})[c.chainId] = 'ex'; render(); });
   $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
@@ -7910,17 +7906,17 @@ function formReceive(f) {
       const d = rto(), x = d?.addr ? destNote(c, d.addr, undefined, tok) : null;
       const err = d?.error || (d?.addr && !payable(d.addr) ? 'That address cannot receive a withdrawal.' : x?.refuse || '');
       ready = !!d?.addr && !err && !x?.pending;
-      mount($('#f-rto-note'), !d ? html`<p class="note">Your wallet, or any address that can hold ${tok.sym} on ${c.full}.</p>` : d.pending ? html`<p class="note">Reading ${d.name}…</p>` : err ? html`<p class="note err">${err}</p>`
-        : html`${d.name ? html`<p class="note ok">${d.name} points to ${d.addr} on ${c.full}.</p>` : ''}${x?.warn ? html`<p class="note warn">${x.warn}</p>` : ''}`);
+      mount($('#f-rto-note'), !d ? html`${NOTE}Your wallet, or any address that can hold ${tok.sym} on ${c.full}.</p>` : d.pending ? html`${NOTE}Reading ${d.name}…</p>` : err ? html`${NOTE_ERR}${err}</p>`
+        : html`${d.name ? html`<p class="note ok">${d.name} points to ${d.addr} on ${c.full}.</p>` : ''}${x?.warn ? html`${NOTE_WARN}${x.warn}</p>` : ''}`);
     }
     $('#f-rerr').hidden = !bad;
     $('#f-link').disabled = $('#f-share').disabled = bi === undefined || bad || !ready;
     if (bad || !ready) { mount($('#f-qr'), ''); $('#f-rlink').textContent = ''; last = ''; return; }
-    if (bi === undefined) { mount($('#f-qr'), html`<p class="note">${CH[c.chainId].err ? `Could not read ${c.full}, which the link’s address needs. Trying again…` : 'Preparing your link…'}</p>`); $('#f-rlink').textContent = ''; last = ''; return; }
+    if (bi === undefined) { mount($('#f-qr'), html`${NOTE}${CH[c.chainId].err ? `Could not read ${c.full}, which the link’s address needs. Trying again…` : 'Preparing your link…'}</p>`); $('#f-rlink').textContent = ''; last = ''; return; }
     const wl = !tok && box && qrFor() === 'wallet', l = wl ? walletUri() : link(false);
     if (l !== last) {
       const min = wl ? relayMin(c) : null;
-      mount($('#f-qrnote'), wl ? html`<p class="note">A wallet app reads this as a plain transfer to your one-time deposit address${min ? html`, and from ${fmtUp(min)} ETH the relay moves it into your private balance` : ''}. The copied link opens this page instead.</p>` : '');
+      mount($('#f-qrnote'), wl ? html`${NOTE}A wallet app reads this as a plain transfer to your one-time deposit address${min ? html`, and from ${fmtUp(min)} ETH the relay moves it into your private balance` : ''}. The copied link opens this page instead.</p>` : '');
       last = l; $('#f-rlink').textContent = wl ? l : l + (!tok && k.pq && pqWrite() ? '&pq=… (your post-quantum key, in the copied link)' : '');
       // A QR code this long takes ~16 ms to draw (more on a phone): while typing, at most every quarter second.
       const box = $('#f-qr'), draw = () => { clearTimeout(qrTimer); qrTimer = null; if (last) { mount(box, qrSvg(last)); qrAt = performance.now(); } };
@@ -7941,11 +7937,11 @@ function formReceive(f) {
   const paintName = () => {
     const v = input.value.trim().toLowerCase(), t = RECV.s;
     if (!v || !t) mount(note, '');
-    else if (t.reading) mount(note, html`<p class="note">Reading ${v} on Ethereum…</p>`);
+    else if (t.reading) mount(note, html`${NOTE}Reading ${v} on Ethereum…</p>`);
     else if (t.ok) mount(note, html`<p class="note ok">${v} points to this address, so the link uses it.</p>`);
-    else if (t.other) mount(note, html`<p class="note err">${v} points to a different Tacit address, so payments to it would not reach you. <button class="link" type="button" id="f-rpub">Point it here</button></p>`);
-    else if (t.none) mount(note, html`<p class="note">${v} has no Tacit address yet. <button class="link" type="button" id="f-rpub">Publish yours to it</button>: one transaction on Ethereum, from the wallet that owns the name, after which the name gives your Tacit address to anyone.</p>`);
-    else mount(note, html`<p class="note err">${t.err}</p>`);
+    else if (t.other) mount(note, html`${NOTE_ERR}${v} points to a different Tacit address, so payments to it would not reach you. ${BTN_LINK} id="f-rpub">Point it here</button></p>`);
+    else if (t.none) mount(note, html`${NOTE}${v} has no Tacit address yet. ${BTN_LINK} id="f-rpub">Publish yours to it</button>: one transaction on Ethereum, from the wallet that owns the name, after which the name gives your Tacit address to anyone.</p>`);
+    else mount(note, html`${NOTE_ERR}${t.err}</p>`);
     $('#f-rpub')?.addEventListener('click', (e) => publishName(e.currentTarget, v));
     FORM.check?.();
   };
@@ -8048,10 +8044,10 @@ async function sentState({ h, batch, c, nonce, from }) {
     return 'dropped';
   } catch { return null; }
 }
-const sentNote = (c) => html`<p class="note warn">${S.sent.replaced ? html`Your wallet sent another transaction in place of your last payment on ${c.full} (${txLink(c, S.sent.h)}): sped up, it landed; cancelled, nothing was sent. Check your wallet’s activity. <button class="link" type="button" data-sent-again data-sure>It was cancelled: pay again</button>`
-  : S.sent.batch ? html`Your wallet took your last payment on ${c.full} as one batch and has not said how it went. Check its activity: if it lands, nothing more is needed. <button class="link" type="button" data-sent-again>It was not sent: pay again</button>`
-  : S.sent.asked ? html`This page stopped waiting for your wallet, which may still send your last payment on ${c.full}. Check your wallet first. <button class="link" type="button" data-sent-again data-sure>It was not sent: pay again</button>`
-  : html`Your last payment on ${c.full} is not confirmed yet: ${txLink(c, S.sent.h)}. If it lands, nothing more is needed. <button class="link" type="button" data-sent-again>It was dropped: pay again</button>`}</p>`;
+const sentNote = (c) => html`${NOTE_WARN}${S.sent.replaced ? html`Your wallet sent another transaction in place of your last payment on ${c.full} (${txLink(c, S.sent.h)}): sped up, it landed; cancelled, nothing was sent. Check your wallet’s activity. ${BTN_LINK} data-sent-again data-sure>It was cancelled: pay again</button>`
+  : S.sent.batch ? html`Your wallet took your last payment on ${c.full} as one batch and has not said how it went. Check its activity: if it lands, nothing more is needed. ${BTN_LINK} data-sent-again>It was not sent: pay again</button>`
+  : S.sent.asked ? html`This page stopped waiting for your wallet, which may still send your last payment on ${c.full}. Check your wallet first. ${BTN_LINK} data-sent-again data-sure>It was not sent: pay again</button>`
+  : html`Your last payment on ${c.full} is not confirmed yet: ${txLink(c, S.sent.h)}. If it lands, nothing more is needed. ${BTN_LINK} data-sent-again>It was dropped: pay again</button>`}</p>`;
 // Another action that went through says nothing of a held payment: the hold ends only when its own state does.
 // A hold that ends without the payment: the deposit address it used (a relayed token shield's) goes back to the unused ones.
 // Its address is the key's that was open when it was made: it is given back only while that key is open.
@@ -8178,11 +8174,11 @@ function paintTokReq(r, body, head, wire, was) {
     <div class="req-a num${r.amount && exactUnits(r.amount, t.dec).length > 10 ? ' long' : ''}">${r.amount ? html`${exactUnits(r.amount, t.dec)} <small>${t.sym}</small>` : html`Any amount <small>of ${t.sym}</small>`}</div>
     <div class="req-m">on ${c.full}${r.note ? html` · for “<bdi>${r.note}</bdi>”` : ''}</div>
     ${kvRow('Token', html`${tokIcon(t)} ${t.sym}${t.name ? ` · ${t.name}` : ''}`)}
-    <div class="addr"><code>${t.addr}</code><button class="link" type="button" data-copy="${t.addr}">copy</button></div>
-    ${r.tokOk ? '' : html`<p class="note warn">${t.sym} is not on the token list: it is the token at this address, as its contract on ${c.full} reports it. Check the address with them first. <button class="link" type="button" id="req-tokok">It is the token they asked for</button></p>`}
+    <div class="addr"><code>${t.addr}</code>${BTN_LINK} data-copy="${t.addr}">copy</button></div>
+    ${r.tokOk ? '' : html`${NOTE_WARN}${t.sym} is not on the token list: it is the token at this address, as its contract on ${c.full} reports it. Check the address with them first. ${BTN_LINK} id="req-tokok">It is the token they asked for</button></p>`}
     <button class="btn" type="button" id="req-pay" ${r.tokOk ? '' : 'disabled'}>${S.key ? 'Pay from my private balance' : 'Sign in to pay'}</button>
-    ${empty ? html`<p class="note">Your private balance on ${c.full} is empty. <button class="link" type="button" id="req-shield">Shield ETH or a token first</button>.</p>` : ''}
-    <p class="note">${pal('ninja')}Paid from your private balance and swapped to ${t.sym} on the way, so nothing on chain ties it to you.</p>`;
+    ${empty ? html`${NOTE}Your private balance on ${c.full} is empty. ${BTN_LINK} id="req-shield">Shield ETH or a token first</button>.</p>` : ''}
+    ${NOTE}${pal('ninja')}Paid from your private balance and swapped to ${t.sym} on the way, so nothing on chain ties it to you.</p>`;
   body._v = view.s;
   if (was !== view.s) mount(body, view);
   wire();
@@ -8224,20 +8220,20 @@ function paintReq() {
   document.body.classList.toggle('paying', !!r);
   if (!r || S.busy) return;
   const body = $('#req-body'), chains = r.chains || CHAINS, c = chains.includes(S.chain) ? S.chain : chains[0];
-  const head = html`<div class="lbl"><span>Payment request</span><button class="link" type="button" id="req-x">dismiss</button></div>`;
+  const head = html`${LBL}Payment request</span>${BTN_LINK} id="req-x">dismiss</button></div>`;
   const was = body._v; body._v = null;
   const wire = () => { $('#req-x').onclick = closeRequest; $('#req-retry')?.addEventListener('click', () => { openRequest({ ...r, to: r.name || r.to }); render(); }); };
-  if (r.handoff) { mount(body, html`${head}<p class="note">This is ${r.handoff.what} made on tacit.finance. Open it there.</p><a class="btn" href="${r.handoff.href}" rel="noopener">Open on tacit.finance</a>`); return wire(); }
-  if (r.state === 'resolving') { mount(body, html`${head}<div class="req-to"><span class="sk" style="--w:10ch"></span></div><p class="note">${r.token ? `Reading this request on ${r.chains[0].full}…` : `Reading ${r.name} on Ethereum…`}</p>`); return wire(); }
-  if (r.state === 'error') { mount(body, html`${head}<p class="note err">${r.err}</p>${/Could not (confirm|read)/.test(r.err) ? html`<p class="note"><button class="link" type="button" id="req-retry">Try again</button></p>` : ''}`); return wire(); }
+  if (r.handoff) { mount(body, html`${head}${NOTE}This is ${r.handoff.what} made on tacit.finance. Open it there.</p><a class="btn" href="${r.handoff.href}" rel="noopener">Open on tacit.finance</a>`); return wire(); }
+  if (r.state === 'resolving') { mount(body, html`${head}<div class="req-to"><span class="sk" style="--w:10ch"></span></div>${NOTE}${r.token ? `Reading this request on ${r.chains[0].full}…` : `Reading ${r.name} on Ethereum…`}</p>`); return wire(); }
+  if (r.state === 'error') { mount(body, html`${head}${NOTE_ERR}${r.err}</p>${/Could not (confirm|read)/.test(r.err) ? html`${NOTE}${BTN_LINK} id="req-retry">Try again</button></p>` : ''}`); return wire(); }
   if (r.token) return paintTokReq(r, body, head, wire, was);
   const own = S.key && same(r.r.raw, S.key.pool.raw), st = CH[c.chainId], who = r.name || short(r.to, 8);
   const target = html`<div class="req-to">${r.name || 'A Tacit address'}<small><code>${short(r.to, 8)}</code></small><small>Address ID <b class="num nw">${addressId(r.to)}</b>, the same one they see on their side</small>${((s) => (s ? html`<small id="req-pq">${s === 'have' ? 'Post-quantum: what you send is sealed to their key' : s === 'looking' ? 'Looking for their post-quantum key…' : `${s === 'off' ? 'Post-quantum memos are paused for now' : s === 'unknown' ? 'Their post-quantum key could not be looked up just now' : 'Their post-quantum key is not on chain or in this link'}. You are asked before an ordinary memo goes; it still arrives.`}</small>` : ''))(!r.r ? null : pqWrite() ? pqKeyOf(r.r, () => { body._v = null; paintReq(); }) : r.r.kemHash ? 'off' : null)}</div>`;
-  if (own) { mount(body, html`${head}${target}<div class="req-a num${r.amount && fmt(r.amount, 18).length > 10 ? ' long' : ''}">${r.amount ? html`${fmt(r.amount, 18)} <small>ETH</small>` : 'Any amount'}</div><div class="req-m">on ${c.full}${r.note ? html` · “<bdi>${r.note}</bdi>”` : ''}</div><p class="note">This is your own request. Share its link from Receive.</p>`); return wire(); }
+  if (own) { mount(body, html`${head}${target}<div class="req-a num${r.amount && fmt(r.amount, 18).length > 10 ? ' long' : ''}">${r.amount ? html`${fmt(r.amount, 18)} <small>ETH</small>` : 'Any amount'}</div><div class="req-m">on ${c.full}${r.note ? html` · “<bdi>${r.note}</bdi>”` : ''}</div>${NOTE}This is your own request. Share its link from Receive.</p>`); return wire(); }
   if (r.paid) {
     mount(body, html`${head}<div class="req-a num${fmt(r.paid.a, 18).length > 10 ? ' long' : ''}"><span class="ok">✓</span> ${fmt(r.paid.a, 18)} <small>ETH</small></div>
       <div class="req-m">paid to <b>${who}</b> on ${r.paid.c.full} · ${txLink(r.paid.c, r.paid.h)}</div>
-      <p class="note">${r.paid.box ? 'It waits at their deposit address until it moves into their private balance.' : 'It is in their private balance now.'}</p>
+      ${NOTE}${r.paid.box ? 'It waits at their deposit address until it moves into their private balance.' : 'It is in their private balance now.'}</p>
       <div class="row2"><button class="btn ghost" type="button" id="req-again">Pay again</button><button class="btn" type="button" id="req-done">Done</button></div>`);
     wire(); $('#req-again').onclick = () => { r.paid = null; r.entered = ''; mount($('#req-status'), ''); paintReq(); }; $('#req-done').onclick = closeRequest;
     return;
@@ -8249,19 +8245,19 @@ function paintReq() {
   const view = html`${head}${target}
     <div class="req-a num${r.amount && fmt(r.amount, 18).length > 10 ? ' long' : ''}">${r.amount ? html`${fmt(r.amount, 18)} <small>${tkOn(ethIcon, c)}ETH</small>` : 'Any amount'}</div>
     <div class="req-m">${r.note ? html`for “<bdi>${r.note}</bdi>” · ` : ''}on ${c.full}</div>
-    ${r.amount ? '' : html`<div class="amt" style="margin-top:12px"><input id="req-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>`}
+    ${r.amount ? '' : html`<div class="amt" style="margin-top:12px"><input id="req-amt"${AMOUNT_IN} aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>`}
     <button class="btn" type="button" id="req-pay"></button>
     <div id="req-note"></div>
-    ${r.boxBad ? html`<p class="note warn">This link’s deposit address could not be verified, so it is not used.</p>` : ''}
-    ${viaBox ? html`<p class="note">${pal('face')}A plain ETH transfer from your wallet, nothing to download.${min ? ` From ${fmtUp(min)} ETH on ${c.full}, the relay moves it into their private balance within minutes.` : ''}</p>
+    ${r.boxBad ? html`${NOTE_WARN}This link’s deposit address could not be verified, so it is not used.</p>` : ''}
+    ${viaBox ? html`${NOTE}${pal('face')}A plain ETH transfer from your wallet, nothing to download.${min ? ` From ${fmtUp(min)} ETH on ${c.full}, the relay moves it into their private balance within minutes.` : ''}</p>
       <details class="adv"><summary>Pay from an exchange or another wallet</summary>
         <div class="qrbox" id="req-qr"></div>
-        <div class="addr"><code>${r.box}</code><button class="link" type="button" data-copy="${r.box}">copy</button></div>
-        <p class="note">Send only ETH, on Ethereum; a token, or ETH on another network, cannot be collected${min ? `. Send at least ${fmtUp(min)} ETH` : ''}.</p></details>
-      <p class="note"><button class="link" type="button" id="req-prove">Prove it here instead (33 MB, once): no relay fee, and nothing on chain shows who you paid</button></p>`
-    : html`${r.box ? html`<p class="note"><button class="link" type="button" id="req-back">Use their deposit address instead</button></p>` : ''}
-      <p class="note">${pal('ninja')}${S.account ? 'Sent from your wallet straight into their private balance, no fee. Proving downloads 33 MB, once.' : 'Connect any wallet to send it straight into their private balance. Proving downloads 33 MB, once.'}</p>`}
-    ${canPriv ? html`<p class="note"><button class="link" type="button" id="req-priv">Pay from my private balance instead</button></p>` : ''}`;
+        <div class="addr"><code>${r.box}</code>${BTN_LINK} data-copy="${r.box}">copy</button></div>
+        ${NOTE}Send only ETH, on Ethereum; a token, or ETH on another network, cannot be collected${min ? `. Send at least ${fmtUp(min)} ETH` : ''}.</p></details>
+      ${NOTE}${BTN_LINK} id="req-prove">Prove it here instead (33 MB, once): no relay fee, and nothing on chain shows who you paid</button></p>`
+    : html`${r.box ? html`${NOTE}${BTN_LINK} id="req-back">Use their deposit address instead</button></p>` : ''}
+      ${NOTE}${pal('ninja')}${S.account ? 'Sent from your wallet straight into their private balance, no fee. Proving downloads 33 MB, once.' : 'Connect any wallet to send it straight into their private balance. Proving downloads 33 MB, once.'}</p>`}
+    ${canPriv ? html`${NOTE}${BTN_LINK} id="req-priv">Pay from my private balance instead</button></p>` : ''}`;
   // Drawn again only when it changed, so an amount being typed and an open part stay.
   const fresh = was !== view.s;
   body._v = view.s;
@@ -8280,8 +8276,8 @@ function paintReq() {
     pay.textContent = !S.account ? 'Connect a wallet to pay' : a ? `Pay ${fmt(a, 18)} ETH on ${c.name}` : `Pay on ${c.name}`;
     if (S.account && !a) pay.textContent = 'Enter an amount';
     const low = S.account && a && wb != null && a + c.gasReserve > wb, small = viaBox && a && min && a < min, held = sentHolds(c);
-    mount($('#req-note'), held ? sentNote(S.sent.c) : low ? html`<p class="note err">Your wallet holds ${fmt(wb, 4, true)} ETH on ${c.full}, not enough for this and its gas. Add funds to pay this.</p>`
-      : small ? html`<p class="note">Under ${fmtUp(min)} ETH on ${c.full}, it waits at their deposit address until they take it in.</p>` : amtIn ? badAmt(amtIn) : '');
+    mount($('#req-note'), held ? sentNote(S.sent.c) : low ? html`${NOTE_ERR}Your wallet holds ${fmt(wb, 4, true)} ETH on ${c.full}, not enough for this and its gas. Add funds to pay this.</p>`
+      : small ? html`${NOTE}Under ${fmtUp(min)} ETH on ${c.full}, it waits at their deposit address until they take it in.</p>` : amtIn ? badAmt(amtIn) : '');
     pay.disabled = held || (!!S.account && (!a || low));
     if (held) sentWire(paintReq, $('#req-note'));
   };
@@ -8335,7 +8331,7 @@ function readAcctName() {
   if (!a || ACCT_NAMES[a] !== undefined) return;
   ACCT_NAMES[a] = null;
   const rr = calldata('reverseResolve(address)', ['address'], [a]);
-  walletRead(CHAINS[0], 'eth_call', [{ to: MULTICALL3, data: calldata('aggregate3((address,bool,bytes)[])', [{ array: { tuple: ['address', 'uint256', 'bytes'] } }], [[[WNS, 1n, rr], [GNS, 1n, rr]]]) }, 'latest'])
+  walletRead(CHAINS[0], 'eth_call', [{ to: MULTICALL3, data: agg3([[WNS, rr], [GNS, rr]]) }, 'latest'])
     .then((h) => {
       const n = aggregate(h).map((x) => { try { return x.ok ? strOf('0x' + hex(x.data)).toLowerCase() : ''; } catch { return ''; } }).find((x) => nameOk(x) && /\.g?wei$/.test(x));
       if (n && S.account === a) { ACCT_NAMES[a] = n; paint(); }
@@ -8547,12 +8543,27 @@ async function destGate(c, a, tok = null) {
   const s = destSays(c, v, tok);
   if (s.ack && !TAKES.has(takeKey(c, a, tok))) throw new Error(s.warn);
 }
+// A withdrawal's address field (`raw`, as typed), for a form that shows what it says through `say`: a name is read to the
+// address it points to, and that address is what the rest of the form checks and shows. Null once it has said why the
+// field cannot be paid (or, for a hex address still being typed, put 'Enter an address' on the button `go`); otherwise the
+// name read (`n`, null for an address), the address (`dest`) and the rows that show a name's address (`where`).
+function destCheck(raw, c, say, go, tok) {
+  const n = raw && looksName(raw) ? destOf(raw, c) : null, dest = n?.addr ?? raw;
+  if (n?.pending) return say(html`${NOTE}Reading ${n.name}…</p>`), null;
+  if (n?.error) return say(html`${NOTE_ERR}${n.error}</p>`), null;
+  if (raw && !n && !isAddr(raw)) return /^0x[0-9a-f]{0,39}$/i.test(raw) ? void (go.textContent = 'Enter an address') : say(html`${NOTE_ERR}${/^(bp1|tacit1)/i.test(raw) ? TACIT_HERE : ADDR_ASK}</p>`), null;
+  if (raw && !n && !addrOk(raw)) return say(html`${NOTE_ERR}${ADDR_TYPO}</p>`), null;
+  if (dest && !payable(dest)) return say(html`${NOTE_ERR}${n ? `${n.name} points to an address that` : 'That address'} cannot receive a withdrawal.</p>`), null;
+  const where = n ? html`${kvRow('To', `${n.name} · ${short(n.addr, 6)}`)}${kvRow('Address', n.addr)}` : '', refuse = dest && destNote(c, dest, undefined, tok).refuse;
+  if (refuse) return say(html`${where}${NOTE_ERR}${refuse}</p>`), null;
+  return { n, dest, where };
+}
 // The receipt's lines for a destination, and whether it can be paid yet.
 function destLines(c, a, t, tok = null) {
   const n = destNote(c, a, undefined, tok), k = takeKey(c, a, tok);
   return {
     ok: !n.refuse && !n.pending && (!n.ack || TAKES.has(k)),
-    lines: html`${n.refuse ? html`<p class="note err">${n.refuse}</p>` : n.pending ? html`<p class="note">Checking the address on ${c.full}…</p>` : n.unread ? html`<p class="note">Could not check that address on ${n.unread.full} just now. It is checked again when you press.</p>` : n.warn ? html`<p class="note warn">${n.warn}${n.ack && !TAKES.has(k) ? html` <button class="link" type="button" id="f-takes" data-k="${k}">${n.ack}</button>` : ''}</p>` : ''}${S.account && lc(a) === lc(S.account) ? html`<p class="note warn">Paying the wallet you shield from ties the two together.</p>` : ''}`,
+    lines: html`${n.refuse ? html`${NOTE_ERR}${n.refuse}</p>` : n.pending ? html`${NOTE}Checking the address on ${c.full}…</p>` : n.unread ? html`${NOTE}Could not check that address on ${n.unread.full} just now. It is checked again when you press.</p>` : n.warn ? html`${NOTE_WARN}${n.warn}${n.ack && !TAKES.has(k) ? html` ${BTN_LINK} id="f-takes" data-k="${k}">${n.ack}</button>` : ''}</p>` : ''}${S.account && lc(a) === lc(S.account) ? html`${NOTE_WARN}Paying the wallet you shield from ties the two together.</p>` : ''}`,
   };
 }
 const wireTakes = () => $('#f-takes')?.addEventListener('click', (e) => { TAKES.add(e.currentTarget.dataset.k); FORM.check?.(); });
@@ -8645,15 +8656,15 @@ function paintActivity() {
   const opened = el.querySelector('details')?.open;
   mount(el, html`
     <p class="lede">Rebuilt from your key and the chain; this browser keeps only an encrypted copy.</p>
-    ${older.length ? html`<p class="note">Older history is still being read, so this list is not complete yet.</p>` : ''}
+    ${older.length ? html`${NOTE}Older history is still being read, so this list is not complete yet.</p>` : ''}
     ${items.length ? html`<ul class="rows">${items.map(([, r]) => {
       if (!r.c) return notesLi(r);
       const d = describe(r), t = blockTime(r.c, r.block);
       return html`<li><div class="h"><b>${pal(d.pal)}${d.label}</b><span class="${d.in ? 'in' : ''}">${d.in ? '+' : d.v ? '−' : ''}${ethStr(d.v)} ETH</span></div>
         <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${ethStr(d.fee)} ETH` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
-    })}</ul>${total > rows.length ? html`<p class="note">Showing the latest ${rows.length} of ${total}.</p>` : ''}` : CHAINS.every((c) => CH[c.chainId].at) && !rebuilding && !older.length ? html`<p class="note">${pal('ninja')}Nothing yet. Shield some ETH to start. Expecting a payment? Rebuild, below, reads the chain directly.</p>` : ''}
-    <details class="adv" id="rebuild-more" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary><p class="note">Forgets this browser’s copy and reads the chain again from its own logs.</p><button class="btn ghost sm" type="button" id="rebuild" ${rebuilding ? html`disabled aria-busy="true"` : ''}>Rebuild</button></details>
-    <details class="adv" id="points-more" ${pointsOpen ? 'open' : ''}><summary>Catch-up points</summary><p class="note">A new device starts reading from the newest catch-up point instead of the pool’s first block. Anyone can post one, and the registry keeps it only if the pool held its root. ${pointLine(S.chain)}</p><button class="btn ghost sm" type="button" id="post-point" ${canPost(S.chain) ? '' : 'disabled'}>Post one from my wallet on ${S.chain.full}</button></details>`);
+    })}</ul>${total > rows.length ? html`${NOTE}Showing the latest ${rows.length} of ${total}.</p>` : ''}` : CHAINS.every((c) => CH[c.chainId].at) && !rebuilding && !older.length ? html`${NOTE}${pal('ninja')}Nothing yet. Shield some ETH to start. Expecting a payment? Rebuild, below, reads the chain directly.</p>` : ''}
+    <details class="adv" id="rebuild-more" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary>${NOTE}Forgets this browser’s copy and reads the chain again from its own logs.</p>${BTN_GHOST} id="rebuild" ${rebuilding ? html`disabled aria-busy="true"` : ''}>Rebuild</button></details>
+    <details class="adv" id="points-more" ${pointsOpen ? 'open' : ''}><summary>Catch-up points</summary>${NOTE}A new device starts reading from the newest catch-up point instead of the pool’s first block. Anyone can post one, and the registry keeps it only if the pool held its root. ${pointLine(S.chain)}</p>${BTN_GHOST} id="post-point" ${canPost(S.chain) ? '' : 'disabled'}>Post one from my wallet on ${S.chain.full}</button></details>`);
   const pm = $('#points-more'), pp = $('#post-point');
   if (pm) pm.ontoggle = (e) => { pointsOpen = e.currentTarget.open; };
   if (pp) pp.onclick = (e) => postPoint(e.currentTarget, S.chain);
@@ -8696,13 +8707,13 @@ function paintDevice() {
   mount($('#device'), html`
     ${kvRow('Proving key', PROVER.state === 'ready' ? html`<span class="ok">ready</span>` : PROVER.state === 'loading' ? html`downloading, <span id="device-pct">${keyPct()}</span>%` : PROVER.saved ? 'saved in this browser' : hasCaches() ? '33 MB, downloaded once' : '33 MB, downloaded when needed')}
     ${PROVER.state === 'loading' ? html`<div class="meter"><i id="device-meter"></i></div>` : ''}
-    ${PROVER.err ? html`<p class="note err">${errText(PROVER.err)}</p>` : ''}
+    ${PROVER.err ? html`${NOTE_ERR}${errText(PROVER.err)}</p>` : ''}
     <details class="adv" id="device-more" ${deviceMore ? 'open' : ''}><summary>How proving works</summary>
-      <p class="note">Payments are proved in this browser, and your key never leaves this tab. A relay can deliver a payment but cannot change it.</p>
+      ${NOTE}Payments are proved in this browser, and your key never leaves this tab. A relay can deliver a payment but cannot change it.</p>
       ${PROVER.ms ? kvRow('Your last proof', `${(PROVER.ms / 1000).toFixed(1)} s`) : ''}${cores ? kvRow('This device', `${cores} cores`) : ''}
       ${kvRow('Trusted setup', `${CEREMONY.contributions} contributions, closed by Bitcoin block ${group(CEREMONY.beacon)}`)}
       ${kvRow('Checked against', html`SHA-256 ${short(CEREMONY.zkey.sha256, 6)}`)}
-      ${PROVER.state === 'ready' ? '' : html`<div class="foot-a">${PROVER.state === 'idle' ? html`<button class="btn ghost sm" type="button" id="device-load">Download the proving key now</button><button class="link" type="button" id="device-file">or load the two files from disk</button>` : html`<button class="link" type="button" id="device-file">Load the two files from disk instead</button>`}</div>`}</details>`);
+      ${PROVER.state === 'ready' ? '' : html`<div class="foot-a">${PROVER.state === 'idle' ? html`${BTN_GHOST} id="device-load">Download the proving key now</button>${BTN_LINK} id="device-file">or load the two files from disk</button>` : html`${BTN_LINK} id="device-file">Load the two files from disk instead</button>`}</div>`}</details>`);
   paintMeter();
   $('#device-more').ontoggle = (e) => { deviceMore = e.currentTarget.open; };
   $('#device-load')?.addEventListener('click', () => prover().catch(() => {}));
@@ -8746,7 +8757,7 @@ function renderWalletSheet() {
   if (!S.key) { mount(el, html`<p class="lede">Sign in to use your private balance.</p>${signIn('ws-in')}`); return wireSignIn(el, () => $('#sheet-wallet').close()); }
   mount(el, html`
     <div class="addr"><code>${S.key.address}</code></div>
-    <p class="note">Your Tacit address${S.key.account ? `, opened with ${short(S.key.account)}` : ''}. Address ID <b class="num nw">${addressId(S.key.address)}</b>.</p>
+    ${NOTE}Your Tacit address${S.key.account ? `, opened with ${short(S.key.account)}` : ''}. Address ID <b class="num nw">${addressId(S.key.address)}</b>.</p>
     <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Sign out</button></div>
     <div class="kv" style="margin-top:14px"><span>Wallet</span>${S.account ? html`<b>${S.wallet?.info.name ? `${S.wallet.info.name} · ` : ''}<span class="nw id">${whoShort(S.account)}</span></b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
     ${stayBox()}<p class="note mute">Keeps your key in this tab, so a reload does not ask your wallet again. It goes when you sign out, close the tab, or after 12 hours (a browser may keep a copy for crash recovery a little longer). Not for a shared computer.</p>
@@ -8771,37 +8782,37 @@ const pqGate = () => { const st = cur(); return pqAsk() && ['shield', 'send', 'r
 const pqLater = () => { try { store.set(pqLaterKey(), String(Date.now())); } catch {} Object.assign(PQUI, { step: null, root: null, ask: null, err: '' }); render(); };
 const pqWords = (root) => html`<ol class="pq-words">${PQ.phraseOf(root).split(' ').map((w) => html`<li>${w}</li>`)}</ol>`;
 function pqSection(inline = false) {
-  const k = S.key, err = PQUI.err ? html`<p class="note err">${PQUI.err}</p>` : '', step = inline && !PQUI.step && PQUI.root ? 'new' : PQUI.step;
+  const k = S.key, err = PQUI.err ? html`${NOTE_ERR}${PQUI.err}</p>` : '', step = inline && !PQUI.step && PQUI.root ? 'new' : PQUI.step;
   // On: what it covers in one line, then one row per thing left to do (the key on chain, an older balance), each with its button.
   if (k.pq) return html`<div class="kv"><span>Post-quantum privacy</span><b class="ok">on</b></div>
-    <p class="note">New notes to yourself${pqWrite() ? ', your change and what payers with your link send you' : ' and your change'} are sealed under your 24 words: a quantum computer reading today’s chain cannot open them later.${pqWrite() ? '' : ' Payers sealing to your key is paused for now: they send ordinary memos, which you’d seal.'}</p>
+    ${NOTE}New notes to yourself${pqWrite() ? ', your change and what payers with your link send you' : ' and your change'} are sealed under your 24 words: a quantum computer reading today’s chain cannot open them later.${pqWrite() ? '' : ' Payers sealing to your key is paused for now: they send ordinary memos, which you’d seal.'}</p>
     ${pqWrite() ? ((s) => s === 'have' ? html`<div class="kv"><span>Key on chain<small>payers with only your address seal to it</small></span><b class="ok">yes</b></div>`
       : s !== 'none' ? html`<div class="kv"><span>Key on chain</span><b class="mute">${s === 'looking' ? 'looking…' : 'could not check just now'}</b></div>`
-      : html`<div class="kv pq-do"><span>Key on chain<small>so payers with only your address seal to it too</small></span><button class="btn ghost sm" type="button" id="pq-pub">Publish it</button></div>`)(pqMine(() => pqRedraw())) : ''}
+      : html`<div class="kv pq-do"><span>Key on chain<small>so payers with only your address seal to it too</small></span>${BTN_GHOST} id="pq-pub">Publish it</button></div>`)(pqMine(() => pqRedraw())) : ''}
     ${((old) => old > 0n ? html`<div class="kv pq-do"><span>Older balance<small class="warn">${fmt(old)} ETH under keys a quantum computer could work out</small></span><button class="btn sm" type="button" id="pq-seal">Seal it now</button></div>
-      <p class="note mute">Sealing is private transfers to yourself, a relay fee each (one per two notes). Until then payments spend only your newer notes, and spending the older ones would show that spend and where it went. ${PQ_ONLY}</p>` : '')(CHAINS.reduce((s, c) => s + (CH[c.chainId].W?.oldValue() ?? 0n), 0n))}
-    <details class="adv"><summary>How it works</summary><p class="note">It keeps what you do private later; it does not change how payments are proved or signed. Publishing your key spends once from your private balance: a relay fee, and the chain shows a private spend of yours at that moment, nothing more. For whole notes, the words keep your wallet’s key from finding or spending them, but the Tornado Cash pools themselves are not post-quantum.</p></details>
-    ${PQUI.step === 'show' ? html`${pqWords(k.root)}<p class="note">These words, with your address, show your post-quantum notes and their amounts, and can take out your whole notes. Keep them offline. They are not a wallet phrase: do not import them into a wallet.</p>` : ''}
-    ${PQUI.step === 'off' ? html`<p class="note warn">Until you enter the words again, this device will not show or spend the part of your balance and the whole notes made with them. They stay yours. Have the words written down first.</p><div class="row2"><button class="btn ghost sm" type="button" id="pq-off-yes">Forget them here</button><button class="btn ghost sm" type="button" id="pq-back">Keep them</button></div>`
-      : html`<div class="row2"><button class="btn ghost sm" type="button" id="pq-show">${PQUI.step === 'show' ? 'Hide the words' : 'Show the 24 words'}</button><button class="btn ghost sm" type="button" id="pq-off">Forget them here</button></div>`}${err}`;
+      ${NOTE_MUTE}Sealing is private transfers to yourself, a relay fee each (one per two notes). Until then payments spend only your newer notes, and spending the older ones would show that spend and where it went. ${PQ_ONLY}</p>` : '')(CHAINS.reduce((s, c) => s + (CH[c.chainId].W?.oldValue() ?? 0n), 0n))}
+    <details class="adv"><summary>How it works</summary>${NOTE}It keeps what you do private later; it does not change how payments are proved or signed. Publishing your key spends once from your private balance: a relay fee, and the chain shows a private spend of yours at that moment, nothing more. For whole notes, the words keep your wallet’s key from finding or spending them, but the Tornado Cash pools themselves are not post-quantum.</p></details>
+    ${PQUI.step === 'show' ? html`${pqWords(k.root)}${NOTE}These words, with your address, show your post-quantum notes and their amounts, and can take out your whole notes. Keep them offline. They are not a wallet phrase: do not import them into a wallet.</p>` : ''}
+    ${PQUI.step === 'off' ? html`${NOTE_WARN}Until you enter the words again, this device will not show or spend the part of your balance and the whole notes made with them. They stay yours. Have the words written down first.</p><div class="row2">${BTN_GHOST} id="pq-off-yes">Forget them here</button>${BTN_GHOST} id="pq-back">Keep them</button></div>`
+      : html`<div class="row2">${BTN_GHOST} id="pq-show">${PQUI.step === 'show' ? 'Hide the words' : 'Show the 24 words'}</button>${BTN_GHOST} id="pq-off">Forget them here</button></div>`}${err}`;
   if (step === 'new') return html`<div class="kv"><span>Post-quantum privacy</span><b class="mute">step 1 of 2</b></div>
-    ${inline ? html`<p class="note">First, 24 words of your own. They seal your Tacit balance and change, so a quantum computer reading today’s chain cannot open them later.</p><p class="note">Used tacit.wei before, on another device? <button class="link" type="button" id="pq-enter">Enter your 24 words instead</button>, so you do not make new ones.</p>` : ''}
-    ${pqWords(PQUI.root)}<p class="note">Write them on paper, in order: with your wallet, they let any device see these notes. They are not a wallet phrase; never import them into a wallet.</p>
-    <p class="note mute">${PQ_ONLY}</p>
-    <div class="row2"><button class="btn sm" type="button" id="pq-wrote">I wrote them down</button>${inline ? '' : html`<button class="btn ghost sm" type="button" id="pq-back">Not now</button>`}</div>
-    ${inline ? html`<p class="note"><button class="link" type="button" id="pq-later">Not now (ordinary privacy)</button></p><p class="note mute">${PQ_ID}</p>` : ''}`;
+    ${inline ? html`${NOTE}First, 24 words of your own. They seal your Tacit balance and change, so a quantum computer reading today’s chain cannot open them later.</p>${NOTE}Used tacit.wei before, on another device? ${BTN_LINK} id="pq-enter">Enter your 24 words instead</button>, so you do not make new ones.</p>` : ''}
+    ${pqWords(PQUI.root)}${NOTE}Write them on paper, in order: with your wallet, they let any device see these notes. They are not a wallet phrase; never import them into a wallet.</p>
+    ${NOTE_MUTE}${PQ_ONLY}</p>
+    <div class="row2"><button class="btn sm" type="button" id="pq-wrote">I wrote them down</button>${inline ? '' : html`${BTN_GHOST} id="pq-back">Not now</button>`}</div>
+    ${inline ? html`${NOTE}${BTN_LINK} id="pq-later">Not now (ordinary privacy)</button></p>${NOTE_MUTE}${PQ_ID}</p>` : ''}`;
   if (step === 'check') return html`<div class="kv"><span>Post-quantum privacy</span><b class="mute">step 2 of 2</b></div>
-    <p class="note">To check your paper, enter these three words from it.</p>
-    ${PQUI.ask.map((i) => html`<label class="lbl" for="pq-w${i}"><span>Word ${i + 1}</span></label><input id="pq-w${i}" autocomplete="off" autocapitalize="off" spellcheck="false">`)}
-    <div class="row2"><button class="btn sm" type="button" id="pq-check">Turn it on</button><button class="btn ghost sm" type="button" id="pq-again">Show them again</button></div>${err}`;
+    ${NOTE}To check your paper, enter these three words from it.</p>
+    ${PQUI.ask.map((i) => html`<label class="lbl" for="pq-w${i}"><span>Word ${i + 1}</span></label><input id="pq-w${i}"${TEXT_IN}>`)}
+    <div class="row2"><button class="btn sm" type="button" id="pq-check">Turn it on</button>${BTN_GHOST} id="pq-again">Show them again</button></div>${err}`;
   if (step === 'enter') return html`<div class="kv"><span>Post-quantum privacy</span><b class="mute">your words</b></div>
-    <label class="lbl" for="pq-text"><span>Your 24 words</span></label><textarea id="pq-text" autocomplete="off" autocapitalize="off" spellcheck="false" style="min-height:78px"></textarea>
-    <p class="note mute">${PQ_ID}</p>
-    <div class="row2"><button class="btn sm" type="button" id="pq-use">Use them</button><button class="btn ghost sm" type="button" id="pq-back">Cancel</button></div>${err}`;
+    <label class="lbl" for="pq-text"><span>Your 24 words</span></label><textarea id="pq-text"${TEXT_IN} style="min-height:78px"></textarea>
+    ${NOTE_MUTE}${PQ_ID}</p>
+    <div class="row2"><button class="btn sm" type="button" id="pq-use">Use them</button>${BTN_GHOST} id="pq-back">Cancel</button></div>${err}`;
   return html`<div class="kv"><span>Post-quantum privacy</span><b>off</b></div>
-    <p class="note">Seal your Tacit balance and change under 24 words of your own, so a quantum computer reading today’s chain cannot open them later.${pqWrite() ? ' Payers with your payment link can seal what they send you too.' : ''}</p>
-    <details class="adv"><summary>How it works</summary><p class="note">No public key leads to the words. Whole notes come from them as well, which keeps your wallet’s key from finding them, but the Tornado Cash pools themselves are not post-quantum.</p></details>
-    ${pqTurnOn() ? html`<div class="row2"><button class="btn sm" type="button" id="pq-new">Turn it on</button><button class="btn ghost sm" type="button" id="pq-enter">I have words already</button></div>` : html`<p class="note">Turning it on is paused for now.</p><button class="link" type="button" id="pq-enter">I have words already</button>`}<p class="note mute">${PQ_ID}</p>${err}`;
+    ${NOTE}Seal your Tacit balance and change under 24 words of your own, so a quantum computer reading today’s chain cannot open them later.${pqWrite() ? ' Payers with your payment link can seal what they send you too.' : ''}</p>
+    <details class="adv"><summary>How it works</summary>${NOTE}No public key leads to the words. Whole notes come from them as well, which keeps your wallet’s key from finding them, but the Tornado Cash pools themselves are not post-quantum.</p></details>
+    ${pqTurnOn() ? html`<div class="row2"><button class="btn sm" type="button" id="pq-new">Turn it on</button>${BTN_GHOST} id="pq-enter">I have words already</button></div>` : html`${NOTE}Turning it on is paused for now.</p>${BTN_LINK} id="pq-enter">I have words already</button>`}${NOTE_MUTE}${PQ_ID}</p>${err}`;
 }
 function pqRedraw(step = PQUI.step) { PQUI.step = step; for (const el of $$('#w-pq, #f-pq')) { mount(el, pqSection(el.id === 'f-pq')); pqWire(el); } }
 // A root goes into use only once it is sealed in this browser; then the wallets read the history again for its notes.
@@ -8867,14 +8878,14 @@ function pqAdopt() {
 function renderSettings() {
   const el = $('#settings-body');
   mount(el, html`<p class="lede">Add your own node and the reads about you go to it, names included; the pool's event logs also go to the page's nodes when yours cannot serve a range. Enter two, separated by a space, and both must agree.</p>
-    <p class="note">A relay sends payments for you; it cannot change where one goes. Saved in this browser.</p>
+    ${NOTE}A relay sends payments for you; it cannot change where one goes. Saved in this browser.</p>
     ${CHAINS.map((c) => html`<label class="lbl" for="e-rpc-${c.chainId}"><span>${c.full} · your own node</span></label><textarea id="e-rpc-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.rpc?.[c.chainId] || []).join(' ')}</textarea>
       <label class="lbl" for="e-relay-${c.chainId}"><span>${c.full} relay</span></label><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:78px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
     <label class="lbl nw"><input type="checkbox" id="e-direct" ${ends.direct ? 'checked' : ''}> <span>Reach the relay and the nodes directly, not through the private route (they then see your address, and the addresses you pay; for when no forwarder answers)</span></label>
     <label class="lbl" for="e-points"><span>Catch-up registry · an address, or none</span></label><input id="e-points" spellcheck="false" placeholder="${CHECKPOINTS} · or none" value="${/^none$/i.test(ends.points || '') ? 'none' : /^0x[0-9a-fA-F]{40}$/.test(ends.points || '') ? ends.points : ''}">
     <label class="lbl" for="e-wc"><span>WalletConnect project ID and relay</span></label><input id="e-wc" spellcheck="false" placeholder="32 characters, and/or wss://… (optional)" value="${[ends.wc, ends.wcrelay].filter(Boolean).join(' ')}">
     <label class="lbl" for="e-copies"><span>Copy nodes · Base Sepolia nodes for the onchain copy of the proving key</span></label><textarea id="e-copies" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.copies || []).join(' ')}</textarea>
-    ${CHAINS.some((c) => mineOf(c).length === 1) ? html`<p class="note warn">With one node of your own, names are read from it alone: no second node checks what it says.</p>` : ''}
+    ${CHAINS.some((c) => mineOf(c).length === 1) ? html`${NOTE_WARN}With one node of your own, names are read from it alone: no second node checks what it says.</p>` : ''}
     <label class="lbl" for="e-mirror"><span>Another mirror for the proving key</span></label><textarea id="e-mirror" spellcheck="false" style="min-height:78px" placeholder="https://…/ serving transact.wasm and transact_final.zkey">${ends.mirror || ''}</textarea>
     <div class="row2"><button class="btn" type="button" id="e-save">Save</button><button class="btn ghost" type="button" id="e-reset">Use the defaults</button></div>`);
   $$('textarea, input', el).forEach((t) => { t.setAttribute('autocapitalize', 'off'); t.setAttribute('autocorrect', 'off'); });
@@ -8998,7 +9009,7 @@ const reqKey = (v) => v && [v.to, String(v.amount ?? ''), v.token || '', (v.chai
 function applyHashSaid() {
   const was = reqKey(REQ.v);
   applyHash();
-  if (was && REQ.v && reqKey(REQ.v) !== was) queueMicrotask(() => mount($('#req-status'), html`<p class="note warn">This link changed while a request was open. Check whom it pays before you pay.</p>`));
+  if (was && REQ.v && reqKey(REQ.v) !== was) queueMicrotask(() => mount($('#req-status'), html`${NOTE_WARN}This link changed while a request was open. Check whom it pays before you pay.</p>`));
 }
 window.addEventListener('hashchange', () => { if (S.busy) { hashLater = true; return; } applyHashSaid(); render(); });
 
@@ -10751,14 +10762,14 @@ function lgSplitCard(p, { swapped = false } = {}) {
     p.remainder > 0n ? leg(`${fmt(p.remainder, 18)} ETH → Tacit pool (${lgEth(h.tacit)} ETH held)`) : ''] : '';
   const fee = LG.gasPrice != null ? TC.depositGas(p.noteCount, p.remainder > 0n) * LG.gasPrice : null;
   const dust = p.remainder > 0n && LG.gasPrice != null && 380_000n * LG.gasPrice * 10n > p.remainder;
-  return html`<div class="lg-split"><div class="lbl"><span>Split</span><span>${LG.chosen || LG.pick ? lgSmallestSelect() : html`Smallest note ${TC.ethWords(lgSmallest())} ETH · <button class="link" type="button" id="lg-change">Change</button>`}</span></div>
+  return html`<div class="lg-split">${LBL}Split</span><span>${LG.chosen || LG.pick ? lgSmallestSelect() : html`Smallest note ${TC.ethWords(lgSmallest())} ETH · ${BTN_LINK} id="lg-change">Change</button>`}</span></div>
     <div class="lg-parts" role="group" aria-label="How the deposit is split">
       <div class="lg-part"><b class="num">${p.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)} ETH`).join(' + ')}</b><span>whole ${p.noteCount === 1 ? 'note' : 'notes'} · ${LG_TORNADO}</span></div>
       ${p.remainder > 0n ? html`<div class="lg-part"><b class="num">${fmt(p.remainder, 18)} ETH</b><span>ready to pay</span></div>` : ''}
     </div>${sizes}
-    ${fee != null ? html`<p class="note mute">Network fee about ${ethStr(fee)} ETH${swapped ? ' plus the swap' : ''}, paid by your wallet. ${LG_FORWARDER_OK.v === false || lgOff(6) ? `${p.noteCount + (p.remainder ? 1 : 0)} transactions.` : S.key ? '' : 'One transaction.'}</p>` : ''}
-    ${dust ? html`<p class="note warn">The ${fmt(p.remainder, 18)} ETH left over costs about as much gas to deposit as it is worth. <button class="link" type="button" id="lg-drop">Leave it in my wallet</button></p>` : ''}
-    <p class="note">${S.key ? html`Both parts are one balance here: Send and Withdraw use either. The notes come from your ${S.key.pq ? 'post-quantum words' : 'sign-in'}, so there is nothing extra to sign and Find brings them back on any device. Your wallet confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.` : html`Your wallet first signs a short message for each note${lgSessionChecked() ? '' : ', and one more to check it signs the same way each time'} (nothing is sent: they make the notes, so only your wallet can find them again), then confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.`}</p></div>`;
+    ${fee != null ? html`${NOTE_MUTE}Network fee about ${ethStr(fee)} ETH${swapped ? ' plus the swap' : ''}, paid by your wallet. ${LG_FORWARDER_OK.v === false || lgOff(6) ? `${p.noteCount + (p.remainder ? 1 : 0)} transactions.` : S.key ? '' : 'One transaction.'}</p>` : ''}
+    ${dust ? html`${NOTE_WARN}The ${fmt(p.remainder, 18)} ETH left over costs about as much gas to deposit as it is worth. ${BTN_LINK} id="lg-drop">Leave it in my wallet</button></p>` : ''}
+    ${NOTE}${S.key ? html`Both parts are one balance here: Send and Withdraw use either. The notes come from your ${S.key.pq ? 'post-quantum words' : 'sign-in'}, so there is nothing extra to sign and Find brings them back on any device. Your wallet confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.` : html`Your wallet first signs a short message for each note${lgSessionChecked() ? '' : ', and one more to check it signs the same way each time'} (nothing is sent: they make the notes, so only your wallet can find them again), then confirms ${LG_FORWARDER_OK.v === false || lgOff(6) ? 'each transaction' : 'once'}.`}</p></div>`;
 }
 const lgSessionChecked = () => !!LG.sessions.get(lc(S.account))?.checked;
 // The card's live bits: the select, the pool sizes as they come in, the leftover choice. `onChange()` redraws the form.
@@ -11008,7 +11019,7 @@ const lgShut = () => LG.notes.filter((n) => LG.spent.get(n.nh) !== true && !lgOp
 const lgKeyOf = (n) => TC.noteKeyOf(n);
 const lgHeld = () => lgLive().reduce((t, n) => t + (TC.poolOf(n.pool)?.denomination ?? 0n), 0n);
 // Under the balance: what is in whole notes, as part of one total.
-const lgBalLine = () => { const h = lgHeld(); return h > 0n ? html`<p class="note mute">Also in whole notes: <b class="num">${fmt(h)} ETH</b> (${lgLive().length}) · ${LG_TORNADO}</p>` : ''; };
+const lgBalLine = () => { const h = lgHeld(); return h > 0n ? html`${NOTE_MUTE}Also in whole notes: <b class="num">${fmt(h)} ETH</b> (${lgLive().length}) · ${LG_TORNADO}</p>` : ''; };
 
 // ── the notes card ──
 function lgPaint() {
@@ -11022,26 +11033,26 @@ function lgPaint() {
   host.hidden = !live.length && !lgShut().length && !LG.open;
   const kind = (n) => (n.s === 'q' ? ' · from your words' : !n.s || n.s === 'w' ? ' · wallet-signed' : '');
   // By size, largest first; each note's row says when it went in and how many deposits came after it.
-  const row = (n) => { const s = LG.seen.get(n.c); return html`<div class="kv"><span>${TC.ethWords(TC.poolOf(n.pool).denomination)} ETH <span class="mute">· note ${n.nonce}${kind(n)}</span>${s ? html`<br><span class="mute">${s.text}</span>` : ''}</span><b><button class="link" type="button" data-lg-move="${lgKeyOf(n)}">Move into balance</button> <button class="link" type="button" data-lg-out="${lgKeyOf(n)}">Withdraw</button></b></div>`; };
+  const row = (n) => { const s = LG.seen.get(n.c); return html`<div class="kv"><span>${TC.ethWords(TC.poolOf(n.pool).denomination)} ETH <span class="mute">· note ${n.nonce}${kind(n)}</span>${s ? html`<br><span class="mute">${s.text}</span>` : ''}</span><b>${BTN_LINK} data-lg-move="${lgKeyOf(n)}">Move into balance</button> ${BTN_LINK} data-lg-out="${lgKeyOf(n)}">Withdraw</button></b></div>`; };
   const sizes = [...new Set(live.map((n) => TC.poolOf(n.pool).denomination))].sort((a, b) => (a < b ? 1 : -1));
   const rows = sizes.map((d) => { const g = live.filter((n) => TC.poolOf(n.pool).denomination === d); return g.length === 1 ? g.map(row) : html`<details class="lg-grp" ${g.length <= 3 || LG.grp?.[d] ? 'open' : ''} data-d="${d}"><summary class="note">${g.length} × ${TC.ethWords(d)} ETH</summary>${g.map(row)}</details>`; });
   const sent = LG.notes.filter((n) => n.o && !LG.spent.get(n.nh)), shut = lgShut(), lefts = LG.notes.filter((n) => n.acct && n.left && LG.spent.get(n.nh) === true && LG_LEFT.get(n.acct) !== 0n);
   const early = live.map((n) => LG.seen.get(n.c)).filter((s) => s?.low), keep = $('#lg-intake', host);
-  mount(host, html`<div class="card-h"><h2>Whole notes</h2><span><button class="link" type="button" id="lg-find">${S.account || S.key ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button>${live.length ? html` · <button class="link" type="button" id="lg-save">Save as text</button>` : ''}</span></div>
-    <p class="note mute">${LG_TORNADO} notes, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words, not from your wallet’s key (the Tornado Cash pools themselves are not post-quantum)' : 'sign-in'}: Find brings them back on any device, with nothing to sign.` : 'made with your wallet’s signatures: Find brings them back, your wallet signing once per note.'}</p>
-    ${rows.length ? rows : html`<p class="note">None found in this browser. Find looks for notes made ${S.key ? 'from this sign-in' : 'with this wallet'}.</p>`}
-    ${early.length ? html`<p class="note warn">${early.length === 1 ? early[0].nudge : 'Few deposits have come after some of these. The more do, the better they blend in.'}</p>` : ''}
-    ${((m) => (m.length ? html`<p class="note">${m.length === 1 ? 'A note' : `${m.length} notes`} (${fmt(m.reduce((s, n) => s + TC.poolOf(n.pool).denomination, 0n))} ETH) may be spent: one node says so, the others have not confirmed it, so ${m.length === 1 ? 'it is' : 'they are'} not counted. <button class="link" type="button" id="lg-recheck">Check again</button></p>` : ''))(LG.notes.filter((n) => LG_MAYBE.has(n.nh) && LG.spent.get(n.nh) !== true && lgOpenable(n)))}
-    ${shut.length ? html`<p class="note mute">${shut.length === 1 ? 'One more note is' : `${shut.length} more notes are`} kept here but not counted: ${!S.key ? 'made from your sign-in, so they count once you sign in' : shut.some((n) => n.s === 'q') && !S.key.pq ? 'made from your post-quantum words, which are not entered on this device (the wallet sheet takes them)' : 'made under another sign-in'}.</p>` : ''}
-    ${sent.length ? html`<p class="note mute">${sent.length === 1 ? 'One note was' : `${sent.length} notes were`} sent out and ${sent.length === 1 ? 'is' : 'are'} not seen on chain yet.</p>` : ''}
-    ${lefts.map((n) => html`<div class="callout"><span>${LG_LEFT.get(n.acct) ? `${fmt(LG_LEFT.get(n.acct))} ETH is left at note ${n.nonce}'s one-time address (unused gas, or a swap that did not go through).` : `Note ${n.nonce} went out as a token: unused gas, or the ETH of a swap that did not go through, waits at its one-time address.`}</span><button class="btn ghost sm" type="button" data-lg-left="${lgKeyOf(n)}">Send it on</button></div>`)}
+  mount(host, html`<div class="card-h"><h2>Whole notes</h2><span>${BTN_LINK} id="lg-find">${S.account || S.key ? 'Find' : 'Connect wallet'}</button> · ${BTN_LINK} id="lg-paste">Paste a note</button>${live.length ? html` · ${BTN_LINK} id="lg-save">Save as text</button>` : ''}</span></div>
+    ${NOTE_MUTE}${LG_TORNADO} notes, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words, not from your wallet’s key (the Tornado Cash pools themselves are not post-quantum)' : 'sign-in'}: Find brings them back on any device, with nothing to sign.` : 'made with your wallet’s signatures: Find brings them back, your wallet signing once per note.'}</p>
+    ${rows.length ? rows : html`${NOTE}None found in this browser. Find looks for notes made ${S.key ? 'from this sign-in' : 'with this wallet'}.</p>`}
+    ${early.length ? html`${NOTE_WARN}${early.length === 1 ? early[0].nudge : 'Few deposits have come after some of these. The more do, the better they blend in.'}</p>` : ''}
+    ${((m) => (m.length ? html`${NOTE}${m.length === 1 ? 'A note' : `${m.length} notes`} (${fmt(m.reduce((s, n) => s + TC.poolOf(n.pool).denomination, 0n))} ETH) may be spent: one node says so, the others have not confirmed it, so ${m.length === 1 ? 'it is' : 'they are'} not counted. ${BTN_LINK} id="lg-recheck">Check again</button></p>` : ''))(LG.notes.filter((n) => LG_MAYBE.has(n.nh) && LG.spent.get(n.nh) !== true && lgOpenable(n)))}
+    ${shut.length ? html`${NOTE_MUTE}${shut.length === 1 ? 'One more note is' : `${shut.length} more notes are`} kept here but not counted: ${!S.key ? 'made from your sign-in, so they count once you sign in' : shut.some((n) => n.s === 'q') && !S.key.pq ? 'made from your post-quantum words, which are not entered on this device (the wallet sheet takes them)' : 'made under another sign-in'}.</p>` : ''}
+    ${sent.length ? html`${NOTE_MUTE}${sent.length === 1 ? 'One note was' : `${sent.length} notes were`} sent out and ${sent.length === 1 ? 'is' : 'are'} not seen on chain yet.</p>` : ''}
+    ${lefts.map((n) => html`<div class="callout"><span>${LG_LEFT.get(n.acct) ? `${fmt(LG_LEFT.get(n.acct))} ETH is left at note ${n.nonce}'s one-time address (unused gas, or a swap that did not go through).` : `Note ${n.nonce} went out as a token: unused gas, or the ETH of a swap that did not go through, waits at its one-time address.`}</span>${BTN_GHOST} data-lg-left="${lgKeyOf(n)}">Send it on</button></div>`)}
     ${done.length ? html`<details class="lg-spent"><summary class="note mute">${done.length} spent</summary>${done.map((n) => html`<div class="kv"><span>${TC.ethWords(TC.poolOf(n.pool).denomination)} ETH <span class="mute">· note ${n.nonce}</span></span><b class="mute">spent</b></div>`)}</details>` : ''}
     <div id="lg-ask" hidden></div>
     <div id="lg-intake"></div>
     <details class="lg-how"><summary class="note">How it works</summary>
-      <p class="note">A deposit of a whole note or more puts whole notes (0.1, 1, 10 or 100 ETH) into ${LG_TORNADO}'s pools, where every deposit is the same size and the crowd is large, and the rest into your Tacit balance, which takes any amount and pays inside itself.</p>
-      <p class="note">Take a note out to any address, as ETH or a token, or move it into your balance to pay from there. Waiting first helps: the more deposits after yours, the better it blends in.</p>
-      ${S.key ? html`<p class="note">Notes made with your wallet’s signatures (earlier ones, or from another app) can be found too: Find offers to look for them, and your wallet signs once per note.</p>` : ''}</details>`);
+      ${NOTE}A deposit of a whole note or more puts whole notes (0.1, 1, 10 or 100 ETH) into ${LG_TORNADO}'s pools, where every deposit is the same size and the crowd is large, and the rest into your Tacit balance, which takes any amount and pays inside itself.</p>
+      ${NOTE}Take a note out to any address, as ETH or a token, or move it into your balance to pay from there. Waiting first helps: the more deposits after yours, the better it blends in.</p>
+      ${S.key ? html`${NOTE}Notes made with your wallet’s signatures (earlier ones, or from another app) can be found too: Find offers to look for them, and your wallet signs once per note.</p>` : ''}</details>`);
   LG.ask = $('#lg-ask', host);
   // the card for making notes from the balance keeps what is typed in it across a redraw
   if (keep?.dataset.k === (lgKid() || '')) $('#lg-intake', host).replaceWith(keep); else { lgIntakeCard(host); $('#lg-intake', host).dataset.k = lgKid() || ''; }
@@ -11087,10 +11098,10 @@ function lgFind(btn, s, chain = false) {
     LG.open = true;
     const said = found.length ? `${found.length} found, ${found.filter((f) => !f.spent).length} unspent.` : flow.scheme === 'w' ? 'No notes found for this wallet.' : `No notes found for ${flow.scheme === 'q' ? 'these words or this sign-in' : 'this sign-in'}.`;
     // read through the deposit cache, which may leave notes out: the pools read from the chain's logs alone find them (slower)
-    const deep = !chain && !lgOwn() && lgCaches().length ? html` ${found.length ? 'Missing one?' : 'The deposit cache may have left them out:'} <button class="link" type="button" id="lg-findc">Read the pools from the chain</button> (slower; skips the cache, and finds any it left out).` : '';
+    const deep = !chain && !lgOwn() && lgCaches().length ? html` ${found.length ? 'Missing one?' : 'The deposit cache may have left them out:'} ${BTN_LINK} id="lg-findc">Read the pools from the chain</button> (slower; skips the cache, and finds any it left out).` : '';
     const wire = () => $('#lg-findc')?.addEventListener('click', (e) => lgFind(e.currentTarget, s, true));
     if (flow.scheme === 'w') { mount($('#status'), html`${said}${deep}`); return wire(); }
-    mount($('#status'), html`${said}${deep}${flow.scheme === 'k' ? ' Turned on post-quantum privacy on another device? Enter your 24 words in the wallet sheet to see what was made with them.' : ''} Notes made with wallet signatures (in another app, or here before)? <button class="link" type="button" id="lg-findw">Look for those</button> (your wallet asks once per note).`);
+    mount($('#status'), html`${said}${deep}${flow.scheme === 'k' ? ' Turned on post-quantum privacy on another device? Enter your 24 words in the wallet sheet to see what was made with them.' : ''} Notes made with wallet signatures (in another app, or here before)? ${BTN_LINK} id="lg-findw">Look for those</button> (your wallet asks once per note).`);
     $('#lg-findw')?.addEventListener('click', (e) => lgFind(e.currentTarget, 'w'));
     wire();
   });
@@ -11176,12 +11187,12 @@ function lgConfirm({ fee, receive, denomination, route }, { what, to, swap, fres
     const up = (BigInt(fee) * 10000n + denomination - 1n) / denomination;
     ask.hidden = false;
     mount(ask, html`<div class="callout lg-fee"><div>
-      <p class="note"><b>${what || 'This note'}</b> · ${TC.ethWords(denomination)} ETH${to ? html` → <code>${short(to, 6)}</code>` : ''}</p>
-      ${fee === 0n ? html`<p class="note">Your wallet sends this and pays its gas, so it shows as the sender. The address gets the whole ${TC.ethWords(denomination)} ETH.</p>`
-        : html`<p class="note">Gas from the note: up to ${ethStr(fee)} ETH (${(Number(up) / 100).toFixed(2)}%); what is not used comes back${swap ? ' to the note\'s one-time address, which you can send on later' : ' to the address'}.</p>`}
-      ${route ? html`<p class="note">Arrives as at least <b class="num">${units(route.limit, swap.t.dec)} ${swap.t.sym}</b> (quoted ${units(route.out, swap.t.dec)}).</p>` : fee ? html`<p class="note">The address gets at least <b class="num">${fmt(receive, 6, true)} ETH</b>.</p>` : ''}
-      ${sweep ? html`<p class="note">Then the relay moves it into your balance within minutes, for up to 0.25%.</p>` : ''}
-      <div class="row"><button class="btn sm" type="button" id="lg-yes">Send</button><button class="btn ghost sm" type="button" id="lg-no">Cancel</button></div></div></div>`);
+      ${NOTE}<b>${what || 'This note'}</b> · ${TC.ethWords(denomination)} ETH${to ? html` → <code>${short(to, 6)}</code>` : ''}</p>
+      ${fee === 0n ? html`${NOTE}Your wallet sends this and pays its gas, so it shows as the sender. The address gets the whole ${TC.ethWords(denomination)} ETH.</p>`
+        : html`${NOTE}Gas from the note: up to ${ethStr(fee)} ETH (${(Number(up) / 100).toFixed(2)}%); what is not used comes back${swap ? ' to the note\'s one-time address, which you can send on later' : ' to the address'}.</p>`}
+      ${route ? html`${NOTE}Arrives as at least <b class="num">${units(route.limit, swap.t.dec)} ${swap.t.sym}</b> (quoted ${units(route.out, swap.t.dec)}).</p>` : fee ? html`${NOTE}The address gets at least <b class="num">${fmt(receive, 6, true)} ETH</b>.</p>` : ''}
+      ${sweep ? html`${NOTE}Then the relay moves it into your balance within minutes, for up to 0.25%.</p>` : ''}
+      <div class="row"><button class="btn sm" type="button" id="lg-yes">Send</button>${BTN_GHOST} id="lg-no">Cancel</button></div></div></div>`);
     const fin = (ok) => { clearTimeout(t); ask.hidden = true; mount(ask, ''); resolve(ok); if (LG.dirty) { LG.dirty = false; lgPaint(); } };
     const t = setTimeout(() => fin(false), 180_000);
     // An address that already holds something, has sent before or carries code links more easily than a fresh one. The three reads
@@ -11278,8 +11289,8 @@ function lgCover(a, fee) {
   return null;
 }
 // Send's offer when the balance falls short and whole notes cover it: the form's own button moves the notes in, then pays.
-const lgCoverSay = (notes, bal) => html`<p class="note">${fmt(bal)} ETH is ready to pay now; the rest is in whole notes. The button moves ${notes.length === 1 ? 'one' : notes.length} into your balance first, then pays.</p>
-    <p class="note mute">${lgOff(1) ? 'Gas from the note is off for now, so your wallet sends the move and shows as the sender; the relay takes up to 0.25%.' : `No wallet needed: gas (up to ${TC.MAX_FEE_PERCENT}%) and the relay’s fee (up to 0.25%) come out of ${notes.length === 1 ? 'the note' : 'the notes'}.`}${lgSigns(notes)} It takes a few minutes. A payment right after the move can be linked to it by timing and amount; waiting in between helps.</p>`;
+const lgCoverSay = (notes, bal) => html`${NOTE}${fmt(bal)} ETH is ready to pay now; the rest is in whole notes. The button moves ${notes.length === 1 ? 'one' : notes.length} into your balance first, then pays.</p>
+    ${NOTE_MUTE}${lgOff(1) ? 'Gas from the note is off for now, so your wallet sends the move and shows as the sender; the relay takes up to 0.25%.' : `No wallet needed: gas (up to ${TC.MAX_FEE_PERCENT}%) and the relay’s fee (up to 0.25%) come out of ${notes.length === 1 ? 'the note' : 'the notes'}.`}${lgSigns(notes)} It takes a few minutes. A payment right after the move can be linked to it by timing and amount; waiting in between helps.</p>`;
 const lgCoverGo = (notes) => (notes.length === 1 ? `Move a ${TC.ethWords(TC.poolOf(notes[0].pool).denomination)} ETH note in, then pay` : `Move ${notes.length} notes in, then pay`);
 // Said before the press when a note was made with the wallet's signature: the wallet signs again to open it.
 const lgSigns = (notes) => (notes.some((n) => (n.s || 'w') === 'w') ? ' Your wallet signs a message to open each note made with its signature; it sends nothing.' : '');
@@ -11315,10 +11326,10 @@ const lgLeft = (e) => lgMaybe(e) || !!(e?.inflight || e?.landed || e?.hold);
 // In the balance's notes: waiting for the notes (by their deposit addresses in the history), the offer once they landed, or
 // past a day only said.
 const lgLaterSay = () => (S.busy ? '' : lgLater().map((x) => {
-  const what = `${fmt(BigInt(x.a))} ETH to ${x.name || short(x.to, 8)}`, W = cur().W, drop = html` <button class="link" type="button" data-pl-drop="${x.id}">Dismiss</button>`;
-  return Date.now() - x.at > 86_400_000 ? html`<p class="note">Not paid: ${what}. Its note moved in over a day ago.${drop}</p>`
+  const what = `${fmt(BigInt(x.a))} ETH to ${x.name || short(x.to, 8)}`, W = cur().W, drop = html` ${BTN_LINK} data-pl-drop="${x.id}">Dismiss</button>`;
+  return Date.now() - x.at > 86_400_000 ? html`${NOTE}Not paid: ${what}. Its note moved in over a day ago.${drop}</p>`
     : W && x.b.every((i) => W.history().some((r) => r.box === i)) ? html`<div class="callout"><span>Your note landed. Finish paying ${what}?${drop}</span><button class="btn sm" type="button" data-pl-go="${x.id}">Finish paying</button></div>`
-    : html`<p class="note">${what} waits for your note to land (a few minutes).${drop}</p>`;
+    : html`${NOTE}${what} waits for your note to land (a few minutes).${drop}</p>`;
 }));
 // Finish paying: the fee quoted now, the name read again against the address kept, then sent as Send sends.
 document.addEventListener('click', (e) => {
@@ -11344,11 +11355,11 @@ function lgAskForm(n, pasted, left = false) {
   const ask = LG.ask;
   if (!ask) return;
   ask.hidden = false;
-  mount(ask, html`${pasted != null ? html`<div class="lbl"><span>Note</span></div><div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Note" style="width:100%;font:inherit;resize:vertical;border:0;background:none;padding:12px 14px"></textarea></div>` : ''}
-    <div class="lbl"><span>To</span><span>${pasted != null ? 'empty: your deposit address' : ''}</span></div>
-    <div class="amt text"><input id="lg-to" placeholder="0x… or name.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="To" data-1p-ignore data-lpignore="true"></div>
-    <p class="note">${left ? `Sent from the note’s one-time address, which pays its own gas. This browser sends it, so a node sees your connection beside it.${lgSigns([n])}` : pasted != null ? 'The note stays in this page; nothing is signed by your wallet.' : 'As ETH. To take it as a token, use Withdraw.'}</p>
-    <div class="row"><button class="btn sm" type="button" id="lg-go">${left ? 'Send it on' : 'Withdraw'}</button><button class="btn ghost sm" type="button" id="lg-cancel">Cancel</button></div>`);
+  mount(ask, html`${pasted != null ? html`${LBL}Note</span></div><div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…"${TEXT_IN} aria-label="Note" style="width:100%;font:inherit;resize:vertical;border:0;background:none;padding:12px 14px"></textarea></div>` : ''}
+    ${LBL}To</span><span>${pasted != null ? 'empty: your deposit address' : ''}</span></div>
+    <div class="amt text"><input id="lg-to" placeholder="0x… or name.wei"${TEXT_IN} aria-label="To" data-1p-ignore data-lpignore="true"></div>
+    ${NOTE}${left ? `Sent from the note’s one-time address, which pays its own gas. This browser sends it, so a node sees your connection beside it.${lgSigns([n])}` : pasted != null ? 'The note stays in this page; nothing is signed by your wallet.' : 'As ETH. To take it as a token, use Withdraw.'}</p>
+    <div class="row"><button class="btn sm" type="button" id="lg-go">${left ? 'Send it on' : 'Withdraw'}</button>${BTN_GHOST} id="lg-cancel">Cancel</button></div>`);
   $('#lg-cancel', ask).onclick = lgCloseAsk;
   const go = $('#lg-go', ask);
   go.onclick = () => {
@@ -11405,9 +11416,9 @@ function lgExitRows(x, { swap = null } = {}) {
   // notes that went in together (one deposit, or minutes apart) and would go out together to one address: anyone can match the two sets
   const together = TC.together(x.notes), least = (lgWal(swap) ? x.total : x.total * (100n - TC.MAX_FEE_PERCENT) / 100n) + x.rest;
   return html`${kvRow(`From whole notes (${x.notes.length})`, `${fmt(x.total)} ETH`)}${x.rest > 0n ? kvRow('From ready to pay', `${fmt(x.rest, 18)} ETH`) : ''}${swap ? '' : kvRow('Arrives, at least', `${fmt(least, 6, true)} ETH`)}
-    <p class="note mute">${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : lgOff(1) ? 'Gas from the note is off for now, so your wallet sends each note and shows as the sender.' : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%; no wallet needed.`}${x.notes.length + (x.rest > 0n ? 1 : 0) > 1 && together < 2 ? ` Paid to one address together, the notes${x.rest > 0n ? ' and the part from your balance' : ''} can be linked by their timing and amounts; spreading them out over time hides them better.` : ''}${lgSigns(x.notes)}${swap || lgOff(1) ? '' : html` <button class="link" type="button" data-lg-gas>${LG.gas === 'wallet' ? 'Take the gas from the notes' : 'Pay the gas from my wallet instead'}</button>`}</p>
-    ${together > 1 ? html`<p class="note warn">${together} of these notes went in together, in one deposit or minutes apart. Taken out together to one address, anyone can match the two. Take one now and the rest later, or send them to different addresses. <button class="link" type="button" id="lg-one" data-amt="${plain(TC.poolOf(x.notes[0].pool).denomination)}">Take one now</button></p>` : ''}
-    ${warnText ? html`<p class="note warn">${warnText}</p>` : ''}`;
+    ${NOTE_MUTE}${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : lgOff(1) ? 'Gas from the note is off for now, so your wallet sends each note and shows as the sender.' : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%; no wallet needed.`}${x.notes.length + (x.rest > 0n ? 1 : 0) > 1 && together < 2 ? ` Paid to one address together, the notes${x.rest > 0n ? ' and the part from your balance' : ''} can be linked by their timing and amounts; spreading them out over time hides them better.` : ''}${lgSigns(x.notes)}${swap || lgOff(1) ? '' : html` ${BTN_LINK} data-lg-gas>${LG.gas === 'wallet' ? 'Take the gas from the notes' : 'Pay the gas from my wallet instead'}</button>`}</p>
+    ${together > 1 ? html`${NOTE_WARN}${together} of these notes went in together, in one deposit or minutes apart. Taken out together to one address, anyone can match the two. Take one now and the rest later, or send them to different addresses. ${BTN_LINK} id="lg-one" data-amt="${plain(TC.poolOf(x.notes[0].pool).denomination)}">Take one now</button></p>` : ''}
+    ${warnText ? html`${NOTE_WARN}${warnText}</p>` : ''}`;
 }
 // Gas from the wallet or from the notes, chosen in a receipt for this visit only: a paymaster's hiccup must not send later notes
 // from the wallet.
@@ -11459,9 +11470,9 @@ function lgIntakeCard(f) {
     mount(host, html`<details ${st.open ? 'open' : ''}><summary class="note">Make whole notes from ready-to-pay ETH</summary>
       <div class="amt text"><input id="lg-iamt" inputmode="decimal" placeholder="ETH to move into notes" autocomplete="off" aria-label="ETH to move into notes" value="${st.amount}"></div>
       ${p?.noteCount ? html`${p.notes.map((n) => kvRow(`${n.count} × ${TC.ethWords(n.denomination)} ETH`, 'whole notes'))}${p.remainder ? kvRow(`${fmt(p.remainder, 18)} ETH`, 'stays ready to pay') : ''}
-        ${have != null && have < total ? html`<p class="note err">What is ready to pay holds ${fmt(have, 6, true)} ETH, less than ${fmt(total)} ETH.</p>` : ''}
-        <div class="lbl"><span>Sent by</span><span><select id="lg-ivia" aria-label="Who sends it"><option value="relay" ${st.via === 'relay' ? 'selected' : ''}>the relay (a fee for each note)</option><option value="wallet" ${st.via === 'wallet' ? 'selected' : ''}>my wallet (it shows as the sender)</option></select></span></div>
-        <button class="btn ghost" type="button" id="lg-igo" ${have != null && have < total ? 'disabled' : ''}>Move ${fmt(total)} ETH into ${p.noteCount} ${p.noteCount === 1 ? 'note' : 'notes'}</button>` : html`<p class="note">${wei ? `Less than the smallest note, ${TC.ethWords(lgSmallest() || 10n ** 17n)} ETH.` : 'Move part of your balance into whole notes. The relay sends it, so no wallet of yours shows.'}</p>`}
+        ${have != null && have < total ? html`${NOTE_ERR}What is ready to pay holds ${fmt(have, 6, true)} ETH, less than ${fmt(total)} ETH.</p>` : ''}
+        ${LBL}Sent by</span><span><select id="lg-ivia" aria-label="Who sends it"><option value="relay" ${st.via === 'relay' ? 'selected' : ''}>the relay (a fee for each note)</option><option value="wallet" ${st.via === 'wallet' ? 'selected' : ''}>my wallet (it shows as the sender)</option></select></span></div>
+        <button class="btn ghost" type="button" id="lg-igo" ${have != null && have < total ? 'disabled' : ''}>Move ${fmt(total)} ETH into ${p.noteCount} ${p.noteCount === 1 ? 'note' : 'notes'}</button>` : html`${NOTE}${wei ? `Less than the smallest note, ${TC.ethWords(lgSmallest() || 10n ** 17n)} ETH.` : 'Move part of your balance into whole notes. The relay sends it, so no wallet of yours shows.'}</p>`}
     </details>`);
     const i = $('#lg-iamt', host);
     i.oninput = () => { st.amount = i.value; const pos = i.selectionStart; draw(); const j = $('#lg-iamt', host); j.focus(); j.setSelectionRange(pos, pos); };

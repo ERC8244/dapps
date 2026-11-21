@@ -6820,6 +6820,7 @@ const sameNote = (a) => (cur().W?.history().some((r) => r.ext && BigInt(r.ext) =
 // → { x, p } when it can be paid as shown, else null (said why).
 function outRows(say, tab, a, fee, bal, where, d) {
   const x = lgExitPlan(a);
+  lgTreeSoon(x?.notes[0]);
   // the relay line is about the part paid from the balance: with the whole amount from notes (each pays its own gas) it says nothing true
   const rt = $('#form .route'); if (rt) rt.hidden = !!(x && x.rest === 0n);
   if (x && x.rest === 0n) { say(html`${where}${lgExitRows(x)}${staysRow(bal, null, x)}${d.lines}${sameNote(a)}`); return { x }; }
@@ -10311,6 +10312,8 @@ const TC = (() => {
       return !!rc?.logs?.some((l) => { const x = lc(l.address) === lc(pool.address) && withdrawalOf(l); return x?.nh === b32(note.nullifierHash) && x.to === lc(to); });
     };
     // Sent from the wallet, which pays the gas and shows as the sender; the recipient gets the whole note.
+    // The pool's tree built ahead into `prover` and `cache` (the same read a withdrawal makes), so the press finds it there.
+    const warm = ({ noteText, prover, leaves = poolLeaves, caches = CACHES, cache }) => readyToWithdraw({ noteText, recipient: '0x000000000000000000000000000000000000dEaD', prover, onStep: () => {}, leaves, caches, cache }).then(() => true, () => false);
     async function withdraw({ noteText, recipient, prover, onStep = () => {}, leaves = poolLeaves, caches = CACHES, confirm = null, cache = null }) {
       const { note, pool, root, preimageHex } = await readyToWithdraw({ noteText, recipient, prover, onStep, leaves, caches, cache });
       onStep({ step: 'prove' });
@@ -10394,7 +10397,7 @@ const TC = (() => {
       if (c && b32(secrets.commitment) !== lc(c)) throw new Error(s === 'w' ? 'This note was made by another wallet: connect that one to take it out.' : 'This note was made under another sign-in: sign in with that one to take it out.');
       return noteString(p.denomination, secrets.preimage);
     }
-    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
+    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, warm, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
   }
 
   // ---- what the page shows about a note ----
@@ -11211,8 +11214,25 @@ const lgExitSaid = (s) => (s.step === 'read' ? (s.note ? 'the deposit history ca
 
 // One note out, inside act(). `n`: a stored note or { text }; `to`: an address; `swap`: { t (token), slip } for a token.
 // `confirm(info)` → bool is asked once the fee is fixed. → { receive, route, hash, spent, account }
+// A note's pool tree built ahead in a prover of its own while a withdrawal of it is on screen (an amount and an address in:
+// the read is the one the press makes), and that prover, tree loaded, handed to the press. A note whose text needs the
+// wallet's signature waits for the press. Let go after five idle minutes.
+const LG_AHEAD = { prover: null, busy: null, at: 0 };
+let lgAheadT = 0;
+function lgTreeSoon(n) {
+  clearTimeout(lgAheadT);
+  if (!n || (!n.text && (!n.s || n.s === 'w'))) return;
+  lgAheadT = setTimeout(() => {
+    if (S.busy || LG_AHEAD.busy || (LG_AHEAD.prover && lc(String(LG_TREES.loaded)) === lc(n.pool))) return;
+    const prover = (LG_AHEAD.prover ||= lgProver());
+    LG_AHEAD.at = Date.now();
+    LG_AHEAD.busy = lgText(S.chain, () => {}, n).then((noteText) => lgFlow().warm({ noteText, prover, caches: lgCaches(), cache: LG_TREES })).catch(() => false).finally(() => { LG_AHEAD.busy = null; });
+    setTimeout(() => { if (LG_AHEAD.prover === prover && !LG_AHEAD.busy && Date.now() - LG_AHEAD.at >= 300_000) { prover.close(); LG_AHEAD.prover = null; LG_TREES.loaded = null; } }, 300_500);
+  }, 1500);
+}
+const lgAheadTake = async () => { const p = LG_AHEAD.prover; if (!p) return null; await LG_AHEAD.busy; LG_AHEAD.prover = null; return p; };
 async function lgExitOne(c, step, n, to, { confirm, swap = null, prover = null, wal = lgWal(swap) } = {}) {
-  const flow = lgFlow(), own = prover || lgProver();
+  const flow = lgFlow(), own = prover || (await lgAheadTake()) || lgProver();
   try {
     const text = await lgText(c, step, n);
     const caches = lgCaches();

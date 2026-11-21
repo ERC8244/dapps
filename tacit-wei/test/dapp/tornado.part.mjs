@@ -551,6 +551,20 @@ console.log('a note out: spent only as the chain shows it, paid to this operatio
     eq(calls.some((c) => c[2] === KNOWN && lc(c[1]) === lc(pool.address)), true, 'a moved last root: the pool is asked whether it knows the root');
     last.root = ROOT;
   });
+  await test('a tree built ahead (warm) is the one the press uses: one read of the leaves and one build in all', async () => {
+    let loads = 0, reads = 0;
+    const counting = { ...prover, load: async (b) => { loads++; return prover.load(b); } }, cache = { pools: new Map(), loaded: null };
+    const book = { tip: async () => 100, again() {}, deposits: async () => {}, withdrawals: async () => {}, deposit: () => null, withdrawal: () => null, confirmed: async () => false };
+    const flow = TC.makeFlow({ read, book, poll: 1 }), counted = async (...a) => { reads++; return leaves(...a); };
+    eq(await flow.warm({ noteText, prover: counting, leaves: counted, caches: [], cache }), true, 'warmed');
+    const fetchImpl = async (url, init) => { const { method, id } = JSON.parse(init.body), res = (result) => Response.json({ jsonrpc: '2.0', id, result });
+      if (method === 'pimlico_getUserOperationGasPrice') return res({ standard: { maxFeePerGas: '0x77359400', maxPriorityFeePerGas: '0x5f5e100' } });
+      if (method === 'eth_estimateUserOperationGas') return res({ callGasLimit: '0x0', verificationGasLimit: '0x10000', preVerificationGas: '0x10000', paymasterVerificationGasLimit: '0x60000', paymasterPostOpGasLimit: '0x10000' });
+      if (method === 'eth_sendUserOperation') return res('0x' + 'ee'.repeat(32));
+      return res(null); };
+    await flow.withdrawSponsored({ noteText, recipient: randAddr(), prover: counting, leaves: counted, caches: [], cache, bundlers: ['https://b.example'], fetchImpl, confirm: async () => false }).catch(() => null);
+    eq(`${reads} read(s), ${loads} build(s)`, '1 read(s), 1 build(s)', 'the press built nothing again');
+  });
   await test('an operation mined with success=false counts as paid only if the note paid this recipient', async () => {
     let e = null;
     try { await run({ to: randAddr().toLowerCase(), tx: TX }, false); } catch (x) { e = x; }

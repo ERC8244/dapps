@@ -1131,6 +1131,8 @@ const TC = (() => {
       return !!rc?.logs?.some((l) => { const x = lc(l.address) === lc(pool.address) && withdrawalOf(l); return x?.nh === b32(note.nullifierHash) && x.to === lc(to); });
     };
     // Sent from the wallet, which pays the gas and shows as the sender; the recipient gets the whole note.
+    // The pool's tree built ahead into `prover` and `cache` (the same read a withdrawal makes), so the press finds it there.
+    const warm = ({ noteText, prover, leaves = poolLeaves, caches = CACHES, cache }) => readyToWithdraw({ noteText, recipient: '0x000000000000000000000000000000000000dEaD', prover, onStep: () => {}, leaves, caches, cache }).then(() => true, () => false);
     async function withdraw({ noteText, recipient, prover, onStep = () => {}, leaves = poolLeaves, caches = CACHES, confirm = null, cache = null }) {
       const { note, pool, root, preimageHex } = await readyToWithdraw({ noteText, recipient, prover, onStep, leaves, caches, cache });
       onStep({ step: 'prove' });
@@ -1214,7 +1216,7 @@ const TC = (() => {
       if (c && b32(secrets.commitment) !== lc(c)) throw new Error(s === 'w' ? 'This note was made by another wallet: connect that one to take it out.' : 'This note was made under another sign-in: sign in with that one to take it out.');
       return noteString(p.denomination, secrets.preimage);
     }
-    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
+    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, warm, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
   }
 
   // ---- what the page shows about a note ----

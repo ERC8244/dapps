@@ -5315,7 +5315,7 @@ async function keyFromWallet(say) {
   };
   const kept = first && HALF?.who === who && Date.now() - HALF.at < 600_000 ? HALF.sig : null;
   HALF = null;
-  const sig = kept || await signed(first ? 'Sign “Tacit identity” in your wallet to open your Tacit key (1 of 2: the first time on a device, it is asked twice).' : 'Sign “Tacit identity” in your wallet to open your Tacit key.');
+  const sig = kept || await signed(first ? 'Sign “Tacit identity” in your wallet to open your Tacit key (1 of 2).' : 'Sign “Tacit identity” in your wallet to open your Tacit key.');
   const P = secp.recover(keccak(cat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg)), big(sig.subarray(0, 32)), big(sig.subarray(32, 64)), sig[64] - 27);
   const [x, y] = secp.affine(P);
   if ('0x' + hex(keccak(cat(be(x), be(y))).subarray(12)) !== a) throw new Error(/^0xef0100/i.test(code) ? 'Your wallet signs like a smart-contract wallet, which cannot open a Tacit key. Use an ordinary account.' : 'That signature is from another account. Switch accounts and try again.');
@@ -5323,8 +5323,8 @@ async function keyFromWallet(say) {
   if (first) {
     HALF = { who, sig, at: Date.now() };
     // said at once: the first prompt has closed, and the old line would still say it is open while the pause runs
-    if (!kept) { say('Got the first signature. Your wallet will ask once more, to confirm (2 of 2).'); await popupClosed(); }
-    const again = await signed('Sign once more to confirm your wallet gives the same key (2 of 2, only the first time on a device).');
+    if (!kept) { say('Got the first signature. Your wallet asks once more.'); await popupClosed(); }
+    const again = await signed('Sign once more to confirm your wallet gives the same key (2 of 2).');
     HALF = null;
     if (!same(again, sig)) { DRIFT.add(who); throw new Error(DRIFTED); }
   }

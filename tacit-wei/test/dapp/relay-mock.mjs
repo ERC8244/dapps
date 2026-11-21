@@ -53,7 +53,7 @@ export function mockRelays(node, relayed, hosts) {
     if (!st || st.mode === 'down') throw new Error('unreachable');
     if (p.startsWith('/quote')) return res(200, {chainId: 1, pool: POOL, relayer: st.relayer, fee: String(st.fee), gas: 300000});
     if (p === '/reserve') return res(200, {id: 'a'.repeat(24), root: String(node.tree.root), oldRoot: String(node.tree.root), start: node.size, pending: [], expires: Math.floor(Date.now() / 1000) + 90});
-    if (p === '/cancel') return res(200, {ok: true});
+    if (p === '/cancel' || p === '/receive') return res(200, {ok: true});
     if (p === '/head') return res(200, {root: String(node.tree.root), size: node.size, pending: [], tail: {root: String(node.tree.root)}});
     if (p === '/relay') {
       relays[host] = (relays[host] || 0) + 1;

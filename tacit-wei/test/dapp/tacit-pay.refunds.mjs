@@ -37,7 +37,7 @@ const engineEnd = mod.indexOf('\n}\n', mod.indexOf('function makePoolWallet(')) 
 const names = ['boxes', 'boxIndexes', 'paidBox', 'waitC', 'boxList', 'checkBoxes', 'refundsAt', 'refundBox', 'refundIdx', 'withDest', 'routeOf', 'qA', 'qU', 'shieldRoute'];
 const parts = names.map((n) => [n, piece(n)]).filter(([, s]) => s);
 const body = `${mod.slice(0, engineEnd)}
-const REFUND_GAP_PAGE = 20, BOX_DAY = 86_400_000, ZQUOTER = '0x000000bd2db80567c23e353ca95a251c573cbf9b', BOXQ = {};
+const REFUND_GAP_PAGE = 20, BOX_DAY = 86_400_000, ZQUOTER = '0x000000bd2db80567c23e353ca95a251c573cbf9b', BOXQ = {}, BOXAGAIN = {};
 export const T = { vault: new Map(), reads: [], bal: {}, asked: [], quorum: null, S: { key: { pool: {} } }, CH: {}, W: null, PW: null };
 const S = T.S, CH = T.CH, CHAINS = [{ chainId: 1, full: 'Ethereum' }];
 const vget = (n) => (T.vault.has(n) ? JSON.parse(T.vault.get(n)) : null), vset = (n, v) => { T.vault.set(n, JSON.stringify(v)); };

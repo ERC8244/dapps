@@ -2691,7 +2691,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     }
   };
   const spend = relayed((o) => spendRaw(o)), retry = holding((...a) => retryRaw(...a)), consolidate = holding((...a) => consolidateRaw(...a)), reseal = holding((...a) => resealRaw(...a));
-  const keeperPost = async (path, body) => { const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, tried: r.headers.get('x-tried') === '1', body: await r.json().catch(() => ({})) }; };
+  const keeperPost = async (path, body, rl = null) => { const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), rl }); return { status: r.status, tried: r.headers.get('x-tried') === '1', body: await r.json().catch(() => ({})) }; };
 
   // Confirmed history from the relay's index. A page counts only if the tree it builds is one the pool has held at
   // that size, so the index cannot invent leaves. No nullifier is sent to a node to ask whether it is spent: a spend
@@ -3780,7 +3780,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // The relay that carried the last payment ({ url, relayer }; once), and the one in use for reads.
     carried: () => { const x = carried; carried = null; return x; }, relay: () => cur,
     // Asks the relay to watch a deposit address, so what arrives there moves in without anyone asking.
-    watch: (i = 0, classical = false) => keeperPost('/receive', { chainId: chain.chainId, npk: String(receiveKeys(keys, i, classical).npk), feeBps: RECEIVE_FEE_BPS }),
+    // A deposit address is given to the page's own relay (or the one set under Endpoints), whose keeper takes it in; a relay
+    // drawn for a payment's quote is not bound to watch addresses.
+    watch: async (i = 0, classical = false) => keeperPost('/receive', { chainId: chain.chainId, npk: String(receiveKeys(keys, i, classical).npk), feeBps: RECEIVE_FEE_BPS }, (await cands()).find((e) => e.own) || null),
     // What waits at deposit addresses `indexes` ({ index → wei, or null where a node did not answer), and how many
     // addresses from the first are found again from the key alone: those up to the last one used, and a gap past it.
     boxBalances: () => boxW,
@@ -5779,6 +5781,9 @@ const RPCAT = {}, rpcAt = (u) => (RPCAT[u] ||= jsonRpc(() => [u]));
 // Not the first of three or more (it reads the head with the key's other reads), as quorum does.
 const oneNode = async (c, method, params) => { const all = ownNodes(c), nodes = all.length > 2 ? all.slice(1) : all, at = Math.floor(Math.random() * nodes.length); try { return await rpcAt(nodes[at])(method, params); } catch (e) { if (nodes.length < 2) throw e; return rpcAt(nodes[(at + 1) % nodes.length])(method, params); } };
 const BOXQ = {}, BOX_DAY = 86_400_000;
+// A funded address found waiting is given to the relay again (one an earlier relay took may never be taken in): once in
+// a visit, then at most every half hour.
+const BOXAGAIN = {};
 function checkBoxes(c, all = false, deep = false) {
   const st = CH[c.chainId], W = st.W, q = (BOXQ[c.chainId] ||= { busy: null, next: 0, full: false, fast: false });
   if (!W || !S.key) return Promise.resolve();
@@ -5805,7 +5810,7 @@ function checkBoxes(c, all = false, deep = false) {
       // One node asked, and another if it did not answer: a flaky node does not leave the whole scan unmarked.
       const v = await oneNode(c, 'eth_getBalance', [W.receiveBox(i, cl), 'latest']).then(BigInt, () => null), f = cl ? 'boxWc' : 'boxW';
       if (v == null) ok = false; else if (v !== (st[f]?.[i] ?? 0n)) { st[f] = { ...st[f], [i]: v }; paint(); }
-      if (v > 0n && !cl) watchBox(i, [c]);
+      if (v > 0n && !cl) { const k = `${c.chainId}:${i}`, again = Date.now() - (BOXAGAIN[k] ?? 0) > 1_800_000; if (again) BOXAGAIN[k] = Date.now(); watchBox(i, [c], again); }
       await sleep(q.fast ? 100 + Math.random() * 300 : 800 + Math.random() * 2_500);
     }
     return ok;

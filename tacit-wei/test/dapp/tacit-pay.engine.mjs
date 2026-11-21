@@ -632,6 +632,9 @@ console.log('\nthe registry copy kept in this browser, checked again as it is re
     const h = await pay(A, relay);
     ok(typeof h === 'string' && relay.relays['b.test'] === 1 && !relay.relays['seed.test'] && !relay.relays['c.test'], 'the payment went through the cheapest relay (b), not the seed at five times the fee nor c at ten', `${h?.message ?? ''} ${JSON.stringify(relay.relays)}`);
     ok(A.W.carried()?.url === U('b.test'), 'and the wallet says which relay carried it');
+    // a deposit address is given to the page's own relay, not to the one that carried the last payment
+    const r = await A.W.watch(3);
+    ok(r.status === 200 && relay.log.filter((x) => x.endsWith(' /receive')).join() === 'seed.test /receive', 'a deposit address is registered with the page\'s own relay, not the one drawn for the payment', relay.log.filter((x) => /receive/.test(x)).join());
     relay.restore();
   }
   console.log('\na relay that quotes another address, or a fee over the limit: not used');

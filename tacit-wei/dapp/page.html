@@ -6778,7 +6778,7 @@ function formWithdraw(f) {
     const a0 = parseEth(amt.value), ps = partsOf(a0), a = ps ? ps[0] : a0, raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
     shown = fee;
     rc.hidden = true; go.disabled = true; go.textContent = label;
-    const say = (v) => { mount(rc, html`${v}${ps ? kvRow(`Later, in ${ps.length - 1} parts`, `${fmt(a0 - a, 18)} ETH`) : ''}`); rc.hidden = false; };
+    const say = (v) => { mount(rc, html`${v}${ps ? kvRow(`Later, in ${ps.length - 1} part${ps.length > 2 ? 's' : ''}`, `${fmt(a0 - a, 18)} ETH`) : ''}`); rc.hidden = false; };
     // A wallet deposit not confirmed yet holds a withdrawal only when the wallet would send it too.
     if (sentHolds(c) && !(S.sent.dep && viaOf(tab) !== 'self')) { say(sentNote(c)); return sentWire(renderForm, $('#f-rcpt')); }
     const w = destCheck(raw, c, say, go);

@@ -163,6 +163,8 @@ export async function open(env, {seed = {}, connected = false, viewport = {width
   const cors = {'access-control-allow-origin': '*'};
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = new URL(req.url());
+    // the proving key from ARTIFACTS (a folder holding transact.wasm and transact_final.zkey), as forms-lib serves it
+    if (process.env.ARTIFACTS && /\/(transact\.wasm|transact_final\.zkey)$/.test(url.pathname)) return route.fulfill({status: 200, headers: cors, body: fs.readFileSync(`${process.env.ARTIFACTS}/${url.pathname.split('/').pop()}`)});
     if (/onrender\.com$/.test(url.host)) {
       const m = /^\/([^/]+)\/evm-pool\/keeper(.*)$/.exec(url.pathname) || [], path = m[2] || '', P = n.eth;
       const json = (status, body) => route.fulfill({status, contentType: 'application/json', headers: cors, body: JSON.stringify(body)});
@@ -170,6 +172,7 @@ export async function open(env, {seed = {}, connected = false, viewport = {width
       if (!n.relayUp) return json(503, {error: 'offline'});
       if (path.startsWith('/quote')) return json(200, {chainId: 1, pool: P.pool, relayer: RELAYERS[1], fee: String(n.fee), gas: '400000', receiveMin: '400000000000000'});
       if (path === '/receive' || path === '/cancel' || path === '/deposit') return json(200, {ok: true});
+      if (path === '/relay') { const {tx} = JSON.parse(req.postData()); return json(200, {txHash: P.apply({...tx, pub: tx.publicInputs, ext: tx.extAmount})}); }
       return json(404, {error: 'no'});
     }
     if (req.method() === 'POST') {

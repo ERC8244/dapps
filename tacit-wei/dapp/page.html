@@ -5965,7 +5965,7 @@ function paintBal() {
   const flying = S.key && st.W ? st.W.inflight() : [];
   const flyTo = (p) => (p.why?.swap ? `as ${p.why.swap.sym} to ${short(p.why.dest, 8)}` : `to ${short(p.to, 8)}`);
   const flyLine = (x) => html`<div class="callout held"><span>${x.pay.merge ? html`A step combining parts of your balance into one of ${fmt(BigInt(x.pay.amount))} ETH` : html`${x.pay.kind === 'send' ? 'A payment' : 'A withdrawal'} of ${fmt(BigInt(x.pay.amount))} ETH ${flyTo(x.pay)}`} may still land on ${c.full}. Until the network shows whether it did, ${fmt(x.held)} ETH of your balance is held for it, so it cannot be paid twice.</span><span style="display:grid;gap:8px">${S.busy ? '' : heldButtons(c, x.id, 'btn ghost sm')}</span></div>`;
-  mount($('#bal-note'), html`${stuck.map((e) => stuckLine(c, e))}${flying.map(flyLine)}${flying.length && st.W?.storageFull() ? html`<p class="note warn">This browser is out of room to save, so what is held above is kept only while this tab stays open.</p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${w > 0n ? (relayTakes(c, w) ? html`<p class="note">${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}; the relay moves it into your balance within minutes. <button class="link" type="button" id="bal-take">See them</button></p>` : html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>`) : ''}${pointNudge(c)}${pqAsk() && !pqGate() && (st.bal > 0n || lgHeld() > 0n) ? html`<p class="note">Post-quantum privacy: keep new payments to you sealed under 24 words of your own. Your current balance can be sealed after, a relay fee each step. <button class="link" type="button" id="bal-pq">Turn it on</button> · <button class="link" type="button" id="bal-pq-later">Not now</button></p>` : ''}`);
+  mount($('#bal-note'), html`${stuck.map((e) => stuckLine(c, e))}${flying.map(flyLine)}${flying.length && st.W?.storageFull() ? html`<p class="note warn">This browser is out of room to save, so what is held above is kept only while this tab stays open.</p>` : ''}${cp ? html`<p class="note">Your balance here is in ${cp.parts} parts${cp.parts <= 9 ? '; a payment combines the ones it needs' : ''}. <button class="link" type="button" id="bal-combine">Combine them now</button>: ${cp.steps} steps${fee == null ? '' : fee ? `, fee ${fmt(cp.cost)} ETH in all` : ', your wallet pays the gas'}.</p>${relayOf(c) && viaOf('send') !== 'self' ? html`<p class="note"><button class="link" type="button" id="bal-combine-self">Combine from my wallet</button></p>` : ''}` : ''}${lgLaterSay()}${w > 0n ? (relayTakes(c, w) ? html`<p class="note">${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}; the relay moves it into your balance within minutes. <button class="link" type="button" id="bal-take">See them</button></p>` : html`<div class="callout"><span>${fmt(w)} ETH is waiting at your deposit addresses on ${c.full}.</span><button class="btn ghost sm" type="button" id="bal-take">See them</button></div>`) : ''}${pointNudge(c)}${pqAsk() && !pqGate() && (st.bal > 0n || lgHeld() > 0n) ? html`<p class="note">Post-quantum privacy: keep new payments to you sealed under 24 words of your own. Your current balance can be sealed after, a relay fee each step. <button class="link" type="button" id="bal-pq">Turn it on</button> · <button class="link" type="button" id="bal-pq-later">Not now</button></p>` : ''}`);
   const bq = $('#bal-pq'), bl = $('#bal-pq-later');
   if (bq) bq.onclick = () => { if (S.busy) return; PQUI.root ||= randomBytes(32); Object.assign(PQUI, { step: 'new', err: '' }); openSheet(); };
   if (bl) bl.onclick = pqLater;
@@ -6602,13 +6602,15 @@ function formSend(f) {
     done(c, h, `Sent ${fmt(a, 18)} ETH privately.`);
   };
   // the notes moved in first when the button said so, then the payment
+  // (kept as a payment to finish later from the first note out, in case the tab sleeps or closes before the notes land)
   const moveThen = async (step, seen, fee0, notes) => {
     if (!seen || seen.error || seen.pending || seen.addr) throw new Error(seen?.error || 'Enter who to pay.');
-    const a = parseEth(amt.value);
+    const a = parseEth(amt.value), rec = { a: String(a), to: seen.to || to.value.trim(), name: seen.name || '', b: [], at: Date.now() };
     let n = 0;
     try {
-      await lgMoveThen(c, step, notes, () => { const f = feeOf(tab); return f != null && !!plan(a, f); }, (k) => { n = k; });
-      await pay(step, seen, fee0);
+      await lgMoveThen(c, step, notes, () => { const f = feeOf(tab); return f != null && !!plan(a, f); }, (k, i) => { n = k; rec.id ||= 'b' + i; rec.b.push(i); lgLaterPut(rec); });
+      if (!lgLaterTake(rec.id)) throw new Error(PL_GONE);
+      await pay(step, seen, fee0).catch((e) => { if (!lgLeft(e)) lgLaterPut(rec); throw e; });
     } catch (x) { if (n) throw lgSays(x, `${n} of ${notes.length} ${notes.length === 1 ? 'note' : 'notes'} moved into your balance;`); throw x; }
   };
   go.onclick = () => { const seen = target(), fee0 = shown, notes = mv; act(go, (step) => (notes ? moveThen(step, seen, fee0, notes) : pay(step, seen, fee0))); };
@@ -11147,16 +11149,16 @@ async function lgFreshBox(c, label, step) {
   const bx = boxes(); bx.issued.push({ i, label, at: Date.now() }); vset('boxes', bx);
   if (!boxes().issued.some((x) => x.i === i)) throw new Error(BOX_NOT_KEPT);
   if (!(await watchBox(i, [c], true))) { unissue(i); throw new Error('The relay did not take the new deposit address, so nothing was sent. Try again in a moment.'); }
-  return { to: walletOn(c).receiveBox(i), back: (e) => { if (e?.cancelled || !(e?.unsure || e?.stranded || lgMaybe(e))) unissue(i); throw e; } };
+  return { i, to: walletOn(c).receiveBox(i), back: (e) => { if (e?.cancelled || !(e?.unsure || e?.stranded || lgMaybe(e))) unissue(i); throw e; } };
 }
 // A note out to a new deposit address of this key, which the relay moves into the balance. `confirm(info, to)` → bool.
 // Gas comes from the note whatever this visit chose: a wallet sending it would show beside the deposit address.
 async function lgMoveIn(c, step, n, confirm) {
   if (!S.key) throw new Error('Sign in first: the note goes to a deposit address of yours, which your key makes.');
-  const { to, back } = await lgFreshBox(c, `Note ${n.nonce}`, step);
+  const { i, to, back } = await lgFreshBox(c, `Note ${n.nonce}`, step);
   const out = await lgExitOne(c, step, n, to, { confirm: (i) => confirm(i, to), wal: lgOff(1) }).catch((e) => { lgDoubt(n, e); return back(e); });
   lgLog({ k: 'move', v: TC.poolOf(n.pool).denomination, r: out.receive, h: out.hash, pm: out.paymaster });
-  return out;
+  return { ...out, box: i };
 }
 function lgMove(btn, n) {
   return act(btn, async (step, c) => {
@@ -11182,22 +11184,60 @@ const lgCoverSay = (notes, bal) => html`<p class="note">${fmt(bal)} ETH is ready
 const lgCoverGo = (notes) => (notes.length === 1 ? `Move a ${TC.ethWords(TC.poolOf(notes[0].pool).denomination)} ETH note in, then pay` : `Move ${notes.length} notes in, then pay`);
 // Said before the press when a note was made with the wallet's signature: the wallet signs again to open it.
 const lgSigns = (notes) => (notes.some((n) => (n.s || 'w') === 'w') ? ' Your wallet signs a message to open each note made with its signature; it sends nothing.' : '');
-// Inside act(): the notes moved in one by one (each within the notes' fee ceiling), then a wait until `ready()`.
+// Inside act(): the notes moved in one by one (each within the notes' fee ceiling), then a wait until `ready()`: 120 rounds
+// of ten seconds, counted rather than timed, so a tab that slept picks up where it was. `moved(k, box)` after each note.
 async function lgMoveThen(c, step, notes, ready, moved = () => {}) {
   for (let k = 0; k < notes.length; k++) {
     const n = notes[k], tag = (m) => step(notes.length > 1 ? `note ${k + 1} of ${notes.length}: ${m}` : m);
     const out = await lgMoveIn(c, tag, n, ({ fee, denomination }) => TC.withinCeiling(fee, denomination));
     lgSent(n, out);
-    moved(k + 1);
+    moved(k + 1, out.box);
   }
   lgLoad();
-  for (const end = Date.now() + 20 * 60_000; !ready();) {
-    if (Date.now() > end) throw new Error('The note is out and on its way into your balance. Press Send again once it shows there.');
+  for (let k = 0; !ready(); k++) {
+    if (k >= 120) throw new Error('The note is on its way in; the balance offers to finish once it lands.');
     step('waiting for the relay to move it into your balance (a few minutes)');
     await new Promise((r) => setTimeout(r, 10_000));
     await syncChain(c, true).catch(() => {});
   }
 }
+// ── a payment waiting on notes moved in ──
+// Send's "move in, then pay" keeps what it pays once a note is out, sealed in the vault: the payee as shown (its name and
+// address text), the amount, and the deposit addresses the notes went to (the first names the record). Once the relay has
+// taken those in, the balance offers to finish it, whether or not the tab slept or closed meanwhile; a day on, it is only
+// said, with Dismiss. A press takes the record out first, so another tab or press finds nothing to pay; a payment that did
+// not leave puts it back.
+const lgLater = () => (S.key && vget('later')) || [];
+const lgLaterPut = (x) => vset('later', [...lgLater().filter((y) => y.id !== x.id), x]);
+const lgLaterTake = (id) => { const all = lgLater(), x = all.find((y) => y.id === id); if (x) vset('later', all.filter((y) => y !== x)); return x; };
+const PL_GONE = 'Already paid or dropped.';
+// A payment's error after which it may have left (held, in flight or landed): its record is not put back.
+const lgLeft = (e) => lgMaybe(e) || !!(e?.inflight || e?.landed || e?.hold);
+// In the balance's notes: waiting for the notes (by their deposit addresses in the history), the offer once they landed, or
+// past a day only said.
+const lgLaterSay = () => (S.busy ? '' : lgLater().map((x) => {
+  const what = `${fmt(BigInt(x.a))} ETH to ${x.name || short(x.to, 8)}`, W = cur().W, drop = html` <button class="link" type="button" data-pl-drop="${x.id}">Dismiss</button>`;
+  return Date.now() - x.at > 86_400_000 ? html`<p class="note">Not paid: ${what}. Its note moved in over a day ago.${drop}</p>`
+    : W && x.b.every((i) => W.history().some((r) => r.box === i)) ? html`<div class="callout"><span>Your note landed. Finish paying ${what}?${drop}</span><button class="btn sm" type="button" data-pl-go="${x.id}">Finish paying</button></div>`
+    : html`<p class="note">${what} waits for your note to land (a few minutes).${drop}</p>`;
+}));
+// Finish paying: the fee quoted now, the name read again against the address kept, then sent as Send sends.
+document.addEventListener('click', (e) => {
+  const d = e.target.closest?.('[data-pl-drop]'), g = e.target.closest?.('[data-pl-go]'), c = S.chain;
+  if (S.busy || !(d || g)) return;
+  if (d) { lgLaterTake(d.dataset.plDrop); return paintBal(); }
+  act(g, async (step) => {
+    const fee = feeOf('send'), via = viaOf('send');
+    if (fee == null) throw new Error('Reading the fee. Try again in a moment.');
+    const x = lgLaterTake(g.dataset.plGo), t = x && { r: parseRecipient(x.to), name: x.name };
+    if (!x) throw new Error(PL_GONE);
+    try {
+      if (t.name) await pinName(t);
+      if (via === 'self') await walletReady(c, step);
+      done(c, await walletOn(c).send({ to: t.r, amount: BigInt(x.a), via, onStep: step, expectFee: fee, plain: await pqReady(t.r), guard: t.name ? () => pinName(t) : null }), `Sent ${fmt(BigInt(x.a), 18)} ETH privately.`);
+    } catch (e) { if (!lgLeft(e)) lgLaterPut(x); throw e; }
+  });
+});
 function lgAskOut(n) { lgAskForm(n, null); }
 function lgAskPaste() { lgAskForm(null, ''); }
 // The small form under the notes: an address (or name) and, for a pasted note, the note.

@@ -4,7 +4,9 @@
    and Withdraw taking whole notes first, Max counting them, what is left with them counted, and notes that went in together
    named; a key opened with no wallet finding and keeping its notes; Activity listing a split shield; gas from the wallet as a
    link for the visit, and the wallet sending notes while the registry has gas from the note off; ETH at a one-time deposit
-   address said to be on its way in by the relay.
+   address said to be on its way in by the relay; a payment waiting on a note moved in, kept across reloads and tabs,
+   offered once the note lands, paid exactly once, refused when its name moved, and only said after a day.
+   (ARTIFACTS=<folder with transact.wasm and transact_final.zkey> also proves and sends the finished payment.)
 
    Usage: node test/dapp/tacit-wei.onebalance.mjs     (PAGE=dapp/page.html runs it against the source)   */
 import * as H from './forms-lib.mjs';
@@ -222,6 +224,73 @@ console.log('8. ETH at a one-time deposit address (a note moved in): the relay t
   check(/0\.0997 ETH is waiting at your deposit addresses on Ethereum; the relay moves it into your balance within minutes/.test(bal) && !(await p.$('#bal-note .callout')), 'the balance line says the relay moves it in (a line, not a call to act)', bal);
   check(env.C[1].sent.length === 0, 'nothing sent');
   noErrors(p, 'scenario 8');
+  await L.close(p);
+}
+
+// What Send keeps once a note is out on its way in ("move in, then pay"): sealed in the vault under the key, as the page does.
+const {lib: ENG} = await import('./engine-mock.mjs');
+const KEYS = H.poolKeys(Buffer.from(KEY, 'hex'));
+const later = (recs) => { const k = ENG.slotOf(KEYS.v, 'vault:later'); return {[k]: ENG.sealState(KEYS.v, JSON.stringify(recs), k)}; };
+// The relay taking in `value` from one-time deposit address `i`: the note's leaf in the pool and the router's Received log.
+function sweep(env, i, value) {
+  const n = env.C[1], P = n.eth, npk = ENG.receiveKeys(KEYS, i).npk, box = H.receiveBoxAddress(H.ROUTER, npk), rho = ENG.receiveRho(box, 0n), first = P.size;
+  const h = P.transact({nf: [0n, 0n], outs: [ENG.leafOf(H.poolAsset(1, H.POOL), value, npk, rho), null], ext: value});
+  P.logs.push({address: H.ROUTER, topics: [ENG.T_RECEIVED, '0x' + box.slice(2).toLowerCase().padStart(64, '0'), H.h32(0n)], data: H.coder.encode(['uint256', 'uint256', 'uint256', 'uint256'], [first, value, rho, 0n]), blockNumber: '0x' + n.tip.toString(16), transactionHash: h, logIndex: '0x1'});
+}
+const relays = (env) => env.relayLog.filter((x) => x.path === '/relay').length;
+const noteOf = (p) => txt(p, '#bal-note');
+
+console.log('9. a payment waiting on a note moved in: kept across a reload, offered once the note lands, paid once across two tabs');
+{
+  const env = mkEnv(); L.lgState(env);
+  env.C[1].deposit(KEY, 2n * E / 100n);
+  const n0 = await L.noteFor(0, P01); env.tc.deposit(n0.pool, n0.c);
+  const seed = {[notesKey]: JSON.stringify([L.metaOf(n0)]), ...later([{id: 'b1', a: String(5n * E / 100n), to: DEV_TACIT1, name: '', b: [1], at: Date.now()}])};
+  const p = await L.open(env, {connected: true, seed});
+  await signIn(p); await ready(p);
+  check(await until(p, () => /0\.05 ETH to tacit1\S+ waits for your note to land/.test(document.querySelector('#bal-note')?.textContent || ''), null, 15e3) && !(await p.$('[data-pl-go]')), 'before the note lands: said, nothing to press yet', await noteOf(p));
+  sweep(env, 1, 997n * E / 10000n);
+  await p.reload(); await p.waitForTimeout(500);
+  await signIn(p); await ready(p);
+  check(await until(p, () => document.querySelectorAll('#bal-note [data-pl-go]').length === 1, null, 30e3), 'after a reload, the note landed: "Finish paying", once', await noteOf(p));
+  check(/Your note landed\. Finish paying 0\.05 ETH to tacit1/.test(await noteOf(p)), 'saying what it pays and to whom', await noteOf(p));
+  const p2 = await p.context().newPage(); p2.errors = []; p2.on('pageerror', (e) => p2.errors.push(String(e)));
+  await p2.goto(p.url()); await p2.waitForTimeout(300); await signIn(p2); await ready(p2);
+  check(await until(p2, () => !!document.querySelector('#bal-note [data-pl-go]'), null, 30e3), 'a second tab offers it too');
+  if (process.env.ARTIFACTS) {
+    await p.click('#bal-note [data-pl-go]');
+    check(await until(p, () => /Sent 0\.05 ETH privately/.test(document.querySelector('#status')?.textContent || ''), null, 300e3), 'pressed: paid', await txt(p, '#status'));
+    check(relays(env) === 1 && !(await p.$('[data-pl-go]')), 'one payment through the relay, and the offer gone', `${relays(env)} | ${await noteOf(p)}`);
+    await p2.click('#bal-note [data-pl-go]');
+    check(await until(p2, () => /Already paid or dropped/.test(document.querySelector('#status')?.textContent || ''), null, 15e3) && relays(env) === 1, 'the second tab\'s press pays nothing again', await txt(p2, '#status'));
+    await p.reload(); await p.waitForTimeout(500); await signIn(p); await ready(p); await p.waitForTimeout(1500);
+    check(!(await p.$('[data-pl-go]')) && !/0\.05 ETH to/.test(await noteOf(p)), 'and after a reload nothing is offered again', await noteOf(p));
+  } else H.info('ARTIFACTS not set: the finished payment is not proved here');
+  noErrors(p, 'scenario 9');
+  await p2.close();
+  await L.close(p);
+}
+
+console.log('10. a waiting payment whose name moved is refused and kept; one a day old is only said, and goes on Dismiss');
+{
+  const env = mkEnv(); L.lgState(env);
+  env.C[1].deposit(KEY, 2n * E / 100n);
+  env.setName('pal.wei', {text: H.KEY_TACIT1, addr: PAYEE});
+  sweep(env, 3, 997n * E / 10000n);
+  const recs = [{id: 'b2', a: String(E / 100n), to: DEV_TACIT1, name: '', b: [2], at: Date.now() - 25 * 3600e3}, {id: 'b3', a: String(E / 100n), to: DEV_TACIT1, name: 'pal.wei', b: [3], at: Date.now()}];
+  const p = await L.open(env, {connected: true, seed: later(recs)});
+  await signIn(p); await ready(p);
+  check(await until(p, () => /Not paid: 0\.01 ETH to tacit1\S+\. Its note moved in over a day ago/.test(document.querySelector('#bal-note')?.textContent || ''), null, 15e3), 'a day on: "Not paid", with Dismiss', await noteOf(p));
+  check(await until(p, () => !!document.querySelector('#bal-note [data-pl-go="b3"]'), null, 30e3), 'the landed one to pal.wei is offered', await noteOf(p));
+  await p.click('#bal-note [data-pl-go="b3"]');
+  check(await until(p, () => /pal\.wei now points somewhere else, so nothing was sent/.test(document.querySelector('#status')?.textContent || ''), null, 30e3) && relays(env) === 0, 'pal.wei points elsewhere now: refused, nothing sent', await txt(p, '#status'));
+  check(await until(p, () => !!document.querySelector('#bal-note [data-pl-go="b3"]'), null, 10e3), 'and kept, to finish or drop');
+  await p.click('#bal-note [data-pl-drop="b2"]');
+  check(await until(p, () => !/Not paid/.test(document.querySelector('#bal-note')?.textContent || ''), null, 5e3), 'Dismiss takes the old one away');
+  await p.reload(); await p.waitForTimeout(500); await signIn(p); await ready(p);
+  await until(p, () => !!document.querySelector('#bal-note [data-pl-go]'), null, 30e3);
+  check(!/Not paid/.test(await noteOf(p)) && !!(await p.$('[data-pl-go="b3"]')), 'after a reload: the dismissed one stays gone, the other is still offered', await noteOf(p));
+  noErrors(p, 'scenario 10');
   await L.close(p);
 }
 

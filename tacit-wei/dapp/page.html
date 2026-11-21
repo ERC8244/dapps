@@ -3958,7 +3958,7 @@ const chipView = (a) => (/^tacit1/.test(a || '') && a.length > 30 ? html`<span c
 // A notice when a payment arrives while the tab is out of sight, if asked for: the amount stays in the page (a lock screen and
 // a notification list are seen by others).
 const NOTIFY = 'tacit-wei-notify-v1', notifyOn = () => store.get(NOTIFY) === '1' && window.Notification?.permission === 'granted';
-const notifyIn = () => { if (document.hidden && notifyOn()) try { new Notification('tacit.wei', { body: 'A private payment arrived.' }); } catch { /* not shown */ } };
+const notifyIn = (body = 'A private payment arrived.') => { if (document.hidden && notifyOn()) try { new Notification('tacit.wei', { body }); } catch { /* not shown */ } };
 document.addEventListener('click', (e) => {
   if (!e.target.closest?.('#w-notify')) return;
   if (notifyOn()) { store.del(NOTIFY); return renderWalletSheet(); }
@@ -6756,6 +6756,8 @@ function formWithdraw(f) {
   mount(f, html`${seg}
     ${withdrawTo()}
     ${amountField('f-wamt', 'Amount', MAX)}
+    ${LBL}Send</span><span><select id="f-parts" aria-label="All now, or in parts over time">${['1', ...[2, 3, 4].flatMap((n) => [1, 3, 12].map((h) => `${n}|${h}`))].map((v) => html`<option value="${v}" ${v === (S.parts || '1') ? 'selected' : ''}>${v === '1' ? 'all now' : `in ${v.replace('|', ' parts over ')} h`}</option>`)}</select></span></div>
+    ${S.parts > '1' ? html`${NOTE_MUTE}The first part goes now, the rest at random times in the span. Spread out, parts are harder to tie to each other and to your deposit. Open this page again as each falls due, or keep it open.</p>` : ''}
     ${routeLine(tab)}
     ${goButton('Withdraw')}
     ${NOTE}${pal('face')}Take out any part; the rest stays private.</p>
@@ -6766,14 +6768,17 @@ function formWithdraw(f) {
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt'), label = go.textContent;
   wireMe(to);
   $('#f-max').onclick = () => { const fee = feeOf(tab); if (fee == null) return feeWait(); maxPublic(amt, maxSpend(withHeadroom(fee)) + lgOutHeld(), 'private'); };
+  $('#f-parts', f).onchange = (e) => { S.parts = e.target.value; renderForm(); };
   lgOneOn(rc, amt);
-  let shown = null;
+  // `parts`: the amounts of a withdrawal in parts (the first is what goes now), kept while the amount and count stay
+  let shown = null, parts = null;
+  const partsOf = (a) => (S.parts > '1' && a ? (parts?.k === `${a}|${S.parts}` ? parts : (parts = Object.assign(lgParts(a, +S.parts[0]), { k: `${a}|${S.parts}` }))) : null);
   FORM.check = () => {
     if (S.busy) return;
-    const a = parseEth(amt.value), raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
+    const a0 = parseEth(amt.value), ps = partsOf(a0), a = ps ? ps[0] : a0, raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
     shown = fee;
     rc.hidden = true; go.disabled = true; go.textContent = label;
-    const say = (v) => { mount(rc, v); rc.hidden = false; };
+    const say = (v) => { mount(rc, html`${v}${ps ? kvRow(`Later, in ${ps.length - 1} parts`, `${fmt(a0 - a, 18)} ETH`) : ''}`); rc.hidden = false; };
     // A wallet deposit not confirmed yet holds a withdrawal only when the wallet would send it too.
     if (sentHolds(c) && !(S.sent.dep && viaOf(tab) !== 'self')) { say(sentNote(c)); return sentWire(renderForm, $('#f-rcpt')); }
     const w = destCheck(raw, c, say, go);
@@ -6791,11 +6796,14 @@ function formWithdraw(f) {
     // since is not paid.
     const raw = to.value.trim(), shownTo = looksName(raw) ? destOf(raw, c) : null, fee0 = shown;
     act(go, async (step) => {
-      const a = parseEth(amt.value);
+      const ps = partsOf(parseEth(amt.value)), a = ps ? ps[0] : parseEth(amt.value), name = looksName(raw) ? raw.toLowerCase() : '', was = DRAFT['f-wamt'];
       if (!a) throw new Error('Enter an amount.');
       const dest = await pressDest(raw, c, shownTo);
       await destGate(c, dest);
-      return payOut(c, step, { tab, field: 'f-wamt', dest, a, fee0, name: looksName(raw) ? raw.toLowerCase() : '' });
+      // the later parts are kept once any of the first went out, each due at a random time inside its slice of the span
+      const keep = () => { if (!ps) return; const at = Date.now(), span = S.parts.slice(2) * 3_600_000; ps.slice(1).forEach((v, k) => lgLaterPut({ id: `w${at}${k}`, k: 'w', a: String(v), to: dest, name, i: k + 2, n: ps.length, due: at + Math.floor(span * (k + 1 + Math.random()) / ps.length) })); S.parts = '1'; };
+      try { await payOut(c, step, { tab, field: 'f-wamt', dest, a, fee0, name }); } catch (e) { if (lgLeft(e) || DRAFT['f-wamt'] !== was) keep(); throw e; }
+      keep();
     });
   };
 }
@@ -11372,12 +11380,39 @@ const PL_GONE = 'Already paid or dropped.';
 const lgLeft = (e) => lgMaybe(e) || !!(e?.inflight || e?.landed || e?.hold);
 // In the balance's notes: waiting for the notes (by their deposit addresses in the history), the offer once they landed, or
 // past a day only said.
-const lgLaterSay = () => (S.busy ? '' : lgLater().map((x) => {
-  const what = `${fmt(BigInt(x.a))} ETH to ${x.name || short(x.to, 8)}`, W = cur().W, drop = html` ${BTN_LINK} data-pl-drop="${x.id}">Dismiss</button>`;
-  return Date.now() - x.at > 86_400_000 ? html`${NOTE}Not paid: ${what}. Its note moved in over a day ago.${drop}</p>`
+// A withdrawal's later parts (`k`): each offered once due, the others counted in one line.
+const lgLaterSay = () => { if (S.busy) return ''; const all = lgLater(), now = Date.now(), wait = all.filter((x) => x.k && x.due > now); return [...all.filter((x) => !wait.includes(x)).map((x) => {
+  const what = `${fmt(BigInt(x.a))} ETH to ${x.name || short(x.to, x.k ? 4 : 8)}`, W = cur().W, drop = html` ${BTN_LINK} data-pl-drop="${x.id}">Dismiss</button>`;
+  return x.k ? html`<div class="callout"><span>Part ${x.i} of ${x.n} is due: ${what}.${drop}</span><button class="btn sm" type="button" data-pl-go="${x.id}">Send it now</button></div>`
+    : now - x.at > 86_400_000 ? html`${NOTE}Not paid: ${what}. Its note moved in over a day ago.${drop}</p>`
     : W && x.b.every((i) => W.history().some((r) => r.box === i)) ? html`<div class="callout"><span>Your note landed. Finish paying ${what}?${drop}</span><button class="btn sm" type="button" data-pl-go="${x.id}">Finish paying</button></div>`
     : html`${NOTE}${what} waits for your note to land (a few minutes).${drop}</p>`;
-}));
+}), wait.length ? html`${NOTE_MUTE}${wait.length} more ${wait.length > 1 ? 'parts' : 'part'} of a withdrawal to send later, the next in ${Math.ceil((Math.min(...wait.map((x) => x.due)) - now) / 60_000)} min.</p>` : '']; };
+// A withdrawal in `n` parts: each but the last near an even share (between 85% and 115% of it), cut to four significant
+// digits so no two are alike; the last takes what is left, so they add up to `a` exactly. → [wei]
+function lgParts(a, n) {
+  for (;;) {
+    const ps = Array.from({ length: n - 1 }, () => { let v = a * BigInt(850 + Math.floor(Math.random() * 300)) / 1000n / BigInt(n), u = 1n; while (v / u >= 10_000n) u *= 10n; return v / u * u; });
+    const last = a - ps.reduce((t, v) => t + v, 0n);
+    if (last > 0n) return [...ps, last];
+  }
+}
+// A part that fell due: the name read again against the address kept, then out as Withdraw pays (whole notes first). What
+// did not go (a part whose notes went out but not the rest) is kept again.
+async function lgPart(c, step, x) {
+  try {
+    const dest = await pressDest(x.name || x.to, c, x.name ? { addr: x.to } : null);
+    await destGate(c, dest);
+    await payOut(c, step, { tab: 'withdraw', field: 'f-part', dest, a: BigInt(x.a), fee0: feeOf('withdraw'), name: x.name });
+  } catch (e) { const rem = DRAFT['f-part'] ? parseEth(DRAFT['f-part']) : BigInt(x.a); if (!lgLeft(e) && rem) lgLaterPut({ ...x, a: String(rem) }); throw e; } finally { delete DRAFT['f-part']; }
+}
+// Every minute while parts wait: the balance's line drawn again, and a part that fell due raised once (in this tab) as a notice.
+const LG_TOLD = new Set();
+setInterval(() => {
+  const all = S.key ? lgLater().filter((x) => x.k) : [];
+  if (all.filter((x) => x.due <= Date.now() && !LG_TOLD.has(x.id) && LG_TOLD.add(x.id)).length) notifyIn('A part of your withdrawal is due.');
+  if (all.length && !S.busy) paintBal();
+}, 60_000);
 // Finish paying: the fee quoted now, the name read again against the address kept, then sent as Send sends.
 document.addEventListener('click', (e) => {
   const d = e.target.closest?.('[data-pl-drop]'), g = e.target.closest?.('[data-pl-go]'), c = S.chain;
@@ -11386,8 +11421,9 @@ document.addEventListener('click', (e) => {
   act(g, async (step) => {
     const fee = feeOf('send'), via = viaOf('send');
     if (fee == null) throw new Error('Reading the fee. Try again in a moment.');
-    const x = lgLaterTake(g.dataset.plGo), t = x && { r: parseRecipient(x.to), name: x.name };
+    const x = lgLaterTake(g.dataset.plGo), t = x && !x.k && { r: parseRecipient(x.to), name: x.name };
     if (!x) throw new Error(PL_GONE);
+    if (x.k) return lgPart(c, step, x);
     try {
       if (t.name) await pinName(t);
       if (via === 'self') await walletReady(c, step);

@@ -6,6 +6,7 @@
    link for the visit, and the wallet sending notes while the registry has gas from the note off; ETH at a one-time deposit
    address said to be on its way in by the relay; a payment waiting on a note moved in, kept across reloads and tabs,
    offered once the note lands, paid exactly once, refused when its name moved, and only said after a day.
+   A withdrawal spread over time in parts: the first now, the others kept sealed and offered once due, each paid once.
    (ARTIFACTS=<folder with transact.wasm and transact_final.zkey> also proves and sends the finished payment.)
 
    Usage: node test/dapp/tacit-wei.onebalance.mjs     (PAGE=dapp/page.html runs it against the source)   */
@@ -315,6 +316,64 @@ console.log('10. a waiting payment whose name moved is refused and kept; one a d
   await until(p, () => !!document.querySelector('#bal-note [data-pl-go]'), null, 30e3);
   check(!/Not paid/.test(await noteOf(p)) && !!(await p.$('[data-pl-go="b3"]')), 'after a reload: the dismissed one stays gone, the other is still offered', await noteOf(p));
   noErrors(p, 'scenario 10');
+  await L.close(p);
+}
+
+console.log('11. a withdrawal in 3 parts: the first now, two kept sealed, each offered once due, paid once, Dismiss');
+{
+  const env = mkEnv(); L.lgState(env);
+  env.C[1].deposit(KEY, 3n * E / 10n); env.C[1].deposit(KEY, 2n * E / 10n);
+  const vk = ENG.slotOf(KEYS.v, 'vault:later');
+  const recsOf = async (p) => { const raw = await p.evaluate((k) => localStorage.getItem(k), vk); return raw ? JSON.parse(ENG.openState(KEYS.v, raw, vk)) : []; };
+  const setRecs = (p, recs) => p.evaluate(([k, v]) => localStorage.setItem(k, v), [vk, ENG.sealState(KEYS.v, JSON.stringify(recs), vk)]);
+  const total = 3n * E / 10n, wei = (x) => BigInt(Math.round(Number(x) * 1e6)) * 10n ** 12n;
+  const p = await L.open(env, {connected: true});
+  await signIn(p); await ready(p);
+  await p.click('#tabs [data-tab="withdraw"]');
+  await p.fill('#f-wto', PAYEE);
+  await until(p, () => /fee/.test(document.querySelector('#form .route')?.textContent || ''), null, 15e3);
+  await p.fill('#f-wamt', '0.3');
+  await p.selectOption('#f-parts', '3|3');
+  check(await until(p, () => /Later, in 2 parts/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 15e3) , '3 parts over 3 h: the receipt says what goes later', await rcpt(p));
+  check(/harder to tie to each other and to your deposit/.test(await txt(p, '#form')) && /Open this page again as each falls due/.test(await txt(p, '#form')), 'with the one honest line on what it does and what it asks');
+  const r = await rcpt(p), first = /Arrives ?([\d.]+) ETH/.exec(r)?.[1], later = /Later, in 2 parts ?([\d.]+) ETH/.exec(r)?.[1];
+  check(!!first && !!later && /^0\.\d{1,4}$/.test(first), 'the first part is round (four significant digits)', r);
+  if (process.env.ARTIFACTS) {
+    await p.click('#f-go');
+    check(await until(p, () => /Withdrew/.test(document.querySelector('#status')?.textContent || ''), null, 300e3) && relays(env) === 1, 'the first part goes now, once', await txt(p, '#status'));
+    const recs = await recsOf(p), sum = recs.reduce((t, x) => t + BigInt(x.a), 0n);
+    check(recs.length === 2 && recs.every((x) => x.k === 'w' && x.n === 3 && x.to.toLowerCase() === PAYEE.toLowerCase()) && recs.map((x) => x.i).join() === '2,3', 'two records kept for parts 2 and 3', JSON.stringify(recs));
+    check(wei(first) + sum === total && recs[0].a !== recs[1].a, 'the parts add up to 0.3 ETH exactly, and differ', `${first} + ${recs.map((x) => x.a).join(' + ')}`);
+    check(recs.every((x) => x.due > Date.now() && x.due < Date.now() + 3 * 3600e3) && recs[0].due < recs[1].due, 'each due later, inside the 3 h span, in order');
+    const plainStore = await p.evaluate(() => Object.values(localStorage).join(' ').toLowerCase());
+    check(!plainStore.includes(PAYEE.slice(2).toLowerCase()), 'sealed: the address is nowhere in plain storage');
+    check(await until(p, () => /2 more parts of a withdrawal to send later, the next in \d+ min/.test(document.querySelector('#bal-note')?.textContent || ''), null, 10e3), 'the balance says two more parts wait', await noteOf(p));
+    await setRecs(p, recs.map((x) => ({...x, due: Date.now() - 1000})));
+    await p.reload(); await p.waitForTimeout(500); await signIn(p); await ready(p);
+    check(await until(p, () => document.querySelectorAll('#bal-note [data-pl-go]').length === 2, null, 15e3) && /Part 2 of 3 is due: [\d.]+ ETH to 0x3e40…37E3/.test(await noteOf(p)), 'after a reload, each due part is offered: "Part 2 of 3 is due: … to 0x3e40…37E3"', await noteOf(p));
+    const p2 = await p.context().newPage(); p2.errors = []; p2.on('pageerror', (e) => p2.errors.push(String(e)));
+    await p2.goto(p.url()); await p2.waitForTimeout(300); await signIn(p2); await ready(p2);
+    await until(p2, () => document.querySelectorAll('#bal-note [data-pl-go]').length === 2, null, 15e3);
+    const id2 = recs.find((x) => x.i === 2).id, id3 = recs.find((x) => x.i === 3).id;
+    await p.click(`#bal-note [data-pl-go="${id2}"]`);
+    check(await until(p, () => /Withdrew/.test(document.querySelector('#status')?.textContent || ''), null, 300e3) && relays(env) === 2, 'Send it now: part 2 goes, once', await txt(p, '#status'));
+    await p2.click(`#bal-note [data-pl-go="${id2}"]`);
+    check(await until(p2, () => /Already paid or dropped/.test(document.querySelector('#status')?.textContent || ''), null, 15e3) && relays(env) === 2, 'the second tab\'s press sends nothing again', await txt(p2, '#status'));
+    await p2.close();
+    await until(p, (sel) => !!document.querySelector(sel), `#bal-note [data-pl-drop="${id3}"]`, 10e3);
+    await p.click(`#bal-note [data-pl-drop="${id3}"]`);
+    check(await until(p, () => !/Part \d of 3/.test(document.querySelector('#bal-note')?.textContent || ''), null, 5e3) && (await recsOf(p)).length === 0, 'Dismiss clears the last one');
+    await p.reload(); await p.waitForTimeout(500); await signIn(p); await ready(p); await p.waitForTimeout(1500);
+    check(!/Part \d of 3|more part/.test(await noteOf(p)), 'and after a reload nothing is offered', await noteOf(p));
+  } else {
+    H.info('ARTIFACTS not set: the parts are not proved and sent here; the offers are checked from records as the press keeps them');
+    await setRecs(p, [{id: 'wa', k: 'w', a: String(E / 10n), to: PAYEE, name: '', i: 2, n: 3, at: Date.now(), due: Date.now() - 1000}, {id: 'wb', k: 'w', a: String(E / 10n), to: PAYEE, name: '', i: 3, n: 3, at: Date.now(), due: Date.now() + 3600e3}]);
+    await p.reload(); await p.waitForTimeout(500); await signIn(p); await ready(p);
+    check(await until(p, () => /Part 2 of 3 is due/.test(document.querySelector('#bal-note')?.textContent || ''), null, 15e3) && /1 more part of a withdrawal to send later/.test(await noteOf(p)), 'a due part offered, a later one counted', await noteOf(p));
+    await p.click('#bal-note [data-pl-drop="wa"]');
+    check(await until(p, () => !/Part 2 of 3/.test(document.querySelector('#bal-note')?.textContent || ''), null, 5e3) && (await recsOf(p)).length === 1, 'Dismiss clears it');
+  }
+  noErrors(p, 'scenario 11');
   await L.close(p);
 }
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-C2lsHw/Va/H1S4FZdjxgtoXs/EnM4eF8xWYap3hCS60=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-uKOL+LSPXCE69R6uv2U8iVH7Qx+vKV9+Qxwb3RfkwV8=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -4206,7 +4206,7 @@ const ARTIFACTS = 'tacit-pay-artifacts-v1';
 const PROVER_SHA256 = '66ec1d77d65582f9031690601d09bb81f8d12fc94f9660e36d5992bc57643249';   // set by deploy/repin.sh
 // The scan workers run this module's first part as the document holds it (through H), which the CSP's hash does not
 // cover once it is read back out of the page: it is used only when it is the part the build pinned.
-const SCAN_SHA256 = '2fd324ee0f58baef20e0cce700f805794e17d94bf77061111d5f3947fd8c782b';     // set by deploy/repin.sh
+const SCAN_SHA256 = 'dc262ac10c74c02aeff1bed81246fc9092491342212e8224090af9af9c1f2761';     // set by deploy/repin.sh
 // A browser with site data blocked throws on the cache API itself: that reads as no cache, not as a broken page.
 const hasCaches = () => { try { return !!globalThis.caches; } catch { return false; } };
 const keyKept = () => Promise.resolve().then(() => caches.open(ARTIFACTS)).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then(Boolean, () => false);

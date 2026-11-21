@@ -13,7 +13,9 @@ const PQ = (() => {
   const need = (b, n, what) => { if (!b || b.length != n) throw Error(`ML-KEM: ${what} is ${n} bytes`); };
 
   // ---- Keccak-f[1600] and its sponges ----
-  // Lane k is words 2k (its low half) and 2k + 1. Rotations, lane order and round constants are computed.
+  // Lane k is words 2k (its low half) and 2k + 1. Rotations, lane order and round constants are computed. Rho and pi move
+  // 24 of the 25 lanes along one cycle, (1, 0) → (0, 2) → …, each rotated by its offset (none 0 or 32) into the next one's
+  // place. The permutation allocates nothing; the page's Keccak-256 runs on it too.
   const RO = [], DS = [], RC = [], C = new Int32Array(10);
   for (let t = 0, x = 1, y = 0; t < 24; t++) { RO.push((t + 1) * (t + 2) / 2 % 64); [x, y] = [y, (2 * x + 3 * y) % 5]; DS.push(2 * (x + 5 * y)); }
   for (let i = 0, r = 1; i < 24; i++) {
@@ -287,7 +289,7 @@ const PQ = (() => {
   };
 
   return {
-    keygen, keygenFromSeed, expand, encaps, decaps, sha3_256, sha3_512, shake128, shake256,
+    permute: f, keygen, keygenFromSeed, expand, encaps, decaps, sha3_256, sha3_512, shake128, shake256,
     shake128x: (m) => xof(168, 31, m), shake256x: (m) => xof(136, 31, m), phraseOf, rootOf, words,
   };
 })();

@@ -1094,7 +1094,9 @@ const PQ = (() => {
   const need = (b, n, what) => { if (!b || b.length != n) throw Error(`ML-KEM: ${what} is ${n} bytes`); };
 
   // ---- Keccak-f[1600] and its sponges ----
-  // Lane k is words 2k (its low half) and 2k + 1. Rotations, lane order and round constants are computed.
+  // Lane k is words 2k (its low half) and 2k + 1. Rotations, lane order and round constants are computed. Rho and pi move
+  // 24 of the 25 lanes along one cycle, (1, 0) → (0, 2) → …, each rotated by its offset (none 0 or 32) into the next one's
+  // place. The permutation allocates nothing; the page's Keccak-256 runs on it too.
   const RO = [], DS = [], RC = [], C = new Int32Array(10);
   for (let t = 0, x = 1, y = 0; t < 24; t++) { RO.push((t + 1) * (t + 2) / 2 % 64); [x, y] = [y, (2 * x + 3 * y) % 5]; DS.push(2 * (x + 5 * y)); }
   for (let i = 0, r = 1; i < 24; i++) {
@@ -1368,53 +1370,21 @@ const PQ = (() => {
   };
 
   return {
-    keygen, keygenFromSeed, expand, encaps, decaps, sha3_256, sha3_512, shake128, shake256,
+    permute: f, keygen, keygenFromSeed, expand, encaps, decaps, sha3_256, sha3_512, shake128, shake256,
     shake128x: (m) => xof(168, 31, m), shake256x: (m) => xof(136, 31, m), phraseOf, rootOf, words,
   };
 })();
 
 // ── Keccak-256 ──
-// The round constants and the rotation offsets follow from their definitions. Rho and pi move 24 of the 25 lanes along one
-// cycle, (1, 0) → (0, 2) → …, each rotated by its offset into the next one's place; no offset on it is 0 or 32.
+// The sponge on the post-quantum part's Keccak-f[1600] (PQ.permute), the message taken in a word at a time.
 const keccak = (() => {
-  const ROT = [], DST = [], RC = [];
-  for (let t = 0, x = 1, y = 0; t < 24; t++) { ROT.push(((t + 1) * (t + 2) / 2) % 64); [x, y] = [y, (2 * x + 3 * y) % 5]; DST.push(2 * (x + 5 * y)); }
-  for (let i = 0, r = 1; i < 24; i++) {
-    let c = 0n;
-    for (let j = 0; j < 7; j++) { if (r & 1) c |= 1n << BigInt((1 << j) - 1); r = ((r << 1) ^ ((r >> 7) * 0x71)) & 0xff; }
-    RC.push(Number(c & 0xffffffffn), Number(c >> 32n));
-  }
-  // Lane k is words 2k (its low half) and 2k + 1; the permutation allocates nothing.
-  const s = new Int32Array(50), C = new Int32Array(10);
-  function f() {
-    for (let round = 0; round < 48; round += 2) {
-      for (let i = 0; i < 10; i++) C[i] = s[i] ^ s[i + 10] ^ s[i + 20] ^ s[i + 30] ^ s[i + 40];
-      for (let x = 0; x < 10; x += 2) {
-        const p = (x + 8) % 10, q = (x + 2) % 10, lo = C[p] ^ ((C[q] << 1) | (C[q + 1] >>> 31)), hi = C[p + 1] ^ ((C[q + 1] << 1) | (C[q] >>> 31));
-        for (let y = x; y < 50; y += 10) { s[y] ^= lo; s[y + 1] ^= hi; }
-      }
-      let lo = s[2], hi = s[3];
-      for (let t = 0; t < 24; t++) {
-        const n = ROT[t], d = DST[t], a = s[d], b = s[d + 1];
-        if (n < 32) { s[d] = (lo << n) | (hi >>> (32 - n)); s[d + 1] = (hi << n) | (lo >>> (32 - n)); }
-        else { s[d] = (hi << (n - 32)) | (lo >>> (64 - n)); s[d + 1] = (lo << (n - 32)) | (hi >>> (64 - n)); }
-        lo = a; hi = b;
-      }
-      // Chi, a row of five lanes at a time, read out first.
-      for (let y = 0; y < 50; y += 10) {
-        const a0 = s[y], a1 = s[y + 1], b0 = s[y + 2], b1 = s[y + 3], c0 = s[y + 4], c1 = s[y + 5], d0 = s[y + 6], d1 = s[y + 7], e0 = s[y + 8], e1 = s[y + 9];
-        s[y] = a0 ^ (~b0 & c0); s[y + 1] = a1 ^ (~b1 & c1); s[y + 2] = b0 ^ (~c0 & d0); s[y + 3] = b1 ^ (~c1 & d1); s[y + 4] = c0 ^ (~d0 & e0);
-        s[y + 5] = c1 ^ (~d1 & e1); s[y + 6] = d0 ^ (~e0 & a0); s[y + 7] = d1 ^ (~e1 & a1); s[y + 8] = e0 ^ (~a0 & b0); s[y + 9] = e1 ^ (~a1 & b1);
-      }
-      s[0] ^= RC[round]; s[1] ^= RC[round + 1];
-    }
-  }
+  const s = new Int32Array(50), f = PQ.permute;
   return (msg) => {
     s.fill(0);
     const rate = 136, n = Math.floor(msg.length / rate) * rate + rate, buf = new Uint8Array(n);
     buf.set(msg); buf[msg.length] ^= 0x01; buf[n - 1] ^= 0x80;
     const dv = new DataView(buf.buffer);
-    for (let o = 0; o < n; o += rate) { for (let i = 0; i < rate / 4; i++) s[i] ^= dv.getUint32(o + 4 * i, true); f(); }
+    for (let o = 0; o < n; o += rate) { for (let i = 0; i < rate / 4; i++) s[i] ^= dv.getUint32(o + 4 * i, true); f(s); }
     const out = new Uint8Array(32), ov = new DataView(out.buffer);
     for (let i = 0; i < 8; i++) ov.setUint32(4 * i, s[i], true);
     return out;
@@ -1477,7 +1447,7 @@ const secp = (() => {
   };
   const mul = (P, k) => mulBy(P, glv(k));
   // k·P for many P under one k, as a view key is tried against every memo, the results made affine together: one
-  // inversion for the whole batch. → each point compressed, 33 zero bytes where an input is not a point.
+  // inversion for the whole batch. → each point compressed, null where an input is missing or the product is the identity.
   const mulMany = (points, k) => {
     const g = glv(k);
     const out = points.map((P) => {
@@ -1549,6 +1519,9 @@ const pubOf = (priv) => secp.compress(secp.mulG(big(priv)));
 // circomlib's Poseidon (x^5, 8 full rounds). Its round constants and MDS matrix come from the Grain LFSR exactly
 // as the Poseidon reference generates them, so nothing is stored.
 const FR = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+// x mod FR for 0 ≤ x < 2^512, by Barrett's method: the quotient read off x's top bits is at most two short, which the loop
+// makes up; in about half the time of BigInt's own %. Poseidon's values and BabyJubJub's products are all under 2^512.
+const FR_MU = (1n << 512n) / FR, red = (x) => { let r = x - (((x >> 252n) * FR_MU) >> 260n) * FR; while (r >= FR) r -= FR; return r; };
 const poseidon = (() => {
   const PARTIAL = { 3: 57, 4: 56, 5: 60, 6: 60, 8: 64 }, cache = {};
   function params(t) {
@@ -1573,9 +1546,6 @@ const poseidon = (() => {
     }
     return { C, M: M.map((row) => row.map((v) => inv(v, FR))) };
   }
-  // x mod FR for 0 ≤ x < 2^512, by Barrett's method: the quotient read off x's top bits is at most two short, which the
-  // loop makes up. Every value reduced below is under 2^512, and this takes about half the time of BigInt's own %.
-  const MU = (1n << 512n) / FR, red = (x) => { let r = x - (((x >> 252n) * MU) >> 260n) * FR; while (r >= FR) r -= FR; return r; };
   const p5 = (x) => { const x2 = red(x * x); return red(red(x2 * x2) * x); };
   return (inputs) => {
     const t = inputs.length + 1;
@@ -1599,9 +1569,11 @@ const BJ_L = 2736030358979909402780800718157159386076813972158567259200215660948
 const B8 = [5299619240641551281634865583518297030282874472190772894086521144482721001553n, 16950150798460657717958625567821834550301663161624707787222815936182638968203n];
 const bj = (() => {
   const A = 168700n, D = 168696n, m = (x) => mod(x, FR);
+  // Coordinates below FR in and out; every operand of `red` is kept non-negative (f and the terms with − are lifted by FR
+  // where they could go below zero: c and d are at most the products they reduce).
   const padd = ([X1, Y1, Z1], [X2, Y2, Z2]) => {
-    const a = m(Z1 * Z2), b = m(a * a), c = m(X1 * X2), d = m(Y1 * Y2), e = m(D * c % FR * d), f = m(b - e), g = m(b + e);
-    return [m(a * f % FR * m((X1 + Y1) * (X2 + Y2) - c - d)), m(a * g % FR * m(d - A * c)), m(f * g)];
+    const a = red(Z1 * Z2), b = red(a * a), c = red(X1 * X2), d = red(Y1 * Y2), e = red(red(D * c) * d), f = b - e + FR, g = b + e;
+    return [red(red(a * f) * red((X1 + Y1) * (X2 + Y2) - c - d)), red(red(a * g) * red(d + A * (FR - c))), red(f * g)];
   };
   const affine = ([X, Y, Z]) => { const zi = inv(Z, FR); return [m(X * zi), m(Y * zi)]; };
   const mulPoint = (P, k) => { let r = [0n, 1n, 1n], acc = [P[0], P[1], 1n]; for (; k > 0n; k >>= 1n) { if (k & 1n) r = padd(r, acc); acc = padd(acc, acc); } return affine(r); };
@@ -1646,7 +1618,7 @@ const bj = (() => {
     const P = [x, y], Q = mulPoint(P, BJ_L);
     return Q[0] === 0n && Q[1] === 1n ? P : null;
   };
-  return { mulB8, add, pack, unpack, mul: mulPoint, sqrt };
+  return { mulB8, add, pack, unpack, mul: mulPoint };
 })();
 
 // ── pool keys, notes and the tree (transact.circom) ──
@@ -2293,28 +2265,37 @@ const topicOf = (a) => '0x' + a.slice(2).toLowerCase().padStart(64, '0');
 // another chain or pool, from an unexpected address, or above the ceiling is refused before anything is signed.
 const RELAYERS = { 1: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0' };
 const MAX_RELAY_FEE = { 1: 5n * 10n ** 16n };
+// The most gas a relayed pool transaction is counted at when a fee is held to the network's price, unless the page asks a
+// quote for more (a withdrawal that also runs calls); the page's relay quotes 450,000 for one.
+const RELAY_GAS = 600_000n;
 
-// Stored state is sealed under keys from the view scalar: nonce16 ‖ ciphertext ‖ tag16, a keccak counter stream and a
+// Stored state is sealed under keys from the view scalar: nonce16 ‖ ciphertext ‖ tag16, a stream from the first key and a
 // tag that covers the name it is stored under, so a sealed value moved to another name does not open. Names come from
 // the view key too: another script on the same origin reading storage sees neither balances nor whose they are.
-// "enc2:" is base64; "enc1:" (hex, its tag over the ciphertext alone) is read once from the names earlier versions used.
+// "enc3:" is base64, its stream SHAKE256(key) (136 bytes a permutation), which every write makes. Still read: "enc2:"
+// (base64, its stream keccak(key ‖ be32(i)) for each 32 bytes) and "enc1:" (hex, that stream, its tag over the ciphertext
+// alone), from the names earlier versions used.
 const stateKeys = (v, nonce) => [1, 2].map((i) => keccak(cat(utf8('tacit-evm-pool-state-v1'), [i], be(v), nonce)));
-// The key and a 4-byte counter in one message, the counter written in place for each block of 32 bytes.
-const stateStream = (key, n) => { const o = new Uint8Array(Math.ceil(n / 32) * 32), m = cat(key, [0, 0, 0, 0]); for (let i = 0; i * 32 < n; i++) { m[32] = i >>> 24; m[33] = i >>> 16; m[34] = i >>> 8; m[35] = i; o.set(keccak(m), 32 * i); } return o.subarray(0, n); };
+const stateStream = (key, n, old = false) => {
+  if (!old) return PQ.shake256x(key)(n);
+  const o = new Uint8Array(Math.ceil(n / 32) * 32), m = cat(key, [0, 0, 0, 0]);
+  for (let i = 0; i * 32 < n; i++) { m[32] = i >>> 24; m[33] = i >>> 16; m[34] = i >>> 8; m[35] = i; o.set(keccak(m), 32 * i); }
+  return o.subarray(0, n);
+};
 const slotOf = (v, what) => 'tacit-pay-s1:' + hex(keccak(cat(utf8('tacit-pay-slot-v1'), be(v), utf8(what))).subarray(0, 16));
 const toB64 = (b) => { let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(s); };
 // Byte by byte: a sealed state runs to hundreds of KB, which Uint8Array.from with a mapping function takes twice as long over.
 const fromB64 = (s) => { try { const t = atob(s), b = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i); return b; } catch { return null; } };
 function sealState(v, text, name) {
   const nonce = randomBytes(16), pt = utf8(text), [enc, mac] = stateKeys(v, nonce), ks = stateStream(enc, pt.length), ct = pt.map((b, i) => b ^ ks[i]);
-  return 'enc2:' + toB64(cat(nonce, ct, keccak(cat(mac, keccak(utf8(name)), ct)).subarray(0, 16)));
+  return 'enc3:' + toB64(cat(nonce, ct, keccak(cat(mac, keccak(utf8(name)), ct)).subarray(0, 16)));
 }
 function openState(v, stored, name = null) {
-  const two = !!stored?.startsWith('enc2:'), b = two ? fromB64(stored.slice(5)) : stored?.startsWith('enc1:') ? unhex(stored.slice(5)) : null;
+  const kind = /^enc[123]:/.test(stored || '') ? stored[3] : '', two = kind > '1', b = two ? fromB64(stored.slice(5)) : kind ? unhex(stored.slice(5)) : null;
   if (!b || b.length < 32 || (two && name == null)) return null;
   const nonce = b.subarray(0, 16), ct = b.subarray(16, b.length - 16), [enc, mac] = stateKeys(v, nonce);
   if (!same(b.subarray(b.length - 16), keccak(two ? cat(mac, keccak(utf8(name)), ct) : cat(mac, ct)).subarray(0, 16))) return null;
-  const ks = stateStream(enc, ct.length);
+  const ks = stateStream(enc, ct.length, kind !== '3');
   return new TextDecoder().decode(ct.map((x, i) => x ^ ks[i]));
 }
 
@@ -2439,7 +2420,7 @@ const RL = (() => {
       }
     });
   }
-  return { REGISTRY, ASKED, GRACE_MS, decodeList, readRegistry, relaysFor, orderQuotes, collectQuotes, usable };
+  return { decodeList, readRegistry, relaysFor, orderQuotes, collectQuotes, usable };
 })();
 // The step a spend reports when another payment took its place in the tree first and it is proved again.
 const RACED_STEP = 'another payment landed first, proving again';
@@ -2451,8 +2432,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const rootTag = () => (keys.pq ? hex(keys.pq.hash.subarray(0, 8)) : '');
   const boxAt = new Map(), boxOf = (i, classical = false) => { const k = (!classical && keys.pq ? 'q' + rootTag() : 'c') + ':' + i; return boxAt.get(k) ?? boxAt.set(k, receiveBoxAddress(chain.router, receiveKeys(keys, i, classical).npk)).get(k); };
   // `from`: the catch-up point this state began at ({ size, block, root }), while the history behind it is still being read.
-  // `spentBy`: for each note of ours spent lately, by nullifier, the leaves of the transaction that spent it (whose it was).
-  const blank = () => ({ block: chain.deployBlock - 1, tree: incTree(), notes: [], rows: [], nextRefund: 1, nextRefundR: 0, attempts: {}, inflight: [], landed: [], from: null, spentBy: {} });
+  // `spentBy`: for each note of ours spent lately, by nullifier, the leaves of the transaction that spent it (whose it was);
+  // `spentTx`: that transaction's hash.
+  const blank = () => ({ block: chain.deployBlock - 1, tree: incTree(), notes: [], rows: [], nextRefund: 1, nextRefundR: 0, attempts: {}, inflight: [], landed: [], from: null, spentBy: {}, spentTx: {} });
   // What a fresh read from the chain keeps: counters, and the spends still in flight (only the chain can close those).
   const fresh = () => ({ ...blank(), attempts: saved.attempts, nextRefund: saved.nextRefund, nextRefundR: saved.nextRefundR ?? 0, inflight: saved.inflight, landed: saved.landed, tried: saved.tried });
   let saved = blank(), view = null, moved = false, stopped = false, epoch = 0, backGen = 0, full = false;
@@ -2497,6 +2479,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         else for (const t of x.tries) if (!own.tries.some((y) => y.start === t.start)) own.tries.push(t);
       }
       for (const y of o.landed || []) if (!(saved.landed || []).some((z) => JSON.stringify(z.pay) === JSON.stringify(y.pay) && Math.abs(z.at - y.at) < 120_000)) saved.landed = [...(saved.landed || []), y].sort((p, q) => p.at - q.at).slice(-20);
+      // A try a relay turned away, there: the same payment pressed here is sent only from its notes too.
+      for (const y of o.tried || []) if (Array.isArray(y?.nfs) && !(saved.tried || []).some((z) => z.at === y.at && String(z.nfs) === String(y.nfs))) saved.tried = [...(saved.tried || []), y].sort((p, q) => p.at - q.at).slice(-8);
       for (const [k, a] of Object.entries(o.attempts || {})) if (Number.isSafeInteger(a) && a > (saved.attempts[k] ?? 0)) saved.attempts[k] = a;
     } catch {}
   }
@@ -2549,13 +2533,20 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // of the key's and uses up none of the one-time addresses; and any box asked for (`boxIdx`) is watched too.
   const boxes = new Map(), boxN = new Set();
   let boxQ = '';
-  const boxTopics = (st = saved) => {
+  // Each address takes two curve multiplications: the first read works out dozens, pausing for the page every 12 ms.
+  const boxTopics = async (st = saved) => {
     // Another root's addresses are watched no longer: their notes open only with that root.
     if (rootTag() !== boxQ) { for (const [t, b] of boxes) if (!b.c) boxes.delete(t); for (const k of boxN) if (k[0] === 'q') boxN.delete(k); boxQ = rootTag(); }
-    const add = (i) => { for (const c of keys.pq ? [false, true] : [true]) { const k = (c ? 'c' : 'q') + i; if (!boxN.has(k)) { boxN.add(k); boxes.set(topicOf(boxOf(i, c)), { i, c }); } } };
-    for (let i = 0, n = Math.max(st.nextRefund, chain.boxTop?.() ?? 0) + REFUND_GAP; i < n; i++) add(i);
-    for (let i = 0, n = (st.nextRefundR ?? 0) + REFUND_GAP; i < n; i++) add(RB + i);
-    boxIdx.forEach(add);
+    const n = Math.max(st.nextRefund, chain.boxTop?.() ?? 0) + REFUND_GAP, r = (st.nextRefundR ?? 0) + REFUND_GAP;
+    let t = performance.now();
+    for (const i of [...Array(n).keys(), ...Array.from({ length: r }, (_, j) => RB + j), ...boxIdx]) {
+      for (const c of keys.pq ? [false, true] : [true]) {
+        const k = (c ? 'c' : 'q') + i;
+        if (boxN.has(k)) continue;
+        boxN.add(k); boxes.set(topicOf(boxOf(i, c)), { i, c });
+        if (performance.now() - t > 12) { await yieldNow(); t = performance.now(); }
+      }
+    }
   };
 
   // Appends transacts to a copy of `state`, in order: a note of ours is spent where its nullifier appears, and a leaf
@@ -2568,7 +2559,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // Behind a catch-up point, an insertion before it is already in the edge; what it spent or paid is found by the
     // read of the older history.
     if (state.from) transacts = transacts.filter((t) => t.firstIndex >= state.from.size || !(t.outLeaf[0] || t.outLeaf[1]));
-    const notes = new Map(state.notes.map((n) => [n.index, n])), byNf = new Map(state.notes.map((n) => [String(n.nf), n])), spentBy = { ...state.spentBy };
+    const notes = new Map(state.notes.map((n) => [n.index, n])), byNf = new Map(state.notes.map((n) => [String(n.nf), n])), spentBy = { ...state.spentBy }, spentTx = { ...state.spentTx };
     const tree = state.tree.clone(), rows = state.rows.map(filled), received = new Map(receipts.map((r) => [r.index, r]));
     // Every memo's shared secret with this key, one curve multiplication each, is worked out for the whole batch first.
     const tried = [];
@@ -2589,7 +2580,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       let used = 0n, kept = 0n, box = null;
       for (const nf of t.nf) {
         const n = nf && byNf.get(String(nf));
-        if (n) { used += BigInt(n.v); byNf.delete(String(nf)); notes.delete(n.index); if (!track.delete(n.index)) tree.untrack(n.index); spentBy[String(nf)] = t.outLeaf.join('|'); }
+        if (n) { used += BigInt(n.v); byNf.delete(String(nf)); notes.delete(n.index); if (!track.delete(n.index)) tree.untrack(n.index); spentBy[String(nf)] = t.outLeaf.join('|'); spentTx[String(nf)] = t.tx; }
       }
       if (t.outLeaf[0] || t.outLeaf[1]) {
         const at = tree.size + leaves.length;
@@ -2620,7 +2611,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (used || kept) rows.push({ tx: t.tx, block: t.block, used: String(used), kept: String(kept), ...(box && { box: box.i, boxFee: box.fee }), ...(t.ext !== undefined && { ext: String(t.ext), fee: String(t.fee), to: t.recipient }) });
     }
     await flush();
-    return { ...state, tree, notes: [...notes.values()].sort((x, y) => x.index - y.index), rows: rows.slice(-300), spentBy: Object.fromEntries(Object.entries(spentBy).slice(-64)) };
+    return { ...state, tree, notes: [...notes.values()].sort((x, y) => x.index - y.index), rows: rows.slice(-300), spentBy: Object.fromEntries(Object.entries(spentBy).slice(-64)), spentTx: Object.fromEntries(Object.entries(spentTx).slice(-64)) };
   }
 
   // `ms`: how long the request and its body may take (an index page runs to megabytes, which a slow line takes a while over).
@@ -2657,18 +2648,20 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (!/^\d+$/.test(String(q.fee)) || BigInt(q.fee) > maxFee) throw bad('The relay quoted a fee above this page’s limit, so nothing was signed.');
     return { ...q, receiveMin: /^\d+$/.test(String(q.receiveMin ?? '')) ? q.receiveMin : undefined };
   }
-  // The fee is held to the network's price too: at most 8× what the quoted gas costs at the node's gas price now, or
-  // 0.0001 ETH where gas costs next to nothing, so a relay cannot charge up to the cap while gas is cheap. With no
-  // price read, the cap above still holds; a token pool's fee, in the token, is held to its cap alone.
-  async function vetGas(q) {
+  // The fee is held to the network's price too: at most 8× what the gas costs at the node's gas price now, or 0.0001 ETH
+  // where gas costs next to nothing, so a relay cannot charge up to the cap while gas is cheap. The gas is the relay's own
+  // figure up to what the page asked a quote for (`ask`, a call's) or RELAY_GAS, whichever is more. With no price read, the
+  // cap above still holds; a token pool's fee, in the token, is held to its cap alone.
+  async function vetGas(q, ask = null) {
     if (chain.token) return q;
     const price = await chain.rpc('eth_gasPrice', []).then((x) => BigInt(x)).catch(() => null);
     if (price == null) return q;
-    const gas = /^\d+$/.test(String(q.gas)) && BigInt(q.gas) < 1_000_000n ? BigInt(q.gas) : 1_000_000n, most = 8n * gas * price;
+    const top = /^\d+$/.test(String(ask ?? '')) && BigInt(ask) > RELAY_GAS ? BigInt(ask) : RELAY_GAS;
+    const gas = /^\d+$/.test(String(q.gas)) && BigInt(q.gas) < top ? BigInt(q.gas) : top, most = 8n * gas * price;
     if (BigInt(q.fee) > (most > 10n ** 14n ? most : 10n ** 14n)) throw Object.assign(new Error('The relay quoted a fee far above what gas costs on this chain right now, so nothing was signed.'), { vet: true });
     return q;
   }
-  const keeperGet = async (path, ms, rl = null) => { const r = await keeperFetch(path, { ms, rl }), j = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(j.error || `relay returned ${r.status}`), { relay: true }); return path.startsWith('/quote') ? { ...(await vetGas(vet(j, rl ? rl.relayer : cur?.relayer ?? wantRelayer))), rl: rl || cur } : j; };
+  const keeperGet = async (path, ms, rl = null) => { const r = await keeperFetch(path, { ms, rl }), j = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(j.error || `relay returned ${r.status}`), { relay: true }); return path.startsWith('/quote') ? { ...(await vetGas(vet(j, rl ? rl.relayer : cur?.relayer ?? wantRelayer), /[?&]gas=(\d+)/.exec(path)?.[1])), rl: rl || cur } : j; };
   const cancel = (slot) => slot && keeperPost('/cancel', { reservation: slot }).catch(() => {});
   const qpath = (gas) => (gas ? `/quote?gas=${gas}` : '/quote');
   // A quote to spend on: from the relay held for this spend, else from each relay listed (those that answer within a moment
@@ -2685,17 +2678,19 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     cur = pick.e; chose = Date.now(); hold = bind;
     return pick.q;
   }
-  // A spend that a relay refused before it sent anything is made again with another relay (`refused`); one that may have been
-  // sent never is: it is held, and tried again only through the relay that may have sent it (`pay.rl`).
+  // A spend that a relay refused before it sent anything is made again with another relay (`refused`), from the same notes
+  // (`keep`, the try turned away): a relay's word that it sent nothing is not proof, and two tries that share a note cannot
+  // both land. One that may have been sent never is: it is held, and tried again only through the relay that may have sent
+  // it (`pay.rl`).
   const holding = (fn) => async (...a) => { try { return await fn(...a); } finally { hold = false; } };
-  const relayed = (fn) => async (...a) => {
+  const relayed = (fn) => async (o) => {
     for (let n = 0; ; n++) {
-      try { return await fn(...a); }
-      catch (e) { if (!e?.refused || n >= 2 || !chain.relays || !cur) throw e; BAD.set(cur.url, Date.now() + 300_000); cur = null; if (early) early.dead = true; }
+      try { return await fn(o); }
+      catch (e) { if (!e?.refused || n >= 2 || !chain.relays || !cur) throw e; BAD.set(cur.url, Date.now() + 300_000); cur = null; if (early) early.dead = true; if (e.keep) o = { ...o, keep: e.keep }; }
       finally { hold = false; }
     }
   };
-  const spend = relayed((...a) => spendRaw(...a)), retry = holding((...a) => retryRaw(...a)), consolidate = holding((...a) => consolidateRaw(...a)), reseal = holding((...a) => resealRaw(...a));
+  const spend = relayed((o) => spendRaw(o)), retry = holding((...a) => retryRaw(...a)), consolidate = holding((...a) => consolidateRaw(...a)), reseal = holding((...a) => resealRaw(...a));
   const keeperPost = async (path, body) => { const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, tried: r.headers.get('x-tried') === '1', body: await r.json().catch(() => ({})) }; };
 
   // Confirmed history from the relay's index. A page counts only if the tree it builds is one the pool has held at
@@ -2704,7 +2699,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // index that withholds a memo could hide a note until Rebuild reads the chain's logs alone; it cannot move funds.
   // A read that fails partway carries what it kept (`e.st`): the logs go on from there, not from where it began.
   async function fromIndex(st, safe, write, live = () => true) {
-    boxTopics(st);
+    await boxTopics(st);
     let cand = st, ahead = null;
     // The next page is asked for once this one says where it ends, so it downloads while this one is taken in; one that a
     // write moved past (another tab's copy, further along) is not used.
@@ -2726,7 +2721,6 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       const ts = evs.filter((e) => e.kind === 'transact').map((e) => ({
         nf: [BigInt(e.nf0), BigInt(e.nf1)], outLeaf: [BigInt(e.outLeaf0), BigInt(e.outLeaf1)], firstIndex: Number(e.firstIndex),
         memo: [unhex(e.memo0 || '0x'), unhex(e.memo1 || '0x')], block: e.block, tx: e.tx,
-        ...((e.ext ?? e.extAmount) != null && e.recipient && { ext: BigInt(e.ext ?? e.extAmount), fee: BigInt(e.fee ?? 0), recipient: String(e.recipient) }),
       })).sort((x, y) => x.block - y.block || x.firstIndex - y.firstIndex);
       const rec = (e) => ({ box: topicOf(e.box), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx });
       const rs = evs.filter((e) => e.kind === 'received').flatMap((e) => { try { return [rec(e)]; } catch { return []; } });
@@ -2738,24 +2732,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     } } catch (e) { throw Object.assign(e, { st: cand }); }
     return cand;
   }
-  // Rows taken from the relay's index lack the public amount, fee and recipient. They are filled a whole aligned window at
-  // a time, the same windows for every user, so no one is asked about one of this key's transactions: from the index's own
-  // record of those facts where it covers the window (a few pages, not the window's megabytes of logs), else the logs.
-  // → Map(tx → { ext, fee, recipient }), or null when the index cannot give the whole window.
-  async function factsIn(a, z) {
-    if (!keeper) return null;
-    const got = new Map();
-    for (let from = a, page = 0; from <= z && page < 50; page++) {
-      const r = await keeperGet(`/events?from=${from}&facts=1`, 45_000);
-      if (Number(r.chainId) !== chain.chainId || lc(r.pool) !== lc(chain.pool) || !Array.isArray(r.events)) return null;
-      for (const e of r.events) if (e.kind === 'transact' && e.block >= a && e.block <= z && e.ext != null) got.set(lc(String(e.tx)), { ext: BigInt(e.ext), fee: BigInt(e.fee ?? 0), recipient: String(e.recipient) });
-      const through = Number(r.through);
-      if (!Number.isSafeInteger(through) || through < from) return null;
-      from = through + 1;
-      if (from > z) return got;
-    }
-    return null;
-  }
+  // Rows taken from the relay's index lack the public amount, fee and recipient (the index's word for them is not taken:
+  // nothing the pool checks binds them to it). They are filled from the chain's logs a whole aligned window at a time, the
+  // same windows for every user, so no one is asked about one of this key's transactions.
   // The facts filled in, by transaction: a read already under way when they came copies the rows before them, and they are
   // put back from here rather than read again.
   const FACTS = new Map(), filled = (r) => (r.ext === undefined && FACTS.has(lc(r.tx)) ? { ...r, ...FACTS.get(lc(r.tx)) } : r);
@@ -2767,7 +2746,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
           const miss = saved.rows.find((r) => r.ext === undefined);
           if (!miss) return;
           const a = chain.deployBlock + Math.floor((miss.block - chain.deployBlock) / READ_WINDOW) * READ_WINDOW, z = Math.min(a + READ_WINDOW - 1, saved.block);
-          const got = (await factsIn(a, z).catch(() => null)) || new Map((await getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z, logSize)).map(decodeTransact).map((t) => [lc(t.tx), t]));
+          const got = new Map((await getLogs(chain.rpc, chain.pool, [T_TRANSACT], a, z, logSize)).map(decodeTransact).map((t) => [lc(t.tx), t]));
           saved.rows = saved.rows.map((r) => {
             if (r.ext !== undefined || r.block < a || r.block > z) return r;
             const t = got.get(lc(r.tx)), f = t ? { ext: String(t.ext), fee: String(t.fee), to: t.recipient } : { ext: null };
@@ -2813,14 +2792,33 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (typeof b === 'number') { if (COUNTS.size >= 64) COUNTS.delete(COUNTS.keys().next().value); COUNTS.set(b, n); }
     return n;
   }).catch(() => null));
+  // The same count as the nodes agree on it (chain.vote), where one node's word could have blocks passed over unread; kept
+  // in the same way once agreed.
+  const VOTED = new Map();
+  const countVoted = (b) => (!chain.vote ? countAt(b) : VOTED.has(b) ? Promise.resolve(VOTED.get(b)) : chain.vote(chain.pool, NEXT, '0x' + b.toString(16)).then((x) => {
+    const n = BigInt(x);
+    if (VOTED.size >= 64) VOTED.delete(VOTED.keys().next().value);
+    VOTED.set(b, n);
+    return n;
+  }, () => null));
   // The pool's and the router's events in [a, z], one request per range: a payment into a deposit address and its leaf
-  // come in the same answer, so a node a few blocks behind cannot give one without the other. → [transacts, receipts]
+  // come in the same answer, so a node a few blocks behind cannot give one without the other. A sweep of a deposit address
+  // (ETH in, no memo) comes with the router's Received in the same transaction: one the answer left out is taken from that
+  // transaction's receipt, which every reader of the window asks the same way. → [transacts, receipts]
   const POOL_LC = lc(chain.pool), ROUTER_LC = lc(chain.router);
   async function windowLogs(a, z) {
     const ts = [], rs = [];
     for (const l of await getLogs(chain.rpc, [chain.pool, chain.router], [[T_TRANSACT, T_RECEIVED]], a, z, logSize)) {
       const t = lc(l.topics?.[0] || ''), at = lc(l.address || '');
       if (t === T_TRANSACT && at === POOL_LC) ts.push(decodeTransact(l)); else if (t === T_RECEIVED && at === ROUTER_LC) rs.push(decodeReceived(l));
+    }
+    const swept = new Set(rs.map((r) => lc(r.tx)));
+    for (const t of ts) {
+      if (!(t.ext > 0n) || t.memo[0].length || t.memo[1].length || swept.has(lc(t.tx))) continue;
+      const r = await chain.rpc('eth_getTransactionReceipt', [t.tx]);
+      if (!r || !Array.isArray(r.logs)) throw new Error('A node did not give a deposit address’s receipt. Try again shortly.');
+      for (const l of r.logs) if (lc(l.topics?.[0] || '') === T_RECEIVED && lc(l.address || '') === ROUTER_LC) rs.push(decodeReceived({ ...l, blockNumber: l.blockNumber ?? r.blockNumber, transactionHash: t.tx }));
+      swept.add(lc(t.tx));
     }
     return [ts.sort(byOrder), rs];
   }
@@ -2830,7 +2828,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     let next = { ...(await absorb(st, ts, rs.filter((r) => boxes.has(r.box)), cache)), block };
     while (next.nextRefund > st.nextRefund || (next.nextRefundR ?? 0) > (st.nextRefundR ?? 0)) {
       st = { ...st, nextRefund: next.nextRefund, nextRefundR: next.nextRefundR };
-      const had = boxes.size; boxTopics(st);
+      const had = boxes.size; await boxTopics(st);
       if (boxes.size === had) break;
       next = { ...(await absorb(st, ts, rs.filter((r) => boxes.has(r.box)), cache)), block };
     }
@@ -2879,13 +2877,13 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // spend that inserts no leaf (a whole note withdrawn, as tacit.finance sends one) can only spend a note, so the blocks
     // are passed over unread. A quiet pool on a fast chain, behind its newest catch-up point by a day of blocks, costs a
     // new key one call instead of a log read for every window of them.
-    if (!st.notes.length && st.block < upTo && (await countAt(upTo)) === BigInt(st.tree.size)) { st = { ...st, block: upTo }; return write(st) || st; }
+    if (!st.notes.length && st.block < upTo && (await countVoted(upTo)) === BigInt(st.tree.size)) { st = { ...st, block: upTo }; return write(st) || st; }
     // An index read that stopped partway is gone on from where it got to; one stopped for good ends the read.
     if (keeper && useFeed && st.block < upTo && Date.now() >= feedPause) st = await fromIndex(st, upTo, write, live).catch((e) => { if (e?.stopped) throw e; feedPause = Date.now() + 120_000; return e?.st || st; });
     for (let behind = 0; st.block < upTo;) {
       if (stopped || !live()) throw Object.assign(new Error('stopped'), { stopped: true });
       const a = st.block + 1, z = Math.min(upTo, a + READ_WINDOW - 1);
-      boxTopics(st);
+      await boxTopics(st);
       const [ts, rs] = await windowLogs(a, z);
       let next;
       [st, next] = await absorbAll(st, ts, rs, z);
@@ -3028,7 +3026,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       // key's: no leaf to look at and no note to see spent.
       if (saved.block < tip && !saved.notes.length && leaves != null && BigInt(saved.tree.size) === leaves) view = null;
       else if (saved.block < tip) {
-        boxTopics();
+        await boxTopics();
         const [ts, rs] = await windowLogs(saved.block + 1, tip);
         const next = await absorb(saved, ts, rs.filter((r) => boxes.has(r.box)));
         // The tail is shown only if the pool has held its root at that size: one node cannot make up a payment that has not
@@ -3046,7 +3044,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       // leaves at the height it was read to, so what is read is kept and the newest blocks are read again next time. Short in
       // the confirmed part is events left out, and the state is read again from the chain.
       // The pool's count where the confirmed part ends, as the nodes agree (one node's count is not enough to rebuild on).
-      const atRead = chain.vote ? await chain.vote(chain.pool, NEXT, '0x' + saved.block.toString(16)).then((x) => BigInt(x)).catch(() => null) : await countAt(saved.block);
+      const atRead = await countVoted(saved.block);
       if (atRead != null && BigInt(saved.tree.size) === atRead) { strikes = 0; return summary(); }
       return inconsistent();
     }
@@ -3170,6 +3168,17 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // One that names none of these (whole notes taken in, a key published) is told apart by its escrow.
   const payKey = (p) => { const k = p.kind === 'call' ? [p.why?.swap?.addr, p.why?.dest, p.why?.move, p.why?.index].map((x) => String(x ?? '').toLowerCase()).join('|') : ''; return k.replace(/\|/g, '') ? k : String(p.to).toLowerCase(); };
   const samePay = (a, b) => a && b && a.kind === b.kind && payKey(a) === payKey(b) && a.amount === b.amount;
+  // The tries of payment `pay` a relay turned away within the hour. One whose notes are spent since may have been sent
+  // after all; one whose notes are all unspent may still be sent while the pool has not passed the slot its proof inserts
+  // at (`start`), so the payment goes again only from its notes: two proofs that share a note cannot both land.
+  const triedOf = (pay) => (saved.tried || []).filter((y) => samePay(y.pay, pay) && Date.now() - y.at < 3_600_000);
+  const goneFrom = (y) => covers(state(), y.top) && y.nfs.some((nf) => !state().notes.some((n) => String(n.nf) === nf));
+  const mayHaveLanded = () => Object.assign(new Error('The relay said it had not sent this payment, but notes it used are spent now: it may have landed. Check Activity. Press again only to pay it a second time.'), { duplicate: true });
+  const keptNotes = (y, need) => {
+    const l = new Map(unspent().map((n) => [String(n.nf), n])), ins = y.nfs.map((nf) => l.get(nf));
+    if (ins.some((n) => !n) || ins.reduce((t, n) => t + BigInt(n.v), 0n) < need) throw Object.assign(new Error('A relay turned this payment away and could still send it from the notes it was given, so it goes again only from those, which do not cover it at this fee. Nothing more was sent. Try again in a minute.'), { relay: true });
+    return ins;
+  };
   const unspent = () => { const l = locked(); return state().notes.filter((n) => !pending.has(String(n.nf)) && !l.has(String(n.nf))); };
   // What a payment, a merge or a whole-notes step may spend: with a root, its notes only. A spend with a note a quantum
   // computer could tie to the Tacit key (classicalNote) ties its other input and its outputs to it too; those notes are
@@ -3381,7 +3390,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // `ahead`: this same spend, built and proved while its form was filled in (proveAhead). Its outputs are used when the
   // attempt they were sealed under is still the next one, and its proof when the slot reserved starts where it does.
   // `root`: the root the action began under; another one in use now (another tab) stops it before anything is sealed.
-  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep, guard = null, pay = null, call = null, through = null, ahead = null, plain = false, root = keys.pq }) {
+  async function transact({ ins, outs, ext = 0n, recipient = ZERO_ADDRESS, q = null, onStep, guard = null, pay = null, call = null, through = null, ahead = null, plain = false, root = keys.pq, fresh = false }) {
     if (keys.pq !== root) throw rootMoved();
     if (q?.rl) cur = q.rl;
     carried = null;
@@ -3416,13 +3425,24 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       if (x.pay && !x.pay.merge) saved.landed = [...(saved.landed || []), { pay: x.pay, at: Date.now() }].slice(-20);
       persist();
     };
-    let queued = false;     // 'slot': the relay holds a payment from these notes; 'busy': it is full
+    // A try the relay turned away is remembered (`saved.tried`, with the slot its proof inserts at) and carried to the next
+    // try (`keep`), which goes only from its notes.
+    const refusal = (e, start) => {
+      if (pay && !pay.merge) {
+        const y = { pay, nfs, top, start, at: Date.now() };
+        saved.tried = [...(saved.tried || []).filter((z) => Date.now() - z.at < 3_600_000), y].slice(-8); persist();
+        e.keep = y;
+      }
+      return Object.assign(e, { refused: true });
+    };
+    let queued = false, last = null;     // 'slot': the relay holds a payment from these notes; 'busy': it is full
     for (let round = 0; round < 8; round++) {
       if (round) {
         onStep(RACED_STEP); await sleep(Math.min(8000, 500 * 2 ** round) * (0.5 + Math.random())); await sync();
         await waitFor(() => covers(state(), top), 60_000).catch(() => {});
         const live = new Set(state().notes.map((n) => String(n.nf)));
         if (covers(state(), top) && !nfs.every((nf) => live.has(nf))) throw Object.assign(new Error('These notes were spent meanwhile: this payment, or another one from them, has landed. Check Activity.'), { landed: true });
+        if (pay && !pay.merge && !fresh && triedOf(pay).some(goneFrom)) throw mayHaveLanded();
       }
       let tree = state().tree, slot = null, until = Infinity, h;
       // The pool's head as it is once those waits are over, not as it was before them.
@@ -3434,7 +3454,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
         else if (r) { slot = r.id; tree = r.tree; until = r.until; }
         else tree = state().tree;
       }
-      const start = tree.size;
+      const start = last = tree.size;
       let w, proved;
       // A relayed proof is checked by the relay before it is sent; one the wallet sends, through the wallet's node.
       try {
@@ -3474,10 +3494,10 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
           if (need > fee && need <= fee * 3n / 2n + hair && (q.expect == null || need <= BigInt(q.expect) * 6n / 5n + hair) && k >= 0 && BigInt(outs[k].value) > need - fee) {
             await cancel(slot); undoHold();
             const less = outs.map((o, j) => (j === k ? { ...o, value: BigInt(o.value) - (need - fee) } : o));
-            return transact({ ins, outs: less, ext, recipient, q: { ...(await vetGas(vet({ ...q, fee: String(need) }))), refee: true }, onStep, guard, pay, call, plain, root });
+            return transact({ ins, outs: less, ext, recipient, q: { ...(await vetGas(vet({ ...q, fee: String(need) }), pay?.gas)), refee: true }, onStep, guard, pay, call, plain, root, fresh });
           }
           await cancel(slot); undoHold();
-          throw Object.assign(new Error(`The relay asks ${feeStr(need)} for this, more than it quoted (${feeStr(fee)}), so nothing was sent.`), { relay: true, refused: true });
+          throw refusal(Object.assign(new Error(`The relay asks ${feeStr(need)} for this, more than it quoted (${feeStr(fee)}), so nothing was sent.`), { relay: true }), start);
         }
         if (r.status !== 200 || !r.body.txHash) {
           await cancel(slot);
@@ -3487,17 +3507,16 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
           // free; any other answer may have come after a send, and holds them.
           if (!r.tried && ([400, 404, 413].includes(r.status) || (r.status === 503 && typeof r.body.error === 'string'))) {
             undoHold();
-            // A refusal is not a record that nothing was sent: the notes it was given are remembered, and the same payment
-            // pressed again is held back (spend) if they have been spent since.
-            if (pay && !pay.merge) { saved.tried = [...(saved.tried || []).filter((y) => Date.now() - y.at < 3_600_000), { pay, nfs, at: Date.now() }].slice(-8); persist(); }
-            throw Object.assign(new Error('The relay did not take this payment, so nothing was sent. Try again in a moment, or send it from your wallet.'), { relay: true, refused: true });
+            // A refusal is not a record that nothing was sent: the notes it was given are remembered, the same payment pressed
+            // again goes only from them, and is held back (spend) if they have been spent since.
+            throw refusal(Object.assign(new Error('The relay did not take this payment, so nothing was sent. Try again in a moment, or send it from your wallet.'), { relay: true }), start);
           }
           throw Object.assign(inFlight(id, 'The relay did not take this payment.'), { relay: true });
         }
         h = /^0x[0-9a-f]{64}$/i.test(String(r.body.txHash)) ? r.body.txHash : null;
         onStep('waiting for the block');
         const res = await followed(nfs, start, top, ours);
-        if (res === 'yes') { carried = q.rl || null; settled(); return h; }
+        if (res === 'yes') { carried = q.rl || null; settled(); return (nfs.length && state().spentTx?.[nfs[0]]) || h; }
         if (res === 'other') { undoHold(); throw spentOther(); }
         if (res === 'pending') throw inFlight(id, 'The network has not shown this payment yet.');
         continue;
@@ -3537,7 +3556,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // Nothing landed: rebuild from the chain, so a note an index wrongly showed as unspent is dropped (not when the relay
     // only had these notes queued).
     if (!queued) await rescan().catch(() => {});
-    throw Object.assign(new Error(queued === 'slot' ? 'The relay still holds a payment from these notes. Wait a minute, or send it from your wallet.' : queued ? 'The relay is busy with other payments. Try again in a moment, or send it from your wallet.' : 'Other payments kept landing first. Try again.'), queued === 'busy' ? { refused: true } : {});
+    const e = new Error(queued === 'slot' ? 'The relay still holds a payment from these notes. Wait a minute, or send it from your wallet.' : queued ? 'The relay is busy with other payments. Try again in a moment, or send it from your wallet.' : 'Other payments kept landing first. Try again.');
+    throw queued === 'busy' ? refusal(e, last) : e;
   }
   // `rl`: the relay a held payment was sent through, which it is tried again through and no other.
   const quoteFor = async (via, gas = null, rl = null) => (via === 'self' || !keeper ? null : rl ? (cur = rl, hold = true, keeperGet(qpath(gas), undefined, rl)) : choose(gas, 60_000, true));
@@ -3644,7 +3664,8 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const maxOf = (fee) => { const u = spendable().map((n) => BigInt(n.v)).sort((a, b) => (b < a ? -1 : 1)), t = (u[0] ?? 0n) + (u[1] ?? 0n); if (t <= fee) throw mixWould(fee + 1n) ? sealFirst() : new Error('Your private balance does not cover its fee.'); return t - fee; };
   // While a payment from this balance may still land, a new one waits for the user to say it is a different payment
   // (`fresh`): the usual way out is to try the held one again, which cannot pay twice.
-  async function spendRaw({ to, amount, via, out, onStep, expectFee = null, guard = null, fresh = false, call = null, gas = null, why = null, plain = false }) {
+  // `keep`: a try of this payment a relay turned away just now, whose notes it goes from (relayed).
+  async function spendRaw({ to, amount, via, out, onStep, expectFee = null, guard = null, fresh = false, call = null, gas = null, why = null, plain = false, keep = null }) {
     const root = keys.pq;
     await sync();
     joinHolds();
@@ -3653,7 +3674,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     const shown = expectFee != null && via !== 'self' ? { shown: String(expectFee) } : {};
     const pay = call ? { kind: 'call', to, amount: String(amount), call: intentJson(call), gas, why, ...shown } : out ? { kind: 'withdraw', to, amount: String(amount), ...shown } : { kind: 'send', to: bech32m.encode('bp', to.raw), ...(to.kemHash && { kh: hex(to.kemHash) }), ...(to.ek && { ek: hex(to.ek) }), amount: String(amount), ...shown };
     if (!fresh && amount !== 'max' && (saved.landed || []).some((y) => samePay(y.pay, pay) && Date.now() - y.at < 3_600_000)) throw Object.assign(new Error('This same payment landed within the last hour. Press again only to pay it a second time.'), { duplicate: true });
-    if (!fresh && amount !== 'max' && (saved.tried || []).some((y) => samePay(y.pay, pay) && Date.now() - y.at < 3_600_000 && y.nfs.some((nf) => !state().notes.some((n) => String(n.nf) === nf)))) throw Object.assign(new Error('The relay said it had not sent this payment, but notes it used are spent now: it may have landed. Check Activity. Press again only to pay it a second time.'), { duplicate: true });
+    const was = keep ? [keep] : !fresh && amount !== 'max' ? triedOf(pay) : [];
+    if (was.some(goneFrom)) throw mayHaveLanded();
+    keep = was.find((y) => !(saved.tree.size > y.start)) ?? null;
     // A proof made ahead for this payment brings the quote it was made at, when that is under two minutes old: a relay
     // that now asks more says so (needFee), and the payment is proved again at its fee.
     const mine = early && !early.dead && !call && via !== 'self' && Date.now() - early.at < 120_000 && samePay(early.pay, pay) ? early : null;
@@ -3662,10 +3685,10 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     if (q && expectFee != null) q = { ...q, expect: String(expectFee) };
     if (q?.rl) { cur = q.rl; hold = true; }       // a proof made ahead was made for its own relay
     const fee = q ? BigInt(q.fee) : 0n;
-    const a = amount === 'max' ? maxOf(fee) : BigInt(amount);
+    const kept = keep && keptNotes(keep, 0n), a = amount !== 'max' ? BigInt(amount) : kept ? kept.reduce((t, n) => t + BigInt(n.v), 0n) - fee : maxOf(fee);
     if (a <= 0n) throw new Error('Enter an amount.');
     if (a >= 1n << 120n) throw new Error('That amount is out of range.');
-    const before = state().tree.size, ins = await prepare(a + fee, q, onStep, via, expectFee, root);
+    const before = state().tree.size, ins = kept ? keptNotes(keep, a + fee) : await prepare(a + fee, q, onStep, via, expectFee, root);
     // After merging, the payment is quoted again: it lands minutes after the first quote.
     if (q && state().tree.size !== before) {
       q = await quoteWithin(via, expectFee ?? q.fee, gas);
@@ -3675,7 +3698,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     const pre = mine && mine.key === aheadKey(pay, q, ins, to) ? mine : null;
     if (mine && !pre) mine.dead = true;
     early = null;
-    return payWith(ins, { ...pay, amount: String(a) }, { to, q, onStep, guard, ahead: pre, plain, root });
+    return payWith(ins, { ...pay, amount: String(a) }, { to, q, onStep, guard, ahead: pre, plain, root, fresh });
   }
   // The outputs of payment `pay` from exactly `ins`: change, if any, comes back here.
   function shapeOf(ins, pay, to, q) {
@@ -3687,9 +3710,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     return pay.kind === 'send' ? { outs: [{ to, value: a }, back], ext: 0n, recipient: ZERO_ADDRESS } : { outs: [back, null], ext: -a, recipient: pay.to };
   }
   // The payment `pay` from exactly `ins`.
-  function payWith(ins, pay, { to, q, onStep, guard = null, ahead = null, plain = false, root }) {
+  function payWith(ins, pay, { to, q, onStep, guard = null, ahead = null, plain = false, root, fresh = false }) {
     const { outs, ext, recipient } = shapeOf(ins, pay, to, q);
-    return transact({ ins, outs, ext, recipient, q, onStep, guard, pay, plain, root, ...(pay.kind === 'call' ? { call: pay.call } : { ahead }) });
+    return transact({ ins, outs, ext, recipient, q, onStep, guard, pay, plain, root, fresh, ...(pay.kind === 'call' ? { call: pay.call } : { ahead }) });
   }
   // A payment proved while its form is filled in and still, so that the press, when the relay's queue has not moved,
   // sends at once: built as spend() builds it (the notes it would pick, its outputs sealed under the attempt it would
@@ -4290,10 +4313,10 @@ async function artifact(a, onBytes, signal) {
   for (const [at, base] of list.entries()) {
     if (signal?.aborted) throw new Quiet('replaced');            // a listener added now would never hear it
     let got = 0;
-    const ac = new AbortController(), began = Date.now(), last = at === list.length - 1;
+    const ac = new AbortController(), began = Date.now(), last = at === list.length - 1, stop = () => ac.abort();
     let stall;
-    const arm = () => { stall?.stop(); stall = wakeful(MIRROR_STALL_MS, () => ac.abort()); };
-    signal?.addEventListener('abort', () => ac.abort(), { once: true });
+    const arm = () => { stall?.stop(); stall = wakeful(MIRROR_STALL_MS, stop); };
+    signal?.addEventListener('abort', stop, { once: true });
     try {
       arm();
       const r = await fetch(base + a.name, { signal: ac.signal });
@@ -4316,6 +4339,7 @@ async function artifact(a, onBytes, signal) {
       await cache?.put(key, new Response(b)).catch(() => {});
       return b;
     } catch { stall?.stop(); ac.abort(); onBytes(-got); if (signal?.aborted) throw new Quiet('replaced'); }
+    finally { signal?.removeEventListener('abort', stop); }
   }
   const b = await fromChain(a, onBytes, signal);
   if (b) { await cache?.put(key, new Response(b)).catch(() => {}); return b; }

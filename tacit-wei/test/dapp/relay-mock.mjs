@@ -40,8 +40,10 @@ export function mockRelay(node, relayed, o = {}) {
   return st;
 }
 
-/** Several relays at once, by host: `hosts[host] = { fee, relayer (what it quotes), mode: 'send' | 'refuse400' | 'drop' | 'down' }`.
- *  `log` collects `host path`; `relays` counts each host's /relay requests. */
+/** Several relays at once, by host: `hosts[host] = { fee, relayer (what it quotes), mode: 'send' | 'refuse400' | 'refuse400late' |
+ *  'drop' | 'down', stale409 }`. 'refuse400late' answers 400 and keeps the transaction, which lands just before the next one
+ *  any relay sends; `stale409` answers a transaction whose root is no longer the pool's with 409 stale, as a relay whose queue
+ *  moved on does. `log` collects `host path`; `relays` counts each host's /relay requests. */
 export function mockRelays(node, relayed, hosts) {
   const real = globalThis.fetch, log = [], relays = {};
   globalThis.fetch = async (url, init = {}) => {
@@ -55,9 +57,12 @@ export function mockRelays(node, relayed, hosts) {
     if (p === '/head') return res(200, {root: String(node.tree.root), size: node.size, pending: [], tail: {root: String(node.tree.root)}});
     if (p === '/relay') {
       relays[host] = (relays[host] || 0) + 1;
+      for (const o of Object.values(hosts)) if (o.later) { relayed(o.later); o.later = null; }
       if (st.mode === 'refuse400') return res(400, {error: 'the transaction reverts'});
+      if (st.mode === 'refuse400late') { st.later = body.tx; return res(400, {error: 'the transaction reverts'}); }
       if (st.mode === 'drop') return res(200, {txHash: '0x' + 'cd'.repeat(32)});
       const r = relayed(body.tx);
+      if (r.revert === 'StaleRoot' && st.stale409) return res(409, {error: 'stale', stale: true});
       return r.revert ? res(400, {error: r.revert}) : res(200, {txHash: r.h});
     }
     return res(404, {});

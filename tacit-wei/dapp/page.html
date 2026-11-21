@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ZH9xCoFOz0KQX/yfEgcDlIu7oEG0fG3gSwnAXvdQr38=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2oZl548a4mce2Y5Y/2ii+8cBrKn8aCQXyx6aBKdAd2g=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -5074,6 +5074,7 @@ function bind(w, a) {
   readAcctName();
   refresh();
   if (REQ.v && !REQ.v.box && PROVER.saved) warm();
+  stayRestore();
 }
 // What shows the wallet is redrawn; a sign-in that is waiting on the wallet is left as it is.
 function refresh() { paintWallet(); paintReq(); lgRender(); paintBal(); if (!$('#form [aria-busy="true"]')) renderForm(); }
@@ -5276,6 +5277,31 @@ async function sendCalls(c, calls, sent = () => {}) {
 // The Tacit key is a hash of the wallet's signature over one fixed message, the same in every Tacit app, so the same
 // account opens the same key wherever it signs. A first signature is taken only when a second one is the same.
 const IDENTITY = ['Tacit identity', '', 'Signing this creates your Tacit private key. Anyone who has this signature controls all of your Tacit funds.', '', 'Sign it only in a Tacit app you trust. Every Tacit app asks for exactly this message.', '', 'network: mainnet', 'version: 1'].join('\n');
+// What this browser keeps per account is a commitment to the key it opened: under a hash of the account, the hash of the key.
+const anchorOf = (a) => 'tacit-pay-anchor-v2:' + hex(keccak(utf8(`tacit-pay-anchor|${a}`)).subarray(0, 16));
+const sealOf = (key) => hex(keccak(cat(utf8('tacit-pay-anchor-v2'), key)).subarray(0, 16));
+// ── staying signed in for a tab ──
+// Off unless the reader turns it on (the choice is kept in this browser). On, the key opened is also kept in this tab's session
+// storage, so a reload does not ask the wallet again: until the tab is closed, the reader signs out, the wallet locks or
+// moves to another account, or 12 hours pass. Taken back only for the account that opened it (or for a pasted key), and only
+// if it is the key this browser opened for that account (its commitment).
+const STAY = 'tacit-wei-stay-v1', STAY_KEY = 'tacit-wei-stay-key-v1', STAY_MS = 12 * 3_600_000;
+const stayOn = () => store.get(STAY) === '1';
+const stayDrop = () => { try { sessionStorage.removeItem(STAY_KEY); } catch {} };
+const stayRec = () => { try { const o = JSON.parse(sessionStorage.getItem(STAY_KEY) || 'null'), age = Date.now() - o?.t; return /^[0-9a-f]{64}$/.test(o?.k) && age >= 0 && age < STAY_MS ? o : null; } catch { return null; } };
+const stayKeep = (key, account) => { const o = stayRec(), k = hex(key); try { sessionStorage.setItem(STAY_KEY, JSON.stringify({ k, a: account ? lc(account) : null, t: o?.k === k ? o.t : Date.now() })); } catch {} };
+function stayGet(account) {
+  const o = stayRec();
+  if (!o || !stayOn() || (o.a ?? null) !== (account ? lc(account) : null)) return null;
+  const key = unhex(o.k);
+  return big(key) && big(key) < SN && (!account || store.get(anchorOf(lc(account))) === sealOf(key)) ? key : null;
+}
+// The kept key, when the account the wallet is on (none, for a pasted key) is the one that opened it.
+function stayRestore() {
+  if (S.key || signing || S.busy) return;
+  const key = stayGet(S.account);
+  if (key) setKey(key, S.account, false, S.provider, true);
+}
 // One sign-in at a time, however many buttons ask: a second would open a second prompt that cancels the first.
 let signing = null;
 // A first sign-in's first signature, while the second that checks it waits (refused, stopped, or dropped by the wallet):
@@ -5299,10 +5325,12 @@ const openWithWallet = (say = () => {}) => {
 };
 async function keyFromWallet(say) {
   const was = S.key, a = await connect(say), p = S.provider, msg = utf8(IDENTITY);
+  const had = stayGet(a);
+  if (had) { if (S.key !== was) throw new Quiet('another key was opened meanwhile'); return setKey(had, a, false, p); }
   const code = await walletAsk(p, 'eth_getCode', [a, 'latest']).catch(() => '0x');
   if (/^0x[0-9a-f]+$/i.test(code) && !/^0x0*$/i.test(code) && !/^0xef0100[0-9a-f]{40}$/i.test(code)) throw new Error('A smart-contract wallet cannot open a Tacit key. Use an ordinary account.');
   // What this browser keeps per account is a commitment to the key it opened, not the key's public point.
-  const anchor = 'tacit-pay-anchor-v2:' + hex(keccak(utf8(`tacit-pay-anchor|${a}`)).subarray(0, 16)), oldAnchor = `tacit-eth-identity-anchor:${a}`, first = !store.get(anchor) && !store.get(oldAnchor);
+  const anchor = anchorOf(a), oldAnchor = `tacit-eth-identity-anchor:${a}`, first = !store.get(anchor) && !store.get(oldAnchor);
   const who = `${a}|${S.wallet?.info.rdns || ''}`;
   if (first && DRIFT.has(who)) throw new Error(DRIFTED);
   const signed = async (text) => {
@@ -5330,7 +5358,7 @@ async function keyFromWallet(say) {
   }
   let key = sha256(sig);
   while (!big(key) || big(key) >= SN) key = sha256(cat(key, utf8('tacit-prf-recovery')));
-  const seal = hex(keccak(cat(utf8('tacit-pay-anchor-v2'), key)).subarray(0, 16)), old = store.get(oldAnchor);
+  const seal = sealOf(key), old = store.get(oldAnchor);
   if ((store.get(anchor) && store.get(anchor) !== seal) || (old && old !== hex(pubOf(key)))) throw new Error('This account opened a different Tacit key on this device before, so nothing was opened. Sign in with the wallet app you used then.');
   if (store.set(anchor, seal) && old) store.del(oldAnchor);
   if (S.key !== was) throw new Quiet('another key was opened meanwhile');
@@ -5469,19 +5497,20 @@ const forgetKey = (all) => {
   // The next key starts as a new visitor would: how it pays (relay or wallet) and what it picked are not the last key's.
   if (all) { for (const o of [TIMES, DRAFT]) for (const k of Object.keys(o)) delete o[k]; Object.assign(S, { inTok: {}, outTok: {}, askTok: {}, route: {}, shieldVia: null, payIn: null, unitWas: null, outIn: null, outWas: null }); }
 };
-function setKey(key, account, first = false, via = null) {
+function setKey(key, account, first = false, via = null, quiet = false) {
   const pool = poolKeys(key);
   forgetKey(!!S.key);
   // notes: the seed whole notes come from, so making and finding them asks the wallet for no signature
   S.key = { pool, address: tacitAddress(key, pool), account, via: account ? via || S.provider : null, notes: hmac(key, utf8('tacit-wei-tornado-v1')),
-    lane: (kh) => tacitAddress(key, pool, kh), seal: pqSealer(key) };
+    lane: (kh) => tacitAddress(key, pool, kh), seal: pqSealer(key), keep: () => stayKeep(key, account) };
+  if (stayOn()) S.key.keep(); else stayDrop();
   pqUse(pqKept());
   dropOldAnchors();
   if (!store.set('tacit-pay-probe-v1', '1')) toast('This browser will not let the page save anything. Keep this tab open until each payment shows done: one still under way is forgotten if you reload.', true); else store.del('tacit-pay-probe-v1');
   Object.assign(TIMES, vget('times') || {});
   // The balance kept from the last visit is kept as a decimal string: read back as a number, or not at all.
   for (const c of CHAINS) { const v = vget('seen')?.[c.chainId]; CH[c.chainId] = { last: /^\d{1,30}$/.test(v) ? BigInt(v) : null }; }
-  if (!first) toast('Signed in');
+  if (!first && !quiet) toast('Signed in');
   mount($('#status'), '');
   render(); syncAll(true); warmBoxes(pool);
   if (first) mount($('#status'), html`<span class="ok">Signed in. Your Address ID is <b class="num nw">${addressId(S.key.address)}</b>; payers see it too.</span>`);
@@ -5496,6 +5525,7 @@ async function warmBoxes(keys) {
 }
 // `why`: 'account' when the wallet moved to another account, which moving back undoes while an action holds the lock.
 function lock(why = true) {
+  stayDrop();
   // During an action the key is needed to its end: the lock is kept and taken once it is over.
   if (S.busy) { S.lockAfter = S.lockAfter === true ? true : why; toast('You will be signed out when this action finishes.'); return false; }
   forgetKey(true);
@@ -6042,24 +6072,31 @@ function paintTabs() {
 // Where signing is safe: the signature is the key and is not bound to a site. tacit.wei.limo, tacit.gwei.limo, tacit.finance,
 // and a host that names a contract in tacit.wei's line of versions (checked by servedBy); null until that is known.
 const HOST = { ok: ['tacit.wei.limo', 'tacit.gwei.limo', 'tacit.finance', 'www.tacit.finance'].includes(location.hostname) || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || null };
+// The choice to stay signed in for this tab: under the sign-in button, and in the sheet once signed in (which keeps or drops the key at once).
+const stayBox = (order = '') => html`<label class="lbl nw" style="${order}justify-content:flex-start;gap:10px;min-height:44px;align-items:center"><input type="checkbox" data-stay ${stayOn() ? 'checked' : ''}> <span>Stay signed in in this tab</span></label>`;
+const stayWire = (root) => $$('[data-stay]', root).forEach((i) => i.onchange = () => { if (i.checked) { store.set(STAY, '1'); S.key?.keep(); } else { store.del(STAY); stayDrop(); } });
 const hostNote = () => html`<p class="note${HOST.ok === false ? ' err' : ''}">Sign it only on tacit.wei.limo, tacit.gwei.limo or tacit.finance: the signature opens your balance.${HOST.ok === false ? ` This page is on ${location.hostname}: open tacit.wei.limo to sign in.` : HOST.ok == null ? ` This page is on ${location.hostname}, which has not been checked against tacit.wei yet.` : ''}</p>`;
 // A browser that has opened no key before asks the wallet for the signature twice: said before it is pressed, not only as it happens.
 const firstOnDevice = () => { try { for (let i = localStorage.length; i--;) { const k = localStorage.key(i) || ''; if (k.startsWith('tacit-pay-anchor-v2:') || k.startsWith('tacit-eth-identity-anchor:')) return false; } return true; } catch { return false; } };
+// The key field stays the first input in `.opts` (wireSignIn and the tests find it so): the choice to stay signed in follows it in the
+// markup and sits under the button by `order`.
 function signIn(id) {
   const who = S.account;
   return html`<div class="opts" id="${id}">
-    <button class="opt main" type="button" data-in="eth"><span class="opt-t">${ethIcon}${who ? `Continue with ${whoShort(who)}` : 'Sign in with your Ethereum wallet'}</span><span class="opt-m">Opens your Tacit key, the same as on tacit.finance.</span></button>
+    <button class="opt main" type="button" data-in="eth" style="order:-2"><span class="opt-t">${ethIcon}${who ? `Continue with ${whoShort(who)}` : 'Sign in with your Ethereum wallet'}</span><span class="opt-m">Opens your Tacit key, the same as on tacit.finance.</span></button>
     ${firstOnDevice() ? html`<p class="note">First time on this device: your wallet is asked to sign the same message twice, which confirms it gives the same key every time.</p>` : ''}
     ${hostNote()}
     <p class="note" data-say role="status" hidden></p>
     ${S.wallet && S.account ? html`<p class="note">${S.wallet.info.name} · ${whoShort(S.account)} · <button class="link" type="button" data-in="switch">use another wallet</button></p>` : !installed().length ? html`<p class="note">${NO_WALLET}</p>` : ''}
     <p class="note">${installed().length && !S.provider?.wc ? html`<button class="link" type="button" data-in="wc">Connect a wallet app</button> · ` : ''}<button class="link" type="button" data-in="paste">Paste a key instead</button></p>
     <div class="amt text" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" aria-label="Tacit key"><button class="link" type="button" data-in="key">open</button></div>
+    ${stayBox('order:-1;')}
   </div>`;
 }
 function wireSignIn(root, after) {
   const box = $('.opts', root);
   if (!box) return;
+  stayWire(box);
   for (const ev of ['pointerdown', 'focusin']) box.addEventListener(ev, wakeRelays, { once: true });
   // What the wallet is doing, and what went wrong, shows here where it was asked.
   const say = (m, bad = false) => { const el = $('[data-say]', root); if (el) { el.hidden = !m; el.className = 'note' + (bad ? ' err' : ''); mount(el, m || ''); } };
@@ -8712,10 +8749,12 @@ function renderWalletSheet() {
     <p class="note">Your Tacit address${S.key.account ? `, opened with ${short(S.key.account)}` : ''}. Address ID <b class="num nw">${addressId(S.key.address)}</b>.</p>
     <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Sign out</button></div>
     <div class="kv" style="margin-top:14px"><span>Wallet</span>${S.account ? html`<b>${S.wallet?.info.name ? `${S.wallet.info.name} · ` : ''}<span class="nw id">${whoShort(S.account)}</span></b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
+    ${stayBox()}<p class="note mute">Keeps your key in this tab, so a reload does not ask your wallet again. It goes when you sign out, close the tab, or after 12 hours (a browser may keep a copy for crash recovery a little longer). Not for a shared computer.</p>
     <p class="note" id="w-say" role="status"></p>${S.account ? html`<p class="note"><button class="link" type="button" id="w-swap">Use another wallet</button></p>` : ''}
     <p class="note">Your wallet, or your key, opens these funds on any device${S.key.pq ? ', plus your 24 words for what is sealed under them' : ''}. Keep ${S.key.pq ? 'them all' : 'both'} to yourself.</p>
     <div class="pq" id="w-pq">${pqSection()}</div>`);
   pqWire(el);
+  stayWire(el);
   $('#w-copy').onclick = () => copy(S.key.address, 'Address copied');
   $('#w-lock').onclick = () => { lock(); renderWalletSheet(); $('#wallet-h').focus(); };
   $('#w-conn')?.addEventListener('click', () => connect((m) => mount($('#w-say'), m || '')).then(() => { renderWalletSheet(); $('#wallet-h').focus(); }, (e) => { mount($('#w-say'), ''); warn(e); }));
@@ -11491,6 +11530,7 @@ render();
 started = true;
 wcHeld();                // once: a later wallet announcing itself must not take the mark of a send still under way
 restoreWallet();
+stayRestore();           // a pasted key kept for this tab; one opened by a wallet comes back as the wallet is bound
 readRegistry();
 lgTvlLine(); lgTvl();    // what the pools hold, in the footer (the same read for every visitor)
 Promise.resolve().then(() => caches.open(ARTIFACTS)).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});

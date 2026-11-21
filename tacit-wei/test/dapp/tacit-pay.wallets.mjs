@@ -173,6 +173,84 @@ console.log('one wallet: a first sign-in, then a later visit');
   await p.context().close();
 }
 
+console.log('stay signed in for this tab: kept only when asked, taken back only for the account that opened it');
+{
+  const REC = 'tacit-wei-stay-key-v1';
+  const rec = (p) => p.evaluate((k) => sessionStorage.getItem(k), REC);
+  const put = (p, o) => p.evaluate(([k, v]) => { const r = JSON.parse(sessionStorage.getItem(k)); sessionStorage.setItem(k, JSON.stringify({...r, ...v})); }, [REC, o]);
+  const stayIn = async (p) => { await p.click('#wallet'); await p.check('#sheet-wallet [data-stay]'); await p.click('#sheet-wallet [data-in="eth"]'); return opened(p); };
+  const signs = async (p) => (await log(p)).filter((x) => x === '0:personal_sign').length;
+  const back = async (p) => { await p.reload(); await p.waitForTimeout(500); };
+
+  // on: the key is kept in this tab, and a reload signs in with no signature
+  let p = await open([ALPHA]);
+  await p.click('#wallet');
+  ok(!(await p.isChecked('#sheet-wallet [data-stay]')), 'the choice is off until it is made');
+  await p.click('#sheet-wallet [data-close]');
+  ok(await stayIn(p), 'turned on, a first sign-in opens the key');
+  const r0 = JSON.parse(await rec(p)), who = await label(p);
+  ok(/^[0-9a-f]{64}$/.test(r0.k) && r0.a === ALPHA.account && r0.t > 0, 'the key is kept in this tab\'s session storage, for its account', await rec(p));
+  ok(!(await p.evaluate((k) => JSON.stringify({...localStorage}).includes(k), r0.k)), 'and not in the browser\'s plain storage');
+  await back(p);
+  ok(await opened(p) && await label(p) === who, 'a reload signs in again, to the same key', await label(p));
+  ok((await signs(p)) === 0 && !(await log(p)).includes('0:eth_requestAccounts'), 'without asking the wallet to sign or to connect', (await log(p)).join());
+  ok(!p.errors.length, 'no page errors', p.errors.join(' | '));
+
+  // sign out: gone at once, and a reload is signed out
+  await p.click('#wallet'); await p.click('#w-lock');
+  ok(await rec(p) === null, 'signing out takes the key out of the tab');
+  await back(p);
+  ok(/^Sign in/.test(await label(p)), 'and a reload stays signed out', await label(p));
+  await p.context().close();
+
+  // turned off in the sheet: the key is dropped at once; the choice off keeps nothing
+  p = await open([ALPHA]);
+  ok(await stayIn(p) && (await rec(p)) !== null, 'on again, in a fresh tab');
+  await p.click('#wallet'); await p.uncheck('#sheet-wallet [data-stay]');
+  ok(await rec(p) === null, 'turning it off in the sheet drops the key at once');
+  await back(p);
+  ok(/^Sign in/.test(await label(p)), 'a reload is signed out', await label(p));
+  await p.context().close();
+  p = await open([ALPHA]);
+  await signInFromHeader(p);
+  ok(await opened(p) && await rec(p) === null, 'with the choice off nothing is kept');
+  await p.context().close();
+
+  // a record that is not the account's, not the key this browser opened, or too old, is not used
+  for (const [what, o, again] of [['another account\'s', {a: '0x' + '11'.repeat(20)}, 1], ['not this browser\'s key', {k: '22'.repeat(32)}, 1], ['older than 12 hours', {t: Date.now() - 13 * 3_600_000}, 1]]) {
+    p = await open([ALPHA]);
+    await stayIn(p);
+    await put(p, o);
+    await back(p);
+    ok(/^Sign in/.test(await label(p)), `a record that is ${what}: a reload is not signed in`, await label(p));
+    await p.click('#wallet'); await p.click('#sheet-wallet [data-in="eth"]');
+    ok(await opened(p) && (await signs(p)) === again, `and signing in asks the wallet as usual (${again} signature)`, (await log(p)).join());
+    ok(JSON.parse(await rec(p)).k === r0.k, 'and the right key is kept in the record\'s place');
+    await p.context().close();
+  }
+
+  // the wallet is not connected on the reload (locked): signing in again with the same account needs no signature
+  p = await open([ALPHA]);
+  await stayIn(p);
+  await p.evaluate(() => sessionStorage.removeItem('auth0'));
+  await back(p);
+  ok(await label(p) === 'Sign in', 'a wallet that is not connected: the reload is not signed in', await label(p));
+  await p.click('#wallet'); await p.click('#sheet-wallet [data-in="eth"]');
+  ok(await opened(p) && (await signs(p)) === 0 && (await log(p)).includes('0:eth_requestAccounts'), 'connecting it again signs in with no signature', (await log(p)).join());
+  await p.context().close();
+
+  // a pasted key is kept the same way, and needs no wallet at all
+  p = await open([ALPHA]);
+  await p.click('#wallet'); await p.check('#sheet-wallet [data-stay]'); await p.click('#sheet-wallet [data-in="paste"]');
+  await p.fill('#sheet-wallet .opts input', '11'.repeat(32)); await p.click('#sheet-wallet [data-in="key"]');
+  ok(await opened(p) && JSON.parse(await rec(p)).a === null, 'a pasted key is kept, for no account');
+  const pasted = await label(p);
+  await back(p);
+  ok(await label(p) === pasted, 'a reload signs in with it', await label(p));
+  ok(!(await log(p)).some((x) => /personal_sign|eth_requestAccounts/.test(x)), 'with the wallet asked for nothing', (await log(p)).join());
+  await p.context().close();
+}
+
 console.log('a button that says "Sign in" starts it: one press from the form, not two');
 {
   const p = await open([ALPHA]);

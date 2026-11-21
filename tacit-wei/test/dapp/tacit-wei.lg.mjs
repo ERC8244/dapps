@@ -137,6 +137,8 @@ if (kept) {
   check(await until(p, () => document.querySelector('#lg-notes')?.hidden && document.querySelectorAll('#lg-notes [data-lg-out]').length === 0, null, 8e3) && (await p.evaluate(() => Object.keys(localStorage).filter((k) => /^tacit-wei-fixed-(notes|log|pending|next):/.test(k)))).length === 0, 'with the wallet connected on load and no sign-in, the notes stay sealed: none listed, none in plain storage', `hidden=${await p.$eval('#lg-notes', (e) => e.hidden)}`);
   await signIn(p);
   check(await until(p, () => !document.querySelector('#lg-notes')?.hidden && document.querySelectorAll('#lg-notes [data-lg-out]').length === 2, null, 15e3), 'signed in again: #lg-notes lists the 2 notes', await txt(p, '#lg-notes'));
+  check(await p.$eval('#lg-box', (d) => !d.open) && /Whole notes \(2\)/.test(await txt(p, '#lg-box > summary')), 'with notes held, the card starts shut as "Whole notes (2)"', await txt(p, '#lg-box > summary'));
+  await p.click('#lg-box > summary');
   const before = env.typed.length;
   const [dl] = await Promise.all([p.waitForEvent('download', {timeout: 30e3}).catch(() => null), p.click('#lg-save')]);
   check(!!dl, '"Save as text" downloads a file', dl?.suggestedFilename());

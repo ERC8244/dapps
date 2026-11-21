@@ -121,15 +121,23 @@ console.log('3. a balance already there: a line above it instead, and Send moves
   await signIn(p); await ready(p);
   check(await until(p, () => !!document.querySelector('#bal-pq') && !document.querySelector('#f-pq'), null, 15e3), 'no inline step; the balance offers "Turn it on"', await txt(p, '#bal-note'));
   check(await until(p, () => /1\.97/.test(document.querySelector('#bal')?.textContent || '') && /0\.17 ready to pay/.test(document.querySelector('#bal')?.textContent || ''), null, 15e3), 'the headline is all of it, 1.97 ETH, with 0.17 ready to pay', await txt(p, '#bal'));
+  check(await p.$eval('#bal-parts', (d) => !d.open) && !(await p.isVisible('#bal-parts b')), 'the parts of the total stay behind a tap', await txt(p, '#bal'));
+  await p.click('#bal-parts summary');
+  check(await p.isVisible('#bal-parts b') && /0\.17 ready to pay · 1\.8 in 9 whole notes/.test(await txt(p, '#bal-parts')), 'tapped: what is ready to pay and what is in whole notes', await txt(p, '#bal-parts'));
   await p.click('#bal-pq-later');
   check(await until(p, () => !document.querySelector('#bal-pq'), null, 5e3), '"Not now" takes the line away');
   // the notes card: grouped by size
   const card = await txt(p, '#lg-notes');
   check(/8 × 0\.1 ETH/.test(card) && /(^|[^.\d])1 ETH Make ready to pay/.test(card) && !/note \d/.test(card) && !/1 × 1 ETH/.test(card) && !/Kohaku/.test(card), 'the notes card groups several notes by size (8 × 0.1) and lists a single one on its own, no "Kohaku"', card.slice(0, 300));
   check(await p.evaluate(() => !!document.querySelector('#lg-notes #lg-intake details')), 'and holds "Make whole notes from your private balance"');
+  check(await p.$eval('#lg-box', (d) => !d.open) && /^Whole notes \(9\)$/.test(await txt(p, '#lg-box > summary')) && !(await p.isVisible('#lg-find')), 'the card starts shut as "Whole notes (9)", Find inside it', await txt(p, '#lg-box > summary'));
+  await p.click('#lg-box > summary');
+  check(await p.isVisible('#lg-find') && await p.isVisible('#lg-paste') && await p.isVisible('#lg-save'), 'opened: Find, Paste a note, Save as text');
+  await p.click('#bal-re'); await ready(p); await p.waitForTimeout(800);
+  check(await p.$eval('#lg-box', (d) => d.open), 'and it stays open through a redraw (for the visit)');
   await p.click('#tabs [data-tab="send"]');
   await p.fill('#f-to', DEV_TACIT1); await p.fill('#f-amt', '0.5');
-  check(await until(p, () => /Use a 1 ETH note, then pay/.test(document.querySelector('#f-go')?.textContent || '') && !document.querySelector('#f-go').disabled, null, 15e3), 'paying 0.5 with 0.17 ready: the form\'s button says "Move a 1 ETH note in, then pay"', await txt(p, '#f-go'));
+  check(await until(p, () => /few minutes/.test(document.querySelector('#f-rcpt')?.textContent || '') && /^Send privately$/.test(document.querySelector('#f-go')?.textContent.trim()) && !document.querySelector('#f-go').disabled, null, 15e3) && /Part of this comes from a whole note: it takes a few minutes, and that step shows on chain; the payment stays private\./.test(await rcpt(p)), 'paying 0.5 with 0.17 ready: the form\'s button says "Move a 1 ETH note in, then pay"', await txt(p, '#f-go'));
   check(await p.$$eval('#form button.btn', (b) => b.length) === 1, 'and it is the only button of the form', await p.$$eval('#form button.btn', (b) => b.map((x) => x.textContent).join(' | ')));
   check(/0\.17 ETH is ready to pay/.test(await rcpt(p)) && /No wallet needed/.test(await rcpt(p)) && /up to 3%/.test(await rcpt(p)) && /up to 0\.25%/.test(await rcpt(p)) && /a few minutes/.test(await rcpt(p)) && !/signs a message/.test(await rcpt(p)), 'saying what is ready, that no wallet is needed, the costs and the wait', await rcpt(p));
   await p.fill('#f-amt', '0.1'); await p.waitForTimeout(600);
@@ -225,7 +233,7 @@ console.log('7. the registry has gas from the note off (bit 1): notes still coun
   check(await until(p, () => /From whole notes \(1\) ?1 ETH/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 15e3) && /Gas from the note is off for now, so your wallet sends each note/.test(await rcpt(p)) && !(await p.$('#f-rcpt [data-lg-gas]')), 'Withdraw takes the note, saying the wallet sends it (no gas link)', await rcpt(p));
   await p.click('#tabs [data-tab="send"]');
   await p.fill('#f-to', DEV_TACIT1); await p.fill('#f-amt', '0.5');
-  check(await until(p, () => /then pay/.test(document.querySelector('#f-go')?.textContent || ''), null, 15e3) && /your wallet sends the move and shows as the sender/.test(await rcpt(p)), 'Send still offers the move, saying the wallet sends it', await rcpt(p));
+  check(await until(p, () => /few minutes/.test(document.querySelector('#f-rcpt')?.textContent || '') && /Send privately/.test(document.querySelector('#f-go')?.textContent || ''), null, 15e3) && /your wallet sends the move and shows as the sender/.test(await rcpt(p)), 'Send still offers the move, saying the wallet sends it', await rcpt(p));
   check(env.C[1].sent.length === 0, 'nothing sent');
   noErrors(p, 'scenario 7');
   await L.close(p);
@@ -378,6 +386,32 @@ console.log('11. a withdrawal in 3 parts: the first now, two kept sealed, each o
     check(await until(p, () => !/Part 2 of 3/.test(document.querySelector('#bal-note')?.textContent || ''), null, 5e3) && (await recsOf(p)).length === 1, 'Dismiss clears it');
   }
   noErrors(p, 'scenario 11');
+  await L.close(p);
+}
+
+console.log('12. the combine offer only when a payment could not take the balance; a note that needs a look opens the card');
+{
+  const few = mkEnv(); L.lgState(few);
+  for (let i = 0; i < 4; i++) few.C[1].deposit(KEY, E / 100n);
+  let p = await L.open(few, {connected: true});
+  await signIn(p); await ready(p);
+  await until(p, () => /fee/.test(document.querySelector('#form .route')?.textContent || ''), null, 15e3); await p.waitForTimeout(800);
+  check(!/parts/.test(await noteOf(p)) && !(await p.$('#bal-combine')), 'four parts: a payment combines them itself, so no offer', await noteOf(p));
+  await L.close(p);
+  const many = mkEnv(); L.lgState(many);
+  for (let i = 0; i < 12; i++) many.C[1].deposit(KEY, E / 100n);
+  p = await L.open(many, {connected: true});
+  await signIn(p); await ready(p);
+  check(await until(p, () => /Your balance is in 12 parts, more than one payment can combine\. Combine them now: 11 steps/.test(document.querySelector('#bal-note')?.textContent || ''), null, 20e3), 'twelve parts, more than one payment combines: offered', await noteOf(p));
+  await L.close(p);
+  const {env, seed} = await holdings();
+  const n = await L.noteFor(20, P01);
+  env.tc.deposit(n.pool, n.c); env.tc.spend(n.pool, n.nh, '0x7838000000000000000000000000000000005255');
+  const meta = JSON.parse(seed[notesKey]);
+  p = await L.open(env, {connected: true, seed: {[notesKey]: JSON.stringify([...meta, {...L.metaOf(n), sp: 1, sv: 1, acct: '0x7838000000000000000000000000000000005255', left: 1}])}});
+  await signIn(p); await ready(p);
+  check(await until(p, () => !!document.querySelector('[data-lg-left]'), null, 15e3) && await p.$eval('#lg-box', (d) => d.open) && await p.isVisible('[data-lg-left]'), 'something left at a note\'s one-time address: the card opens with "Send it on" in view');
+  noErrors(p, 'scenario 12');
   await L.close(p);
 }
 

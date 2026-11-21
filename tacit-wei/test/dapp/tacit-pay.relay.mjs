@@ -206,18 +206,10 @@ const total = toK1.reduce((x, y) => x + y, 0n), got = await q.balance(eth(total)
 ok(got === eth(total), 'a wallet opened on it still finds what it was paid, read from the chain instead', `${got} (${toK1.map(eth).join(' + ')})`);
 ok(calls('/events') > 0, 'the index was asked first');
 
-console.log('\none press combines a balance held in parts');
+console.log('\na balance held in a few parts: no standing offer to combine (a payment combines what it needs)');
 relay.events = null;
-const parts = toK1.length, steps = BigInt(parts - 1), after = total - steps * 5n * E12;
-await q.waitForFunction((n) => new RegExp(`in ${n} parts`).test(document.querySelector('#bal-note')?.textContent || ''), parts, {timeout: 60e3}).catch(() => {});
-const say = (await q.textContent('#bal-note')).replace(/\s+/g, ' ');
-ok(new RegExp(`Your balance is in ${parts} parts; a payment combines the ones it needs\\. Combine them now: ${steps} steps, fee ${eth(steps * 5n * E12).replace('.', '\\.')} ETH in all\\.`).test(say), 'the balance says how many parts it is in, and what combining them costs', say.slice(0, 160));
-ok(/Combine from my wallet/.test(await q.textContent('#bal-note')), 'while the relay is the route, the same offer can be taken from the wallet instead');
-await q.click('#bal-combine');
-s = await q.status(/Combined|err/, 900e3);
-ok(new RegExp(`Combined ${parts} parts into one`).test(s), `${steps} relayed steps later, it is one part`, s);
-ok(await q.balance(eth(after), 120e3) === eth(after), `the balance is the sum less ${steps} fees: ${eth(after)}`);
-await q.waitForFunction(() => !/parts/.test(document.querySelector('#bal-note')?.textContent || ''), null, {timeout: 60e3}).catch(() => {});
-ok(!/parts/.test(await q.textContent('#bal-note')), 'and the offer is gone');
+const parts = toK1.length;
+await q.waitForTimeout(3000);
+ok(parts <= 9 && !/parts/.test(await q.textContent('#bal-note')) && !(await q.$('#bal-combine')), `${parts} parts: the balance says nothing of them`, (await q.textContent('#bal-note')).replace(/\s+/g, ' '));
 ok(!q.errors.length && !p.errors.length, 'no page errors', [...p.errors, ...q.errors].join(' | '));
 finish(() => lab.close());

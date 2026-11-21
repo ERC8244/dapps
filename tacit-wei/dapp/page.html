@@ -3920,7 +3920,7 @@ const CEREMONY = {
 };
 // ipfs.io, dweb.link and w3s.link serve a service worker now, not files (2026-10), so they are not in this list.
 // gateway.pinata.cloud answers the key with 429 and no CORS header (2026-10), so it is not either.
-const MIRRORS = ['https://tacit.finance/evm-pool/', `https://ipfs.filebase.io/ipfs/${CEREMONY.bundle}/`, `https://ipfs.orbitor.dev/ipfs/${CEREMONY.bundle}/`];
+const MIRRORS = ['https://tacit.finance/evm-pool/', 'https://raw.githubusercontent.com/src-company/tacit/main/dapp/evm-pool/', `https://ipfs.filebase.io/ipfs/${CEREMONY.bundle}/`, `https://ipfs.orbitor.dev/ipfs/${CEREMONY.bundle}/`];
 
 // ── small things ──
 const $ = (s, el = document) => el.querySelector(s);
@@ -4309,9 +4309,13 @@ async function artifact(a, onBytes, signal) {
     } catch {}
     await cache.delete(key).catch(() => {});
   }
-  const list = mirrors();
-  for (const [at, base] of list.entries()) {
+  // A mirror outside IPFS (whose bundle is pinned as it is) is asked first for a gzip copy, about a third smaller, which the
+  // browser unpacks as it arrives; what comes out is held to the same size and SHA-256. Then for the file itself.
+  const zip = typeof DecompressionStream === 'function';
+  const list = mirrors().flatMap((base) => [...(zip && !/\/ipfs\//.test(base) ? [[base, `${a.name}.gz`]] : []), [base, a.name]]), slow = new Set();
+  for (const [at, [base, file]] of list.entries()) {
     if (signal?.aborted) throw new Quiet('replaced');            // a listener added now would never hear it
+    if (slow.has(base)) continue;
     let got = 0;
     const ac = new AbortController(), began = Date.now(), last = at === list.length - 1, stop = () => ac.abort();
     let stall;
@@ -4319,10 +4323,13 @@ async function artifact(a, onBytes, signal) {
     signal?.addEventListener('abort', stop, { once: true });
     try {
       arm();
-      const r = await fetch(base + a.name, { signal: ac.signal });
+      const r = await fetch(base + file, { signal: ac.signal });
       if (!r.ok) { stall.stop(); continue; }
+      // gzip's first two bytes say whether to unpack (a host may have unpacked it already on the way).
+      const raw = r.body.getReader(), first = await raw.read(), head = first.value || new Uint8Array();
+      const body = new ReadableStream({ start(c) { if (head.length) c.enqueue(head); if (first.done) c.close(); }, async pull(c) { const x = await raw.read(); if (x.done) c.close(); else c.enqueue(x.value); }, cancel: (e) => raw.cancel(e) });
       // Read straight into one buffer of the pinned size: no list of parts and no copy of 33 MB to join them.
-      const reader = r.body.getReader(), b = new Uint8Array(a.bytes);
+      const reader = (zip && head[0] === 0x1f && head[1] === 0x8b ? body.pipeThrough(new DecompressionStream('gzip')) : body).getReader(), b = new Uint8Array(a.bytes);
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -4332,7 +4339,7 @@ async function artifact(a, onBytes, signal) {
         // A mirror that after half a minute would take more than ten minutes at its pace (or runs under 10 KB/s) is left for
         // the next one; never the last.
         const secs = (Date.now() - began) / 1000;
-        if (!last && secs > 30 && got / secs < Math.max(10_000, a.bytes / 600)) throw new Error('too slow');
+        if (!last && secs > 30 && got / secs < Math.max(10_000, a.bytes / 600)) { slow.add(base); throw new Error('too slow'); }
       }
       stall.stop();
       if (got !== a.bytes || await sha256hex(b) !== a.sha256) { onBytes(-got); continue; }
@@ -5463,7 +5470,8 @@ function setKey(key, account, first = false, via = null) {
   mount($('#status'), '');
   render(); syncAll(true); warmBoxes(pool);
   if (first) mount($('#status'), html`<span class="ok">Signed in. Your Address ID is <b class="num nw">${addressId(S.key.address)}</b>; payers see it too.</span>`);
-  if (PROVER.saved) warm();
+  // A key just opened is about to be used: the proving key comes now (from this browser's copy when it has one).
+  warm();
 }
 // Every chain's first read watches the key's first deposit addresses and refund addresses (receiveKeys: two curve
 // multiplications each, ~9 ms here and several times that on a phone). Worked out one at a time while the reads wait on the
@@ -6033,6 +6041,8 @@ function wireSignIn(root, after) {
     // A host that is not this page's own (a shared or path-style gateway), or one not checked yet: whoever serves it could
     // take the signature.
     if (HOST.ok !== true && !HOST.anyway && !(HOST.anyway = confirm(`This page is on ${location.hostname}, ${HOST.ok === false ? 'not tacit.wei.limo, tacit.gwei.limo or tacit.finance' : 'which has not been checked against tacit.wei'}. Whoever serves it could open your balance with what you sign or paste here. Sign in here anyway?`))) return;
+    // The proving key starts while the wallet is asked to sign (two prompts the first time), not after.
+    warm();
     busy(b, async () => {
       try { if (b.dataset.in === 'eth') await openWithWallet(say); else if (b.dataset.in === 'wc') { await connectWc(); await openWithWallet(say); } else { openWithKey($('input', box).value); $('input', box).value = ''; } after?.(); }
       catch (e) { say(e instanceof Quiet ? '' : errText(e), !(e instanceof Quiet) && codeOf(e) !== 4001); }

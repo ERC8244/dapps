@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import {createHash} from 'node:crypto';
+import {gzipSync} from 'node:zlib';
 import {createRequire} from 'node:module';
 import {html as HTML} from './page-config.mjs';
 
@@ -54,13 +55,14 @@ const server = http.createServer((q, r) => { r.writeHead(200, {'content-type': '
 const origin = `http://127.0.0.1:${server.address().port}/`;
 const browser = await chromium.launch();
 
-/* A page whose every mirror is served by `serve(host, name)` → bytes | null (null: not found). Nodes and relays are offline. */
+/* A page whose every mirror is served by `serve(host, name)` → bytes | null (null: not found), and its gzip copies by
+   `serve.gz(host, name)` (none when absent). Nodes and relays are offline. */
 async function open(serve, {ends} = {}) {
   const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
   await ctx.addInitScript(`(() => { const g = Storage.prototype.getItem; Storage.prototype.getItem = function (k) { const v = g.call(this, k); return v == null && typeof k === 'string' && k.startsWith('tacit-wei-pq-later:') && !window.__pqAsk ? String(Date.now()) : v; }; })();`);   // the post-quantum offer is put off, as after "Not now" (a test sets window.__pqAsk to see it)
   const asked = [], hosts = new Set();
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
-    const url = new URL(route.request().url()), name = /\/(transact\.wasm|transact_final\.zkey)$/.exec(url.pathname)?.[1];
+    const url = new URL(route.request().url()), [, name, gz] = /\/(transact\.wasm|transact_final\.zkey)(\.gz)?$/.exec(url.pathname) || [];
     const cors = {'access-control-allow-origin': '*'};
     if (/base-sepolia-rpc\.publicnode\.com|sepolia\.base\.org|base-sepolia\.drpc\.org/.test(url.host) && CHAIN.on) {
       const req = JSON.parse(route.request().postData() || '[]'), limit = CHAIN.limits?.[url.host], one = (x) => {
@@ -76,8 +78,8 @@ async function open(serve, {ends} = {}) {
       return route.fulfill({status: 200, headers: {...cors, 'content-type': 'application/json'}, body: JSON.stringify(Array.isArray(req) ? req.map(one) : one(req))});
     }
     if (name) {
-      asked.push(`${url.host}/${name}`);
-      const body = serve(url.host, name);
+      asked.push(`${url.host}/${name}${gz || ''}`);
+      const body = gz ? serve.gz?.(url.host, name) ?? null : serve(url.host, name);
       return body ? route.fulfill({status: 200, headers: {...cors, 'content-type': 'application/octet-stream'}, body}) : route.fulfill({status: 404, headers: cors, body: ''});
     }
     return route.fulfill({status: 503, contentType: 'application/json', headers: cors, body: '{"error":"offline"}'});
@@ -125,6 +127,29 @@ console.log('\nevery mirror serves bad bytes and every node of the onchain copy 
   const r = await outcome(p, 330e3);
   ok(!r.ready && /could not be downloaded/.test(r.err) && await workers(p) === 0, 'the nodes are rested and asked again, then the card says the key could not be downloaded', r.err.slice(0, 90));
   ok(!p.errors.length, 'no page errors', p.errors.join(' '));
+  await p.context().close();
+}
+
+console.log('\ngzip copies');
+{
+  const zipped = Object.fromEntries(Object.entries(real).map(([n, b]) => [n, gzipSync(b, {level: 9})]));
+  const fromTacit = (fn) => Object.assign((host, name) => (/tacit\.finance$/.test(host) ? real[name] : null), {gz: (host, name) => (/tacit\.finance$/.test(host) ? fn(name) : null)});
+  let p = await open(fromTacit((name) => zipped[name]));
+  await press(p);
+  let r = await outcome(p);
+  ok(r.ready && await workers(p) > 0, 'a mirror\'s gzip copy is unpacked, checked against the pin and used', r.err.slice(0, 90));
+  ok(p.asked.includes('tacit.finance/transact_final.zkey.gz') && !p.asked.includes('tacit.finance/transact_final.zkey'), 'the full-size file was not asked for', p.asked.join(' '));
+  ok(!p.errors.length, 'no page errors', p.errors.join(' '));
+  await p.context().close();
+  p = await open(fromTacit((name) => gzipSync(BAD['one byte changed (zkey, in the middle)'][name] || real[name])));
+  await press(p);
+  r = await outcome(p);
+  ok(r.ready && p.asked.includes('tacit.finance/transact_final.zkey'), 'a gzip copy of changed bytes is refused, and the same mirror\'s full file is used', p.asked.join(' '));
+  await p.context().close();
+  p = await open(fromTacit((name) => gzipSync(Buffer.concat([real[name], Buffer.alloc(1 << 20)]))));
+  await press(p);
+  r = await outcome(p);
+  ok(r.ready && await saved(p) === 2, 'a gzip copy that unpacks past the pinned size is refused (the full files are kept instead)', `${await saved(p)} saved`);
   await p.context().close();
 }
 

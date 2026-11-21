@@ -95,5 +95,5 @@ const RL = (() => {
       }
     });
   }
-  return { REGISTRY, ASKED, GRACE_MS, decodeList, readRegistry, relaysFor, orderQuotes, collectQuotes, usable };
+  return { decodeList, readRegistry, relaysFor, orderQuotes, collectQuotes, usable };
 })();

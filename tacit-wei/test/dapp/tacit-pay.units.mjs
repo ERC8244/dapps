@@ -1,5 +1,6 @@
 /* The page's small pure functions, taken out of dapp/page.html and run on their own: the amount parser (the same rules as
-   tacit.finance's pay pages), the short ID of an address (the same text on every page), and how a failed log read is judged.
+   tacit.finance's pay pages), the short ID of an address (the same text on every page), how a failed log read is judged,
+   and how stored state is sealed (and read back as earlier pages sealed it).
 
    Usage: node test/dapp/tacit-pay.units.mjs                                                                         */
 import vm from 'node:vm';
@@ -118,6 +119,24 @@ ok(same(logFailure(new Error('too many results, limit 10000'), 4000), {step: 100
 ok(same(logFailure(err('eth_getLogs is limited to a 1,000 range', 'request limit reached', '429 Too Many Requests'), 50000, 50000), {busy: true}), 'a step a node served before, failing with one busy, is waited out: the node that names a small cap is not taken as the cap');
 ok(same(logFailure(err('eth_getLogs is limited to a 1,000 range', 'request limit reached'), 50000, 10000), {step: 1000, named: true}), 'a step wider than any served still takes the named cap');
 ok(same(logFailure(err('ranges over 10000 blocks are not supported on free plan'), 50000), {step: 12500}), 'a free plan’s number is not taken as a cap (its node refuses far less): the range narrows instead');
+
+console.log('\nstored state, sealed');
+{
+  const seal = vm.runInNewContext(`${cut('// ── bytes ──', '\n// The shared secrets of memo keys')}\n({ sealState, openState, stateKeys, keccak, cat, utf8, toB64 })`, {crypto: globalThis.crypto, TextEncoder, TextDecoder, btoa, atob});
+  const v = 0x1234567890abcdefn, text = JSON.stringify({notes: [1, 2, 3], pad: 'x'.repeat(5000)}), name = 'tacit-pay-s1:00ff';
+  const s3 = seal.sealState(v, text, name);
+  ok(s3.startsWith('enc3:') && seal.openState(v, s3, name) === text, 'a state is written as enc3 and opens again');
+  ok(seal.openState(v, s3, name + 'x') === null && seal.openState(v + 1n, s3, name) === null, 'it does not open under another name or another key');
+  // As earlier pages wrote it: the same keys and tag, a keccak(key ‖ be32(i)) stream for each 32 bytes.
+  const old = (two) => {
+    const nonce = new Uint8Array(16).fill(7), pt = seal.utf8(text), [enc, mac] = seal.stateKeys(v, nonce), m = seal.cat(enc, [0, 0, 0, 0]), ks = new Uint8Array(Math.ceil(pt.length / 32) * 32);
+    for (let i = 0; i * 32 < pt.length; i++) { m[32] = i >>> 24; m[33] = i >>> 16; m[34] = i >>> 8; m[35] = i; ks.set(seal.keccak(m), 32 * i); }
+    const ct = pt.map((b, i) => b ^ ks[i]), tag = seal.keccak(two ? seal.cat(mac, seal.keccak(seal.utf8(name)), ct) : seal.cat(mac, ct)).subarray(0, 16), b = seal.cat(nonce, ct, tag);
+    return two ? 'enc2:' + seal.toB64(b) : 'enc1:' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  };
+  ok(seal.openState(v, old(true), name) === text, 'a state an earlier page wrote as enc2 still opens');
+  ok(seal.openState(v, old(false)) === text, 'and one written as enc1 under the oldest names');
+}
 
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

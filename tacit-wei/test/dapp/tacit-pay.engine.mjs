@@ -664,6 +664,27 @@ console.log('\nthe registry copy kept in this browser, checked again as it is re
     ok(typeof h === 'string' && relay.relays['b.test'] === 2 && !relay.relays['seed.test'], 'tried again, it goes through b alone, though the seed is cheaper now', `${h?.message ?? ''} ${JSON.stringify(relay.relays)}`);
     relay.restore();
   }
+  console.log('\na relay that sends and then says it refused: tried again only from the same notes');
+  {
+    // Two notes: b, the dearer of two near quotes (drawn here), is given the larger; the seed's lower fee would be covered by the
+    // smaller. b keeps the transaction and answers 400, and it lands just before the seed's try.
+    const hosts = [['seed.test', SEED], ['b.test', RB]], fees = {seed: 10n ** 13n, b: 12n * 10n ** 12n}, amount = E / 50n;
+    const world = mkWorld(), sent = [];
+    const relay = mockRelays(world.node, (t) => { const r = world.relayed(t); if (!r.revert) sent.push(t); return r; }, {'seed.test': {fee: fees.seed, relayer: SEED, stale409: true}, 'b.test': {fee: fees.b, relayer: RB, mode: 'refuse400late'}});
+    const A = world.wallet(93, {keeper: U('seed.test'), relays: list(hosts)});
+    await A.W.deposit({amount: amount + 11n * 10n ** 12n});            // covers the seed's fee, not b's
+    await A.W.deposit({amount: amount + 15n * 10n ** 12n});
+    const rnd = Math.random;
+    Math.random = () => 0.999;
+    const e = await A.W.withdraw({to: DEST2, amount, via: null}).catch((x) => x).finally(() => { Math.random = rnd; });
+    ok(relay.relays['b.test'] === 1 && relay.relays['seed.test'] >= 1, 'b turned it away and the seed was asked next', JSON.stringify(relay.relays));
+    ok(sent.length === 1 && typeof e !== 'string', 'only b\'s transaction landed: the seed\'s try spent the same note, so it could not land beside it', `${sent.length} landed · ${e?.message ?? e}`);
+    await A.W.sync();
+    ok(A.W.summary().balance === amount + 26n * 10n ** 12n - fees.b, 'the balance shows one payment and one fee', String(A.W.summary().balance));
+    const again = await A.W.withdraw({to: DEST2, amount, via: null}).catch((x) => x);
+    ok(again.duplicate === true && /may have landed/.test(again.message), 'pressed again, it is held back: a note the relay was given is spent', String(again?.message || again).slice(0, 80));
+    relay.restore();
+  }
   console.log('\nthe list cannot be read: the seed alone');
   {
     const world = mkWorld(), relay = mockRelays(world.node, world.relayed, {'seed.test': {fee: 2n * 10n ** 13n, relayer: SEED}});

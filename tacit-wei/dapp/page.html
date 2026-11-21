@@ -6017,7 +6017,8 @@ function paintBal() {
   // (the Tacit balance) and what is in whole notes, which a payment out to an address takes first (payOut), and which Send
   // to a Tacit address offers to move in when the balance falls short.
   const held = lgHeld(), tot = (x) => (held > 0n ? x + held : x);
-  const v = st.bal != null ? ethStr(tot(st.bal)) : st.last != null ? html`<span class="stale">${ethStr(tot(st.last))}</span>` : st.err ? html`<span class="mute">—</span>` : html`<span class="sk" style="--w:8ch"></span>`;
+  // While a read the reader is waiting on runs, the figure is the one kept from before it: shown muted until the read is in.
+  const v = st.bal != null ? (st.syncing && st.asked ? html`<span class="stale">${ethStr(tot(st.bal))}</span>` : ethStr(tot(st.bal))) : st.last != null ? html`<span class="stale">${ethStr(tot(st.last))}</span>` : st.err ? html`<span class="mute">—</span>` : html`<span class="sk" style="--w:8ch"></span>`;
   // What is on its way in (a note moved in, or a deposit, waiting at one of the key's addresses) is said beside the parts, so a
   // total that dips while a move lands has its reason in view.
   const parts = (held > 0n || w > 0n) && st.bal != null ? html`<div class="u"><b class="num">${fmt(st.bal)}</b> ready to pay${held > 0n ? html` · <b class="num">${fmt(held)}</b> in ${lgLive().length === 1 ? 'a whole note' : `${lgLive().length} whole notes`} · ${LG_TORNADO}` : ''}${w > 0n ? html` · <b class="num">${fmt(w)}</b> arriving` : ''}</div>` : '';

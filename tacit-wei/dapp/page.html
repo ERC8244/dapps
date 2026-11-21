@@ -3955,6 +3955,15 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const short = (a, n = 4) => { if (!a) return ''; const head = /^tacit1/.test(a) ? 10 + n : n + 2; return a.length > head + n + 2 ? `${a.slice(0, head)}…${a.slice(-n)}` : a; };
 // The header chip: the long form where there is room, and on a phone `tacit1…` and the first characters that tell it apart.
 const chipView = (a) => (/^tacit1/.test(a || '') && a.length > 30 ? html`<span class="wide">${short(a, 6)}</span><span class="narrow">tacit1…${a.slice(10, 16)}</span>` : html`${short(a, 6)}`);
+// A notice when a payment arrives while the tab is out of sight, if asked for: the amount stays in the page (a lock screen and
+// a notification list are seen by others).
+const NOTIFY = 'tacit-wei-notify-v1', notifyOn = () => store.get(NOTIFY) === '1' && window.Notification?.permission === 'granted';
+const notifyIn = () => { if (document.hidden && notifyOn()) try { new Notification('tacit.wei', { body: 'A private payment arrived.' }); } catch { /* not shown */ } };
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.('#w-notify')) return;
+  if (notifyOn()) { store.del(NOTIFY); return renderWalletSheet(); }
+  Notification.requestPermission().then((p) => { if (p === 'granted') store.set(NOTIFY, '1'); else toast('Your browser did not allow notices for this page.', true); renderWalletSheet(); }, () => {});
+});
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
 // The payees' keys an earlier page kept in plain storage (pqLearn keeps them sealed now) are dropped.
 store.del(PQ_SEEN);
@@ -5640,7 +5649,7 @@ function syncChain(c, fresh = false, force = false) {
     const ep = W.epoch(), rebuilt = st.epoch !== undefined && st.epoch !== ep;
     st.epoch = ep;
     st.backing ||= W.older() != null;
-    if (!fresh && !rebuilt && st.bal != null && s.balance > st.bal && !S.busy) toast(`${fmt(s.balance - st.bal)} ETH arrived on ${c.full}.`);
+    if (!fresh && !rebuilt && st.bal != null && s.balance > st.bal && !S.busy) { toast(`${fmt(s.balance - st.bal)} ETH arrived on ${c.full}.`); notifyIn(); }
     if (W.poolBalance() != null) Object.assign(POOLETH[c.chainId] ||= {}, { v: W.poolBalance(), at: Date.now() });
     // `notes`: what a payment may spend (with the words on, not the notes from before them, which reseal moves).
     Object.assign(st, { bal: s.balance, notes: W.spendable().map((n) => BigInt(n.v)), leaves: s.leaves, waiting, err: null, at: Date.now() });
@@ -6791,18 +6800,20 @@ function formWithdraw(f) {
   };
 }
 
+// An amount out that is exactly one this key shielded can be matched to that deposit by anyone reading the chain: said.
+const sameNote = (a) => (cur().W?.history().some((r) => r.ext && BigInt(r.ext) === a) ? html`${NOTE_WARN}You shielded exactly this amount before, so the two can be matched. A different amount hides it better.</p>` : '');
 // Paying `a` out to an address, as a receipt: whole notes first (the largest that fit), the rest from the private balance.
 // → { x, p } when it can be paid as shown, else null (said why).
 function outRows(say, tab, a, fee, bal, where, d) {
   const x = lgExitPlan(a);
   // the relay line is about the part paid from the balance: with the whole amount from notes (each pays its own gas) it says nothing true
   const rt = $('#form .route'); if (rt) rt.hidden = !!(x && x.rest === 0n);
-  if (x && x.rest === 0n) { say(html`${where}${lgExitRows(x)}${staysRow(bal, null, x)}${d.lines}`); return { x }; }
+  if (x && x.rest === 0n) { say(html`${where}${lgExitRows(x)}${staysRow(bal, null, x)}${d.lines}${sameNote(a)}`); return { x }; }
   if (fee == null) { say(html`${where}${x ? lgExitRows(x) : ''}${relayUp() ? html`${NOTE}Reading the relay’s fee…</p>` : ''}`); return null; }
   const part = x ? x.rest : a, p = plan(part, fee);
   if (bal != null && !p) { cannotPay(say, tab, part, fee, bal, true, x); return null; }
   say(html`${where}${x ? lgExitRows(x) : kvRow('Arrives', `${fmt(a, 18)} ETH`)}${feeRow(fee)}
-    ${mergeRow(p, fee)}${staysRow(bal, p, x)}${d.lines}${feeBig(part, fee)}`);
+    ${mergeRow(p, fee)}${staysRow(bal, p, x)}${d.lines}${feeBig(part, fee)}${sameNote(a)}`);
   return { x, p };
 }
 // Notes sent whose withdrawals the chain does not show yet: the payment stops there, held as a send not yet confirmed.
@@ -8796,6 +8807,7 @@ function renderWalletSheet() {
     <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Sign out</button></div>
     <div class="kv" style="margin-top:14px"><span>Wallet</span>${S.account ? html`<b>${S.wallet?.info.name ? `${S.wallet.info.name} · ` : ''}<span class="nw id">${whoShort(S.account)}</span></b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
     ${stayBox()}<p class="note mute">Keeps your key in this tab, so a reload does not ask your wallet again. It goes when you sign out, turn this off, or after 12 hours, and with the tab; a browser that restores a closed tab, or recovers after a crash, can bring it back. A locked wallet does not end it: connecting it again signs you in. Not for a shared computer.</p>
+    ${'Notification' in window ? html`${NOTE}${BTN_LINK} id="w-notify">${notifyOn() ? 'Stop telling me when a payment arrives' : 'Tell me when a payment arrives'}</button> <span class="mute">(while this tab is open, without the amount)</span></p>` : ''}
     <p class="note" id="w-say" role="status"></p>${S.account ? html`<p class="note"><button class="link" type="button" id="w-swap">Use another wallet</button></p>` : ''}
     <p class="note">Your wallet, or your key, opens these funds on any device${S.key.pq ? ', plus your 24 words for what is sealed under them' : ''}. Keep ${S.key.pq ? 'them all' : 'both'} to yourself.</p>
     <div class="pq" id="w-pq">${pqSection()}</div>`);

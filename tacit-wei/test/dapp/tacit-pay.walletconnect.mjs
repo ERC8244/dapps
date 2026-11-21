@@ -144,7 +144,7 @@ console.log('pairing, and a first sign-in');
   const prop = w.proposals[0];
   ok(prop?.proposer.metadata.name === 'tacit.wei' && prop.proposer.metadata.url === p.origin, 'the proposal names this page and its origin', JSON.stringify(prop?.proposer.metadata));
   ok(JSON.stringify(prop.optionalNamespaces.eip155.chains) === '["eip155:1"]' && !Object.keys(prop.requiredNamespaces).length, 'it asks for Ethereum as optional, and requires nothing', JSON.stringify(prop.optionalNamespaces));
-  ok(['personal_sign', 'eth_sendTransaction', 'eth_signTypedData_v4', 'wallet_sendCalls'].every((m) => prop.optionalNamespaces.eip155.methods.includes(m)), 'and for the methods the page uses');
+  ok(['personal_sign', 'eth_sendTransaction', 'eth_signTypedData_v4'].every((m) => prop.optionalNamespaces.eip155.methods.includes(m)) && !prop.optionalNamespaces.eip155.methods.some((m) => /^wallet_/.test(m)), 'and for the methods the page uses, with no batch (a wallet app sends calls one at a time)');
   const sign = await opened(p);
   if (process.env.DEBUG && !sign) console.log('DEBUG', w.approveError, relay?.seen.map((x) => `${x.method}:${x.tag ?? ''}`).join(' '), '|', await p.evaluate(() => document.querySelector('#sheet-wallet [data-say]')?.textContent + ' / ' + document.querySelector('#toasts')?.textContent), p.errors);
   ok(sign, 'the wallet approves and the key opens');

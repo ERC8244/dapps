@@ -232,7 +232,9 @@ console.log('\nthe right bytes from a mirror');
   await p.evaluate(async (n) => { const c = await caches.open('tacit-pay-artifacts-v1'); for (const k of await c.keys()) if (k.url.includes('transact_final.zkey')) await c.put(k, new Response(new Uint8Array(n))); }, 1000);
   await press(p);
   const r2 = await outcome(p);
-  ok(r2.ready && p.asked.length === 3, 'a stored copy that was changed is fetched again, not used', `${p.asked.length} downloads in all`);
+  // (each file is asked for as a gzip copy first, which this mirror does not keep)
+  const full = p.asked.filter((a) => !a.endsWith('.gz'));
+  ok(r2.ready && full.length === 3, 'a stored copy that was changed is fetched again, not used', `${full.length} downloads in all`);
   await p.context().close();
 }
 

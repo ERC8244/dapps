@@ -166,8 +166,8 @@ console.log('6. paying an address that names a key no one can find: an ordinary 
   await p.click('#status [data-plain]');
   await p.waitForTimeout(3000);
   const then = await txt(p, '#status');
-  // past the gate it goes on to prove (here the proving key is not served, so it stops there)
-  check(!/nothing was sent/.test(then) && !(await p.$('#status [data-plain]')) && /proving key|Sent .* privately/i.test(then), 'the second press, on that button, goes ahead with the payment (on to proving it)', then);
+  // past the gate it goes on to prove (without ARTIFACTS the proving key is not served, so it stops there)
+  check(!/nothing was sent/.test(then) && !(await p.$('#status [data-plain]')) && /proving key|Proving in your browser|Sent .* privately/i.test(then), 'the second press, on that button, goes ahead with the payment (on to proving it)', then);
   noErrors(p, 'scenario 6');
   await L.close(p);
 }

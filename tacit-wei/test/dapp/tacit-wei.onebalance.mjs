@@ -335,7 +335,9 @@ console.log('11. a withdrawal in 3 parts: the first now, two kept sealed, each o
   await p.fill('#f-wamt', '0.3');
   await p.selectOption('#f-parts', '3|3');
   check(await until(p, () => /Later, in 2 parts/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 15e3) , '3 parts over 3 h: the receipt says what goes later', await rcpt(p));
-  check(/harder to tie to each other and to your deposit/.test(await txt(p, '#form')) && /Open this page again as each falls due/.test(await txt(p, '#form')), 'with the one honest line on what it does and what it asks');
+  const note = await txt(p, '#form');
+  check(/harder to match to your deposit than one withdrawal/.test(note) && /Open this page again as each falls due/.test(note), 'with the one honest line on what it does and what it asks');
+  check(/same address, so they can still be grouped there and added up to the amount you typed/.test(note) && !/tie to each other/.test(note), 'which says the parts go to one address and can be grouped there, not that they cannot be tied to each other');
   const r = await rcpt(p), first = /Arrives ?([\d.]+) ETH/.exec(r)?.[1], later = /Later, in 2 parts ?([\d.]+) ETH/.exec(r)?.[1];
   check(!!first && !!later && /^0\.\d{1,4}$/.test(first), 'the first part is round (four significant digits)', r);
   if (process.env.ARTIFACTS) {

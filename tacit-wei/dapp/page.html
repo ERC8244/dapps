@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Ox5lUglahwK9Oig0PEx8F3qh4V6YZZ59aJxeWJNA9iQ=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-R8xxITu0R9Z4RoU7IRkTIPMFJuM6kCelhJuK1NrZsRM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -1039,6 +1039,9 @@ const mod = (x, p) => { x %= p; return x < 0n ? x + p : x; };
 function pow(b, e, p) { let r = 1n; b = mod(b, p); for (; e > 0n; e >>= 1n) { if (e & 1n) r = r * b % p; b = b * b % p; } return r; }
 function inv(a, p) { let [r0, r1, s0, s1] = [mod(a, p), p, 1n, 0n]; while (r1) { const q = r0 / r1; [r0, r1, s0, s1] = [r1, r0 - q * r1, s1, s0 - q * s1]; } return mod(s0, p); }
 const randomBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
+// A number in [0, 1) from the same generator: what the sizes and times of a withdrawal's parts are drawn with, since their
+// being unpredictable is what keeps them from being matched (Math.random is for jitter, not for this).
+const rand01 = () => { const b = randomBytes(4); return ((b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]) >>> 0) / 2 ** 32; };
 
 // ── SHA-256 and HMAC ──
 // Its constants are the fractional parts of the first primes' square and cube roots, computed here.
@@ -4248,7 +4251,7 @@ const ARTIFACTS = 'tacit-pay-artifacts-v1';
 const PROVER_SHA256 = '66ec1d77d65582f9031690601d09bb81f8d12fc94f9660e36d5992bc57643249';   // set by deploy/repin.sh
 // The scan workers run this module's first part as the document holds it (through H), which the CSP's hash does not
 // cover once it is read back out of the page: it is used only when it is the part the build pinned.
-const SCAN_SHA256 = 'dc262ac10c74c02aeff1bed81246fc9092491342212e8224090af9af9c1f2761';     // set by deploy/repin.sh
+const SCAN_SHA256 = '21de6e4a4349cf86fc4548fadc19abce1d48e9d817b2de7867b9e014f215b843';     // set by deploy/repin.sh
 // A browser with site data blocked throws on the cache API itself: that reads as no cache, not as a broken page.
 const hasCaches = () => { try { return !!globalThis.caches; } catch { return false; } };
 const keyKept = () => Promise.resolve().then(() => caches.open(ARTIFACTS)).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then(Boolean, () => false);
@@ -6763,7 +6766,7 @@ function formWithdraw(f) {
     ${withdrawTo()}
     ${amountField('f-wamt', 'Amount', MAX)}
     ${LBL}Send</span><span><select id="f-parts" aria-label="All now, or in parts over time">${['1', ...[2, 3, 4].flatMap((n) => [1, 3, 12].map((h) => `${n}|${h}`))].map((v) => html`<option value="${v}" ${v === (S.parts || '1') ? 'selected' : ''}>${v === '1' ? 'all now' : `in ${v.replace('|', ' parts over ')} h`}</option>`)}</select></span></div>
-    ${S.parts > '1' ? html`${NOTE_MUTE}The first part goes now, the rest at random times in the span. Spread out, parts are harder to tie to each other and to your deposit. Open this page again as each falls due, or keep it open.</p>` : ''}
+    ${S.parts > '1' ? html`${NOTE_MUTE}The first part goes now, the rest at random times in the span, each when you press Send it now. Spread out in time and size, parts are harder to match to your deposit than one withdrawal. They all go to the same address, so they can still be grouped there and added up to the amount you typed. Open this page again as each falls due, or keep it open.</p>` : ''}
     ${routeLine(tab)}
     ${goButton('Withdraw')}
     ${NOTE}${pal('face')}Take out any part; the rest stays private.</p>
@@ -6807,7 +6810,7 @@ function formWithdraw(f) {
       const dest = await pressDest(raw, c, shownTo);
       await destGate(c, dest);
       // the later parts are kept once any of the first went out, each due at a random time inside its slice of the span
-      const keep = () => { if (!ps) return; const at = Date.now(), span = S.parts.slice(2) * 3_600_000; ps.slice(1).forEach((v, k) => lgLaterPut({ id: `w${at}${k}`, k: 'w', a: String(v), to: dest, name, i: k + 2, n: ps.length, due: at + Math.floor(span * (k + 1 + Math.random()) / ps.length) })); S.parts = '1'; };
+      const keep = () => { if (!ps) return; const at = Date.now(), span = S.parts.slice(2) * 3_600_000; ps.slice(1).forEach((v, k) => lgLaterPut({ id: `w${at}${k}`, k: 'w', a: String(v), to: dest, name, i: k + 2, n: ps.length, due: partDue(at, span, k, ps.length) })); S.parts = '1'; };
       try { await payOut(c, step, { tab, field: 'f-wamt', dest, a, fee0, name }); } catch (e) { if (lgLeft(e) || DRAFT['f-wamt'] !== was) keep(); throw e; }
       keep();
     });
@@ -10637,20 +10640,23 @@ const ROUTE = (() => {
   }
   const KEYS = new Map();   // relayer → its sealed fetch, once its key is known and checked
   async function gatewayOf(relayer) {
+    let said = false;    // some forwarder answered with its documents, none of them a key this relay signed
     for (const fw of shuffled(forwarders())) {
       try {
         const r = await fetch(`${fw}/r/1/${relayer}/key`, { signal: timeoutSignal(15_000) });
         if (!r.ok) continue;
         const { docs } = await r.json();
+        if (Array.isArray(docs)) said = true;
         for (const d of Array.isArray(docs) ? docs : []) { const k = verifyDoc(d, relayer); if (k) return k; }
       } catch { /* the next forwarder */ }
     }
-    throw Object.assign(new Error('This relay\'s private route key could not be shown and checked, so it is not reached.'), { nokey: true });
+    throw Object.assign(new Error('This relay\'s private route key could not be shown and checked, so it is not reached.'), { nokey: true, said });
   }
   function listedFetch(url, relayer) {
     const k = lc(relayer), root = new URL(url).origin;
-    // A relay whose key could not be shown is passed over for ten minutes, not asked again at every quote.
-    if (!KEYS.has(k)) KEYS.set(k, gatewayOf(relayer).then((g) => sealedFetch(root, g, (fw) => `${fw}/r/1/${relayer}`)).catch((e) => { setTimeout(() => KEYS.delete(k), 600_000); throw e; }));
+    // A relay whose key the forwarders said they do not have is passed over for ten minutes, not asked again at every quote;
+    // when none of them could be reached (a moment's outage) the next quote asks again.
+    if (!KEYS.has(k)) KEYS.set(k, gatewayOf(relayer).then((g) => sealedFetch(root, g, (fw) => `${fw}/r/1/${relayer}`)).catch((e) => { if (e?.said) setTimeout(() => KEYS.delete(k), 600_000); else KEYS.delete(k); throw e; }));
     return KEYS.get(k);
   }
   // fetch for a relay: the page's own through its gateway, a listed one (`relayer`: the address it is listed under) through
@@ -11408,9 +11414,11 @@ const lgLaterSay = () => { if (S.busy) return ''; const all = lgLater(), now = D
 }), wait.length ? html`${NOTE_MUTE}${wait.length} more ${wait.length > 1 ? 'parts' : 'part'} of a withdrawal to send later, the next in ${Math.ceil((Math.min(...wait.map((x) => x.due)) - now) / 60_000)} min.</p>` : '']; };
 // A withdrawal in `n` parts: each but the last near an even share (between 85% and 115% of it), cut to four significant
 // digits so no two are alike; the last takes what is left, so they add up to `a` exactly. → [wei]
+// When part `k` (0 for the second part) of `n` falls due: at a random time inside its own slice of the span.
+const partDue = (at, span, k, n) => at + Math.floor(span * (k + 1 + rand01()) / n);
 function lgParts(a, n) {
   for (;;) {
-    const ps = Array.from({ length: n - 1 }, () => { let v = a * BigInt(850 + Math.floor(Math.random() * 300)) / 1000n / BigInt(n), u = 1n; while (v / u >= 10_000n) u *= 10n; return v / u * u; });
+    const ps = Array.from({ length: n - 1 }, () => { let v = a * BigInt(850 + Math.floor(rand01() * 300)) / 1000n / BigInt(n), u = 1n; while (v / u >= 10_000n) u *= 10n; return v / u * u; });
     const last = a - ps.reduce((t, v) => t + v, 0n);
     if (last > 0n) return [...ps, last];
   }

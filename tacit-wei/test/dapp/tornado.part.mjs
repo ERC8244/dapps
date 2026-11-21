@@ -21,7 +21,7 @@ const Wm = await import(`file://${TACIT}/dapp/evm-pool-wallet.js`);
 const D = await import(`file://${TACIT}/dapp/vendor/tacit-deps.min.js`);
 const G = await import(`file://${TACIT}/dapp/vendor/fixed-pool-prover.js`);
 
-const { TC, ctx } = loadTC();
+const { TC, ROUTE, ctx } = loadTC();
 let pass = 0, fail = 0;
 const test = async (label, fn) => { try { await fn(); console.log(`  PASS  ${label}`); pass++; } catch (e) { console.log(`  FAIL  ${label}: ${e.stack || e.message}`); fail++; } };
 const eq = (a, b, what = '') => { if (a !== b) throw new Error(`${what}: expected ${b}, got ${a}`); };
@@ -58,6 +58,38 @@ await test('a high-s signature gives the same note as its low-s twin', () => {
   eq(TC.deriveSecrets(flip, v.pool).commitment, TC.deriveSecrets(v.signature, v.pool).commitment);
 });
 await test('the typed data is the app\'s, byte for byte', () => { for (const n of [0, 1, 99, 123456]) eq(JSON.stringify(TC.noteTypedData(n)), JSON.stringify(N.noteTypedData(n, 1))); });
+console.log('a listed relay\'s private-route key');
+// The forwarders' answers are stubbed, and so are the timers, so the ten-minute wait can be seen without waiting.
+const keyRun = async (relayer, mode) => {
+  const realFetch = ctx.fetch, realTimeout = ctx.setTimeout, keyAsks = [], timers = [];
+  ctx.fetch = async (u) => {
+    if (!/\/key$/.test(String(u))) throw new Error('unexpected request ' + u);
+    keyAsks.push(u);
+    if (mode === 'unreachable') throw new Error('network down');
+    return { ok: true, json: async () => ({ docs: [] }) };       // reachable, and it has no key for this relay
+  };
+  ctx.setTimeout = (f, ms) => { timers.push(ms); return 0; };
+  try {
+    const url = 'https://r.example/1/evm-pool/keeper/quote';
+    const one = await ROUTE.relayFetch(url, {}, relayer).then(() => 'reached', (e) => e);
+    const asksAfterOne = keyAsks.length;
+    const two = await ROUTE.relayFetch(url, {}, relayer).then(() => 'reached', (e) => e);
+    return { one, two, asksAfterOne, asksAfterTwo: keyAsks.length, timers };
+  } finally { ctx.fetch = realFetch; ctx.setTimeout = realTimeout; }
+};
+await test('when no forwarder could be reached, the next quote asks for the relay\'s key again', async () => {
+  const r = await keyRun('0x' + '35'.repeat(20), 'unreachable');
+  eq(/could not be shown and checked/.test(r.one?.message), true, 'the first is refused: ' + r.one);
+  eq(r.asksAfterOne > 0 && r.asksAfterTwo > r.asksAfterOne, true, `asked again: ${r.asksAfterOne} then ${r.asksAfterTwo} key requests`);
+  eq(r.timers.includes(600_000), false, 'and no ten-minute wait was set');
+});
+await test('when a forwarder answered that it has no key for the relay, the relay is passed over for ten minutes', async () => {
+  const r = await keyRun('0x' + '36'.repeat(20), 'no-key');
+  eq(/could not be shown and checked/.test(r.one?.message), true, 'the first is refused: ' + r.one);
+  eq(r.asksAfterOne > 0 && r.asksAfterTwo === r.asksAfterOne, true, `not asked again: ${r.asksAfterOne} then ${r.asksAfterTwo} key requests`);
+  eq(r.timers.filter((ms) => ms === 600_000).length, 1, 'with the ten-minute wait set once');
+});
+
 // a wallet that answers eth_signTypedData_v4 with `key`'s signature, whatever account it is asked for
 const typedWallet = (key) => { const w = new Wallet(key); return async (method, params) => { const td = JSON.parse(params[1]), types = { ...td.types }; delete types.EIP712Domain; return w.signTypedData(td.domain, types, td.message); }; };
 await test('a typed-data signature is taken only when it is the connected account\'s', async () => {

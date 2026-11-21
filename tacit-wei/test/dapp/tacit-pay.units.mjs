@@ -173,5 +173,40 @@ console.log('stay signed in: the kept key is removed when its time is up, not on
   ok(!tab.has(S.STAY_KEY) && cleared.length === before + 1, 'dropping a key also stops its timer');
 }
 
+console.log('a withdrawal in parts: sizes and times drawn from the cryptographic generator, within their bounds');
+{
+  const {webcrypto} = await import('node:crypto');
+  const src = `${cut('const rand01 =', '\n')}\n${cut('const partDue =', '\n')}\n${cut('function lgParts(', '\n// A part that fell due')}\nglobalThis.api = { rand01, partDue, lgParts };`;
+  ok(!/Math\.random/.test(src), 'the code that draws them does not mention Math.random');
+  // Math without random: a call to it would throw. `bytes` is what the generator hands out, so the draws can be set.
+  const M = Object.create(Math); M.random = () => { throw new Error('Math.random was used'); };
+  let fill = null;
+  const make = () => {
+    const ctx = vm.createContext({BigInt, Math: M, randomBytes: (n) => (fill == null ? webcrypto.getRandomValues(new Uint8Array(n)) : new Uint8Array(n).fill(fill))});
+    vm.runInContext(src, ctx);
+    return ctx.api;
+  };
+  const P = make(), A = 15n * 10n ** 17n, sig4 = (v) => { let u = 1n; while (v / u >= 10_000n) u *= 10n; return v % u === 0n; };
+  // 85%..115% of an even share a/n; cutting to four digits takes off at most a thousandth of the part
+  const inShare = (v, a, n) => v * BigInt(n) * 1000n * 1000n >= a * 850n * 999n && v * BigInt(n) * 1000n <= a * 1150n;
+  let bad = '';
+  for (let i = 0; i < 1500 && !bad; i++) for (const n of [2, 3, 4]) {
+    const ps = P.lgParts(A, n), sum = ps.reduce((t, v) => t + v, 0n);
+    if (ps.length !== n || sum !== A) bad = `${n} parts summing to ${sum}`;
+    else if (ps.some((v) => v <= 0n)) bad = 'a part that is not above zero';
+    else if (!ps.slice(0, -1).every((v) => sig4(v) && inShare(v, A, n))) bad = `a part outside four digits or 85%..115%: ${ps}`;
+  }
+  ok(!bad, 'the parts of a withdrawal always add up to the amount, each above zero, all but the last at four digits and near an even share', bad);
+  ok(new Set(Array.from({length: 40}, () => P.lgParts(A, 3).join())).size > 30, 'and they differ from one withdrawal to the next');
+  fill = 0; const low = make().lgParts(10n ** 18n, 3); fill = 255; const high = make().lgParts(10n ** 18n, 3); fill = null;
+  ok(low[0] === 283_300_000_000_000_000n && high[0] === 383_000_000_000_000_000n, 'the lowest draw gives 85% of an even share and the highest just under 115%', `${low[0]} ${high[0]}`);
+  const at = 1_700_000_000_000, span = 12 * 3_600_000;
+  let off = '';
+  for (let i = 0; i < 1500 && !off; i++) { const d = [0, 1, 2].map((k) => P.partDue(at, span, k, 4)); d.forEach((x, k) => { if (x < at + span * (k + 1) / 4 - 1 || x >= at + span * (k + 2) / 4) off = `part ${k + 2} due at ${(x - at) / 3_600_000} h`; }); if (!(d[0] < d[1] && d[1] < d[2])) off ||= 'slices out of order'; }
+  ok(!off, 'each later part falls due inside its own slice of the span, in order', off);
+  fill = 0; const first = make().partDue(at, span, 0, 3); fill = 255; const last = make().partDue(at, span, 1, 3); fill = null;
+  ok(first === at + span / 3 && last < at + span && last > at + span * 0.99, 'at the lowest and highest draws, the start of the slice and just before its end', `${(first - at) / 3_600_000} h, ${(last - at) / 3_600_000} h`);
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

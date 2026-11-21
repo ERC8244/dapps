@@ -252,7 +252,8 @@ await test('refusals: a wrong checksum, a word not on the list, 23 or 25 words, 
   const L = PQ.words(), idx = L.indexOf(w[23]);
   const wrongSum = [...w.slice(0, 23), L[(idx & ~0xff) | ((idx + 1) & 0xff)]].join(' ');     // same 3 entropy bits, another check byte
   const cases = [wrongSum, [...w.slice(0, 5), 'xyzzy', ...w.slice(6)].join(' '), w.slice(0, 23).join(' '), [...w, w[0]].join(' '),
-    [...w.slice(0, 23), w[23].slice(0, 3)].join(' '), '', null, undefined, 'abandon '.repeat(24)];
+    // a stub that is itself a word (art, bus, …) can carry a valid checksum by chance: only a stub off the list is a refusal
+    ...(L.includes(w[23].slice(0, 3)) ? [] : [[...w.slice(0, 23), w[23].slice(0, 3)].join(' ')]), '', null, undefined, 'abandon '.repeat(24)];
   for (const t of cases) { eq(ours(t), null, JSON.stringify(t)?.slice(0, 50)); eq(app(t), null, `app ${JSON.stringify(t)?.slice(0, 50)}`); }
   const digits = [...w.slice(0, 10), '42', ...w.slice(10)].join(' ');      // the app reads letters only: a number between words is skipped
   eq(ours(digits), hex(root), 'digits skipped'); eq(app(digits), hex(root), 'app skips digits');

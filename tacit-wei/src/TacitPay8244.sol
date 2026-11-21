@@ -47,7 +47,9 @@ pragma solidity ^0.8.30;
 ///
 /// WHAT THE PAGE DOES NOT DO
 ///   It never sends a key anywhere: the Tacit key is derived in the tab from the wallet's signature over a fixed
-///   message (the same in every Tacit app) and is never stored. The Tacit pool's prover, its field arithmetic
+///   message (the same in every Tacit app) and is not stored: unless the reader turns on "Stay signed in in this
+///   tab", which keeps it in the tab's session storage (until sign-out, the tab closing, a wallet change or twelve
+///   hours) so a reload does not ask the wallet again. The Tacit pool's prover, its field arithmetic
 ///   (WebAssembly the page writes itself), Poseidon (constants derived in the page), the curves and the hashes are
 ///   all in the document; the code it fetches is two WebAssembly programs, the circuit's witness program and the
 ///   Tornado Cash withdrawal prover above, each run only when its SHA-256 equals the page's pin. A proof the wallet sends is checked against the pool's verifier through the wallet's node first;

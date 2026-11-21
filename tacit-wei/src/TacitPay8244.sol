@@ -285,6 +285,9 @@ contract TacitPay8244 {
     ///         hint: this contract's page never changes, but a name that points at it can be pointed at a successor,
     ///         and a year-long hint would keep showing the old page. Path and query are ignored; the page reads what
     ///         to show (a payment link, a tab, a chain) from the URL fragment, which a gateway never sees.
+    ///         It also asks the gateway to send the headers that keep the page out of other sites' frames and its
+    ///         address out of the Referer header. A page's own <meta> CSP cannot carry `frame-ancestors`, so this is where
+    ///         it comes from; a gateway passes only these exact values, and one that does not pass them leaves them out.
     function request(string[] memory, /*resource*/ KeyValue[] memory /*params*/ )
         external
         view
@@ -292,9 +295,12 @@ contract TacitPay8244 {
     {
         statusCode = 200;
         body = _assemble(_chunks, PAGE_LENGTH);
-        headers = new KeyValue[](2);
+        headers = new KeyValue[](5);
         headers[0] = KeyValue("Content-Type", "text/html");
         headers[1] = KeyValue("Cache-Control", "public, max-age=300");
+        headers[2] = KeyValue("X-Frame-Options", "DENY");
+        headers[3] = KeyValue("Content-Security-Policy", "frame-ancestors 'none'");
+        headers[4] = KeyValue("Referrer-Policy", "no-referrer");
     }
 
     /// @notice ERC-4804/5219 resolution mode: gateways call request() rather than auto-mode dispatch.

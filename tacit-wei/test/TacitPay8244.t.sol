@@ -254,6 +254,20 @@ contract TacitPay8244Test is Test {
         assertEq(headers[1].value, "public, max-age=300");
     }
 
+    /// @dev The gateway passes only these exact values (X-Frame-Options DENY, a Content-Security-Policy that is exactly
+    ///      `frame-ancestors 'none'`, and a strict Referrer-Policy); a looser or different one is dropped, so a typo here
+    ///      would silently leave the page frameable.
+    function testAsksForTheFrameAndReferrerHeaders() public view {
+        (, , TacitPay8244.KeyValue[] memory h) = page.request(new string[](0), new TacitPay8244.KeyValue[](0));
+        assertEq(h.length, 5);
+        assertEq(h[2].key, "X-Frame-Options");
+        assertEq(h[2].value, "DENY");
+        assertEq(h[3].key, "Content-Security-Policy");
+        assertEq(h[3].value, "frame-ancestors 'none'");
+        assertEq(h[4].key, "Referrer-Policy");
+        assertEq(h[4].value, "no-referrer");
+    }
+
     function _deploy(bytes memory initcode) private returns (address a) {
         assembly ("memory-safe") {
             a := create(0, add(initcode, 0x20), mload(initcode))

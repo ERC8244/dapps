@@ -58,6 +58,11 @@ CREATE2 (so the successor's `PREVIOUS` is unforgeable) from creation code built 
    `node deploy/check-deployment.mjs https://ethereum-rpc.publicnode.com <successor> dapp/page.min.html`, verify the
    successor on Sourcify and Etherscan (solc 0.8.30, 200 runs, prague), and check the "newer version" link on
    `https://0x000000000009dde9bb333bbad42ad74bbacc2bd6.w4eth.io/`.
+   Then `curl -sI https://tacit.wei.limo/`: the contract's `request()` asks for `X-Frame-Options: DENY`,
+   `Content-Security-Policy: frame-ancestors 'none'` and `Referrer-Policy: no-referrer`, which the WNS gateway passes on
+   (only those exact values). Do the same for `https://tacit.gwei.limo/`, whose gateway sends frame headers of its own: a
+   second, different `X-Frame-Options` there would make browsers ignore it, so look for two values. Pages served by an
+   ERC-8244 host (`<addr>.w4eth.io`) cannot carry headers and rely on the page's own guard.
 7. **Record it** in `TACIT-WEI.deployed.md`: the successor, its chunks, the page's sha256 and keccak, and the multisig's
    op ids and transactions.
 

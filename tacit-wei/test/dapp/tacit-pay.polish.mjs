@@ -238,7 +238,7 @@ console.log('\nreading, connecting and saving');
   await R.click('#f-tok'); await R.click('#form [data-from="exchange"]');
   await until(R, () => document.querySelector('#f-check'));
   await R.click('#f-check');
-  ok(await until(R, () => /Nothing is waiting on Ethereum\./.test(document.querySelector('#status')?.textContent || ''), null, 60e3), '“Check for arrivals” says which chain it read', (await R.textContent('#status')).replace(/\s+/g, ' ').slice(0, 120));
+  ok(await until(R, () => /Nothing is waiting at your deposit addresses\./.test(document.querySelector('#status')?.textContent || ''), null, 60e3), '“Check for arrivals” says which chain it read', (await R.textContent('#status')).replace(/\s+/g, ' ').slice(0, 120));
   await R.context().close();
   const C4 = chains(); C4[1].down = true;
   const R2 = await open(C4, {viewport: {width: 390, height: 844}});

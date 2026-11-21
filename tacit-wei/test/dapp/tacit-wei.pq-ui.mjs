@@ -161,7 +161,7 @@ console.log('6. paying an address that names a key no one can find: an ordinary 
   await p.click('#f-go');
   await until(p, () => !!document.querySelector('#status [data-plain]'), null, 30e3);
   const said = await txt(p, '#status');
-  check(/nothing was sent/.test(said) && /Send with an ordinary memo/.test(said), 'the first press sends nothing, and offers "Send with an ordinary memo"', said);
+  check(/nothing was sent/.test(said) && /Send it unsealed/.test(said), 'the first press sends nothing, and offers "Send it unsealed"', said);
   check(!env.relayLog.some((x) => x.path.endsWith('/reserve') || x.path.endsWith('/relay')), 'no slot asked for, nothing given to the relay', env.relayLog.map((x) => x.path).join(' '));
   await p.click('#status [data-plain]');
   await p.waitForTimeout(3000);

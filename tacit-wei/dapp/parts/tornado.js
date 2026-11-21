@@ -357,12 +357,12 @@ const TC = (() => {
       }
       await tail(pools, t);
       const off = [];
-      for (const p of pools) if (!(await whole(p, true))) { off.push(p); onProgress({ note: `the ${ethWords(p.denomination)} ETH pool's deposits read did not add up, so they are read from the node` }); }
+      for (const p of pools) if (!(await whole(p, true))) { off.push(p); onProgress({ note: `the ${ethWords(p.denomination)} ETH pool’s deposits read did not add up, so they are read from the node` }); }
       if (!off.length) return;
       // the node's deposits of every pool from its first block on, with what was read (a gap must close)
       for (const p of pools) at(p).upTo = at(p).from;
       await tail(pools, t);
-      for (const p of off) if (!(await whole(p, false))) throw new Error('The pool\'s deposits read do not add up. Try again in a minute.');
+      for (const p of off) if (!(await whole(p, false))) throw new Error('The pool’s deposits read do not add up. Try again in a minute.');
     }
     async function tail(pools, t) {
       const lo = Math.min(...pools.map((p) => Math.max(at(p).from, at(p).upTo - 64)));
@@ -379,7 +379,7 @@ const TC = (() => {
       if (!read || s.ok === s.upTo) return true;
       const count = async (b) => Number(BigInt(await read('eth_call', [{ to: p.address, data: '0xfc7e9c6f' }, q(b)])));
       let n, n0 = s.from > p.deployBlock ? null : 0;
-      try { n = await count(s.upTo - 1); } catch { throw new Error('Could not read the pool\'s deposit count, so the deposits read are not checked. Try again in a minute.'); }
+      try { n = await count(s.upTo - 1); } catch { throw new Error('Could not read the pool’s deposit count, so the deposits read are not checked. Try again in a minute.'); }
       if (n0 == null) n0 = s.n0 ?? (s.n0 = await count(s.from - 1).catch(() => null));
       let lo = Infinity, hi = -1;
       for (const d of s.byC.values()) { lo = Math.min(lo, d.index); hi = Math.max(hi, d.index); }
@@ -609,14 +609,14 @@ const TC = (() => {
   function priceWithinBounds(price, ref) {
     const est = ref.maxPriorityFeePerGas * 3n, tipCap = est < MIN_TIP_CAP ? MIN_TIP_CAP : est > MAX_TIP_CAP ? MAX_TIP_CAP : est, feeCap = ref.baseFeePerGas * 3n + tipCap;
     if (typeof price.maxFeePerGas !== 'bigint' || typeof price.maxPriorityFeePerGas !== 'bigint' || price.maxFeePerGas < 0n || price.maxPriorityFeePerGas < 0n || price.maxPriorityFeePerGas > price.maxFeePerGas) throw new Error('Bundler returned invalid gas prices');
-    if (price.maxPriorityFeePerGas > tipCap || price.maxFeePerGas > feeCap) throw new Error(`The bundler's gas price is over what the page's node shows (asked ${price.maxFeePerGas} wei, limit ${feeCap} wei).`);
+    if (price.maxPriorityFeePerGas > tipCap || price.maxFeePerGas > feeCap) throw new Error(`The bundler’s gas price is over what the page’s node shows (asked ${price.maxFeePerGas} wei, limit ${feeCap} wei).`);
   }
   function limitsWithinBounds(gas, op) {
     const bytes = op ? BigInt(hexBytes(op.callData).length + hexBytes(op.paymasterData ?? '0x').length) : 0n;
     const caps = { verificationGasLimit: BASELINE.verificationGasLimit * 2n < 250_000n ? 250_000n : BASELINE.verificationGasLimit * 2n, paymasterVerificationGasLimit: BASELINE.paymasterVerificationGasLimit * 2n, paymasterPostOpGasLimit: BASELINE.paymasterPostOpGasLimit * 2n, preVerificationGas: (350_000n + 40n * bytes) * 2n, callGasLimit: MAX_CALL_GAS };
     for (const f of GAS_FIELDS) {
       if (typeof gas[f] !== 'bigint' || gas[f] < 0n) throw new Error(`Invalid paymaster gas limit: ${f}`);
-      if (caps[f] !== undefined && gas[f] > caps[f]) throw new Error(`The bundler's ${f} ${gas[f]} is over the ceiling ${caps[f]}.`);
+      if (caps[f] !== undefined && gas[f] > caps[f]) throw new Error(`The bundler’s ${f} ${gas[f]} is over the ceiling ${caps[f]}.`);
     }
   }
   // The keychain's fixed targets for a direct note, for when no bundler can estimate (and, for a swap-out, half again the
@@ -755,7 +755,7 @@ const TC = (() => {
         for (const i of order) {
           let r;
           try { r = await clients[i].request(method, params); } catch (e) { if (first === null) { first = e; if (!passable(method, params, e)) throw e; } else if (!refusal && e?.kind === 'rpc' && !(method === 'pimlico_getUserOperationGasPrice' && e.code === -32601)) refusal = e; continue; }
-          if (method === 'eth_estimateUserOperationGas' && !completeEstimate(r, params?.[0])) { if (first === null) first = Object.assign(new Error('the bundler gave no gas limits for the paymaster\'s part of the operation'), { kind: 'incomplete-estimate' }); continue; }
+          if (method === 'eth_estimateUserOperationGas' && !completeEstimate(r, params?.[0])) { if (first === null) first = Object.assign(new Error('the bundler gave no gas limits for the paymaster’s part of the operation'), { kind: 'incomplete-estimate' }); continue; }
           if (method === 'eth_sendUserOperation') took = i;
           if (r == null && READS.has(method)) { unknown = true; if (i === took) return r; continue; }
           return r;
@@ -798,7 +798,7 @@ const TC = (() => {
     }
     const build = async (gas) => {
       const fee = minimumViableFee(gas, price.maxFeePerGas);
-      if (fee >= pool.denomination) throw new Error('The paymaster fee would use up the whole note. Wait for lower gas prices.');
+      if (fee >= pool.denomination) throw new Error('The gas would use up the whole note. Wait for lower gas prices.');
       if (!withinCeiling(fee, pool.denomination, maxFeePercent)) throw new Error(`The fee would come to over ${maxFeePercent}% of the note at the limits the bundler asks for. Nothing was sent; try again in a few minutes.`);
       const call = callFor ? await callFor(fee) : null;
       onStep({ step: 'prove', fee });
@@ -824,7 +824,7 @@ const TC = (() => {
       let est;
       try { est = parseGas(await estimateRetry(() => bundler.request('eth_estimateUserOperationGas', [built.op, ENTRY_POINT]))); } catch (e) {
         const reason = estimationUnavailable(e, built.op);
-        if (!reason) throw new Error('The bundler would not take the withdrawal. Nothing was sent.');
+        if (!reason) throw new Error('The service that sends it would not take the withdrawal. Nothing was sent.');
         return atFallback(gas, built.op, { status: 'fallback', reason });
       }
       if (est.preVerificationGas <= 0n || est.verificationGasLimit <= 0n || GAS_FIELDS.some((f) => est[f] < 0n)) throw new Error('The bundler returned invalid gas estimates.');
@@ -848,18 +848,18 @@ const TC = (() => {
     try { named = await bundler.request('eth_sendUserOperation', [op, ENTRY_POINT]); } catch (e) {
       const known = /already known/i.test(e?.details ?? '') || (await bundler.request('eth_getUserOperationByHash', [hash]).then((r) => r != null, () => false));
       if (!known) {
-        if (e?.kind === 'rpc') throw Object.assign(new Error('The bundler did not take the withdrawal. Nothing was sent.'), { refused: true, priceMoved: /(maxPriorityFeePerGas|maxFeePerGas) must be at least|underpriced/i.test(String(e.details || e.message)) });
-        throw Object.assign(new Error('Could not tell whether the bundler took the withdrawal. It may still go through; the note shows as spent if it did.'), { unsure: true });
+        if (e?.kind === 'rpc') throw Object.assign(new Error('The service that sends it did not take the withdrawal. Nothing was sent.'), { refused: true, priceMoved: /(maxPriorityFeePerGas|maxFeePerGas) must be at least|underpriced/i.test(String(e.details || e.message)) });
+        throw Object.assign(new Error('Could not tell whether the withdrawal was taken. It may still go through; the note shows as spent if it did.'), { unsure: true });
       }
     }
-    if (typeof named === 'string' && /^0x[0-9a-f]{64}$/i.test(named) && lc(named) !== lc(hash)) throw Object.assign(new Error('The bundler answered with another operation than the one sent, so its answer is not trusted. The withdrawal may still go through; the note shows as spent if it did.'), { unsure: true });
+    if (typeof named === 'string' && /^0x[0-9a-f]{64}$/i.test(named) && lc(named) !== lc(hash)) throw Object.assign(new Error('The service that sends it answered for something else, so its answer is not trusted. The withdrawal may still go through; the note shows as spent if it did.'), { unsure: true });
     onStep({ step: 'wait', hash });
     for (const end = Date.now() + timeout; ;) {
       const r = await bundler.request('eth_getUserOperationReceipt', [hash]).catch(() => null);
       if (r) {
         // the note's withdrawal runs in validation, so an operation whose own call then failed has still taken the note out:
         // with a call, its ETH is at the sender (`stranded`), which its key can send on
-        if (!r.success) throw Object.assign(new Error(op.callData !== '0x' ? 'The note came out but the swap did not go through, so its ETH is at the note\'s one-time address. Send it on from there.' : `The withdrawal failed on chain${r.reason ? `: ${String(r.reason).slice(0, 200)}` : ''}.`), { stranded: op.callData !== '0x', mined: true, sender: op.sender, txHash: r.receipt?.transactionHash });
+        if (!r.success) throw Object.assign(new Error(op.callData !== '0x' ? 'The note came out but the swap did not go through, so its ETH is at the note’s one-time address. Send it on from there.' : `The withdrawal failed on chain${r.reason ? `: ${String(r.reason).slice(0, 200)}` : ''}.`), { stranded: op.callData !== '0x', mined: true, sender: op.sender, txHash: r.receipt?.transactionHash });
         return { hash, txHash: r.receipt?.transactionHash };
       }
       if (Date.now() > end) throw Object.assign(new Error('Not confirmed yet. The withdrawal may still go through; the note shows as spent if it did.'), { unsure: true });
@@ -1098,7 +1098,7 @@ const TC = (() => {
       if (reused) {
         if (cache.loaded !== pool.address) {
           cache.loaded = null;
-          if ((await prover.load(src.bytes.slice())).root !== src.root) throw new Error('The deposits read before do not give the same root now. Try again.');
+          if ((await prover.load(src.bytes.slice())).root !== src.root) throw new Error('The pool changed while it was read. Try again.');
           cache.loaded = pool.address;
         }
         root = src.root;
@@ -1110,7 +1110,7 @@ const TC = (() => {
           ({ root } = await prover.load(src.bytes));
           if (await rootOk(pool, root)) { if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root, blocks: src.blocks }); cache.loaded = pool.address; } break; }
           // a cache whose deposits give another root (a reorganised head, or a host that is wrong) is read past: the node alone, once
-          if (fromNode || !caches.length) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
+          if (fromNode || !caches.length) throw new Error('The pool’s deposits read do not check out. Try again in a minute.');
           fromNode = true;
           onStep({ step: 'read', note: 'cache: its deposits gave a root the pool does not know' });
           src = await readLeaves([]);
@@ -1162,7 +1162,7 @@ const TC = (() => {
       // Each paymaster that holds code, in order (the seed first). One whose bundler refuses before anything was sent is
       // followed by the next, the proof made again for its address; the key and the fee ceiling stay the same.
       const vetted = await vetPaymasters(paymasters, read);
-      if (!vetted.length) throw new Error('No paymaster could be reached, so nothing was sent. Try again in a minute, or pay the gas from your wallet.');
+      if (!vetted.length) throw new Error('Gas from the note is not available right now, so nothing was sent. Try again in a minute, or pay the gas from your wallet.');
       let last = null;
       for (const pm of vetted) {
         try { return { ...(await through(pm.address)), paymaster: pm.address }; } catch (e) {
@@ -1211,9 +1211,9 @@ const TC = (() => {
     async function noteText({ nonce, pool, s = 'w', c = null }) {
       const p = poolOf(pool);
       if (!p) throw new Error('No pool takes this note.');
-      if (s !== scheme) throw new Error(s === 'w' ? 'This note was made with wallet signatures: connect the wallet that made it.' : 'This note was made from a sign-in: sign in with it to take the note out.');
+      if (s !== scheme) throw new Error(s === 'w' ? 'This note was made with wallet signatures: connect the wallet that made it.' : 'This note was made from a Tacit key: sign in with that key to take it out.');
       const secrets = secretsOf(await rsAt(nonce), p.address);
-      if (c && b32(secrets.commitment) !== lc(c)) throw new Error(s === 'w' ? 'This note was made by another wallet: connect that one to take it out.' : 'This note was made under another sign-in: sign in with that one to take it out.');
+      if (c && b32(secrets.commitment) !== lc(c)) throw new Error(s === 'w' ? 'This note was made by another wallet: connect that one to take it out.' : 'This note was made from another Tacit key: sign in with that one to take it out.');
       return noteString(p.denomination, secrets.preimage);
     }
     return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, warm, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
@@ -1227,9 +1227,9 @@ const TC = (() => {
     const k = lc(pool.address), hit = SIZES.get(k);
     if (hit && now - hit.at < SIZE_TTL) return hit.v;
     const [idx, bal] = await Promise.all([read('eth_call', [{ to: pool.address, data: '0xfc7e9c6f' }, 'latest']), read('eth_getBalance', [pool.address, 'latest'])]);
-    if (!hexWord(idx) || !hexWord(bal)) throw new Error('The pool\'s size could not be read.');
+    if (!hexWord(idx) || !hexWord(bal)) throw new Error('The pool’s size could not be read.');
     const v = { deposits: Number(BigInt(idx)), held: Number(BigInt(bal) / pool.denomination) };
-    if (v.held > v.deposits) throw new Error('The pool\'s size does not add up.');
+    if (v.held > v.deposits) throw new Error('The pool’s size does not add up.');
     SIZES.set(k, { at: now, v });
     return v;
   }
@@ -1247,7 +1247,7 @@ const TC = (() => {
     if (!Number.isFinite(seen.i) || !Number.isFinite(seen.t)) return null;
     const age = Math.max(0, nowSec - seen.t), since = size && Number.isFinite(size.deposits) ? Math.max(0, size.deposits - 1 - seen.i) : null;
     const low = since != null ? since < LOW_SINCE : age < 3600;
-    return { text: `Deposited ${ageWords(age)}${since != null ? ` · ${count(since, 'deposit')} since` : ''}`, low, since, age, t: seen.t, nudge: since != null ? 'Few deposits have come after it. The more do, the better it blends in.' : 'It went in less than an hour ago. Waiting longer hides it better.' };
+    return { text: `Deposited ${ageWords(age)}${since == null ? '' : since ? ` · hidden among ${count(since, 'later deposit')}` : ' · nothing after it yet'}`, low, since, age, t: seen.t, nudge: 'Wait for more deposits before taking this one out.' };
   }
   function exitWarning(seens) {
     const lows = seens.filter((s) => s?.low);

@@ -125,11 +125,11 @@ console.log('3. a balance already there: a line above it instead, and Send moves
   check(await until(p, () => !document.querySelector('#bal-pq'), null, 5e3), '"Not now" takes the line away');
   // the notes card: grouped by size
   const card = await txt(p, '#lg-notes');
-  check(/8 × 0\.1 ETH/.test(card) && /1 ETH · note/.test(card) && !/1 × 1 ETH/.test(card) && !/Kohaku/.test(card), 'the notes card groups several notes by size (8 × 0.1) and lists a single one on its own, no "Kohaku"', card.slice(0, 300));
+  check(/8 × 0\.1 ETH/.test(card) && /(^|[^.\d])1 ETH Make ready to pay/.test(card) && !/note \d/.test(card) && !/1 × 1 ETH/.test(card) && !/Kohaku/.test(card), 'the notes card groups several notes by size (8 × 0.1) and lists a single one on its own, no "Kohaku"', card.slice(0, 300));
   check(await p.evaluate(() => !!document.querySelector('#lg-notes #lg-intake details')), 'and holds "Make whole notes from your private balance"');
   await p.click('#tabs [data-tab="send"]');
   await p.fill('#f-to', DEV_TACIT1); await p.fill('#f-amt', '0.5');
-  check(await until(p, () => /Move a 1 ETH note in, then pay/.test(document.querySelector('#f-go')?.textContent || '') && !document.querySelector('#f-go').disabled, null, 15e3), 'paying 0.5 with 0.17 ready: the form\'s button says "Move a 1 ETH note in, then pay"', await txt(p, '#f-go'));
+  check(await until(p, () => /Use a 1 ETH note, then pay/.test(document.querySelector('#f-go')?.textContent || '') && !document.querySelector('#f-go').disabled, null, 15e3), 'paying 0.5 with 0.17 ready: the form\'s button says "Move a 1 ETH note in, then pay"', await txt(p, '#f-go'));
   check(await p.$$eval('#form button.btn', (b) => b.length) === 1, 'and it is the only button of the form', await p.$$eval('#form button.btn', (b) => b.map((x) => x.textContent).join(' | ')));
   check(/0\.17 ETH is ready to pay/.test(await rcpt(p)) && /No wallet needed/.test(await rcpt(p)) && /up to 3%/.test(await rcpt(p)) && /up to 0\.25%/.test(await rcpt(p)) && /a few minutes/.test(await rcpt(p)) && !/signs a message/.test(await rcpt(p)), 'saying what is ready, that no wallet is needed, the costs and the wait', await rcpt(p));
   await p.fill('#f-amt', '0.1'); await p.waitForTimeout(600);
@@ -206,7 +206,7 @@ console.log('6. Activity lists a split shield');
   await p.fill('#f-samt', '0.2');
   await until(p, () => /2 × 0\.1 ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 10e3);
   await p.click('#f-go');
-  check(await until(p, () => /large pools/.test(document.querySelector('#status')?.textContent || ''), null, 60e3), 'the notes go in', await txt(p, '#status'));
+  check(await until(p, () => /in Tornado Cash/.test(document.querySelector('#status')?.textContent || ''), null, 60e3), 'the notes go in', await txt(p, '#status'));
   check(await until(p, () => /Into whole notes \(2\)/.test(document.querySelector('#activity')?.textContent || ''), null, 10e3), 'Activity: "Into whole notes (2)"', (await txt(p, '#activity')).slice(0, 300));
   noErrors(p, 'scenario 6');
   await L.close(p);
@@ -244,8 +244,8 @@ console.log('8. ETH at a one-time deposit address (a note moved in): the relay t
   await p.click('#f-check');
   check(await until(p, () => !!document.querySelector('#form [data-take]'), null, 60e3), 'the address shows 0.0997 ETH waiting');
   const row = await txt(p, '#form .rows'), bal = await txt(p, '#bal-note');
-  check(/The relay moves it in shortly, or take it in now from your wallet/.test(row), 'its row says the relay moves it in, the wallet only as a choice', row);
-  check(/0\.0997 ETH is waiting at your deposit addresses on Ethereum; the relay moves it into your balance within minutes/.test(bal) && !(await p.$('#bal-note .callout')), 'the balance line says the relay moves it in (a line, not a call to act)', bal);
+  check(/The relay moves it in shortly, for up to 0\.25%\. Or take it in now from your wallet/.test(row), 'its row says the relay moves it in, the wallet only as a choice', row);
+  check(/0\.0997 ETH is waiting at your deposit addresses; the relay moves it into your balance within minutes/.test(bal) && !(await p.$('#bal-note .callout')), 'the balance line says the relay moves it in (a line, not a call to act)', bal);
   check(/0\.17 ready to pay/.test(await txt(p, '#bal')) && /0\.0997 arriving/.test(await txt(p, '#bal')), 'and the total\'s own line says 0.0997 is arriving, so a dip while a note lands has its reason', await txt(p, '#bal'));
   check(env.C[1].sent.length === 0, 'nothing sent');
   noErrors(p, 'scenario 8');
@@ -305,7 +305,7 @@ console.log('10. a waiting payment whose name moved is refused and kept; one a d
   const recs = [{id: 'b2', a: String(E / 100n), to: DEV_TACIT1, name: '', b: [2], at: Date.now() - 25 * 3600e3}, {id: 'b3', a: String(E / 100n), to: DEV_TACIT1, name: 'pal.wei', b: [3], at: Date.now()}];
   const p = await L.open(env, {connected: true, seed: later(recs)});
   await signIn(p); await ready(p);
-  check(await until(p, () => /Not paid: 0\.01 ETH to tacit1\S+\. Its note moved in over a day ago/.test(document.querySelector('#bal-note')?.textContent || ''), null, 15e3), 'a day on: "Not paid", with Dismiss', await noteOf(p));
+  check(await until(p, () => /Not paid: 0\.01 ETH to tacit1\S+\. Its note was made ready to pay over a day ago/.test(document.querySelector('#bal-note')?.textContent || ''), null, 15e3), 'a day on: "Not paid", with Dismiss', await noteOf(p));
   check(await until(p, () => !!document.querySelector('#bal-note [data-pl-go="b3"]'), null, 30e3), 'the landed one to pal.wei is offered', await noteOf(p));
   await p.click('#bal-note [data-pl-go="b3"]');
   check(await until(p, () => /pal\.wei now points somewhere else, so nothing was sent/.test(document.querySelector('#status')?.textContent || ''), null, 30e3) && relays(env) === 0, 'pal.wei points elsewhere now: refused, nothing sent', await txt(p, '#status'));
@@ -351,7 +351,7 @@ console.log('11. a withdrawal in 3 parts: the first now, two kept sealed, each o
     check(recs.every((x) => x.due > Date.now() && x.due < Date.now() + 3 * 3600e3) && recs[0].due < recs[1].due, 'each due later, inside the 3 h span, in order');
     const plainStore = await p.evaluate(() => Object.values(localStorage).join(' ').toLowerCase());
     check(!plainStore.includes(PAYEE.slice(2).toLowerCase()), 'sealed: the address is nowhere in plain storage');
-    check(await until(p, () => /2 more parts of a withdrawal to send later, the next in \d+ min/.test(document.querySelector('#bal-note')?.textContent || ''), null, 10e3), 'the balance says two more parts wait', await noteOf(p));
+    check(await until(p, () => /2 more parts of a withdrawal to send later, the next in \d+ (min|h)/.test(document.querySelector('#bal-note')?.textContent || ''), null, 10e3), 'the balance says two more parts wait', await noteOf(p));
     await setRecs(p, recs.map((x) => ({...x, due: Date.now() - 1000})));
     await p.reload(); await p.waitForTimeout(500); await signIn(p); await ready(p);
     check(await until(p, () => document.querySelectorAll('#bal-note [data-pl-go]').length === 2, null, 15e3) && /Part 2 of 3 is due: [\d.]+ ETH to 0x3e40…37E3/.test(await noteOf(p)), 'after a reload, each due part is offered: "Part 2 of 3 is due: … to 0x3e40…37E3"', await noteOf(p));

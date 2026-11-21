@@ -247,7 +247,7 @@ await p.click('#f-tok'); await p.click('#form [data-from="exchange"]');
 await until(p, () => document.querySelector('#f-check'));
 await p.click('#f-check');
 ok(await p.evaluate(() => !!document.querySelector('#status .spin') && document.querySelector('#f-check').disabled), 'checking for arrivals shows at once, and cannot be pressed twice');
-ok(await until(p, () => /waiting on Ethereum/.test(document.querySelector('#status').textContent)), 'then says what it found');
+ok(await until(p, () => /waiting at your deposit addresses/.test(document.querySelector('#status').textContent)), 'then says what it found');
 C[1].relayDelay = 0;
 const issued = () => p.$$eval('#form .rows li', (x) => x.length);
 const before = await issued();

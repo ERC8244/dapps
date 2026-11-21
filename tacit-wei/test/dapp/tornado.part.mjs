@@ -157,7 +157,7 @@ console.log('notes from a seed (no signatures)');
     const other = TC.makeFlow({ read, wallet, account: '0x' + '11'.repeat(20), seed: rnd(32), store: st });
     let msg = '';
     try { await other.noteText(m); } catch (e) { msg = e.message; }
-    eq(/another sign-in/.test(msg), true, 'other seed: ' + msg);
+    eq(/another Tacit key/.test(msg), true, 'other seed: ' + msg);
     msg = '';
     try { await flow.noteText({ ...m, s: undefined }); } catch (e) { msg = e.message; }
     eq(/wallet signatures/.test(msg), true, 'scheme: ' + msg);
@@ -294,7 +294,7 @@ await test('fees, ceilings, bounds and fallback limits match the app', () => {
     const ref = { baseFeePerGas: BigInt(i) * 10n ** 7n, maxPriorityFeePerGas: BigInt(i % 9) * 10n ** 8n }, price = { maxFeePerGas: p, maxPriorityFeePerGas: p / 3n };
     let a = null, b = null;
     try { TC.priceWithinBounds(price, ref); } catch (e) { a = e.message; }
-    try { P.assertGasPriceWithinBounds(price, ref); } catch (e) { b = e.message.replace('wallet\'s node', 'page\'s node'); }
+    try { P.assertGasPriceWithinBounds(price, ref); } catch (e) { b = e.message.replace('wallet\'s node', 'page’s node').replace('bundler\'s', 'bundler’s'); }
     eq(a, b, 'price bounds');
   }
 });
@@ -461,7 +461,7 @@ console.log('the pools read without naming a note');
     const notes = [], b = TC.poolBook({ getLogs: async (f) => getLogsOf(n++ ? all : logs)(f), blockNumber: async () => HEAD, read, caches: ['https://c.example'], fetchImpl: fetch2 });
     await b.deposits([P01], F, (p) => { if (p.note) notes.push(p.note); });
     eq(!!b.deposit(P01, n0.commitment), true, 'note 0\'s deposit read');
-    eq(notes.some((x) => /0\.1 ETH pool's deposits read did not add up/.test(x)), true, notes.join(' | '));
+    eq(notes.some((x) => /0\.1 ETH pool’s deposits read did not add up/.test(x)), true, notes.join(' | '));
     const r = await TC.makeFlow({ read, account: randAddr(), seed, book: bookOf(all), store: { get: () => null, set: () => {} } }).scan();
     eq(r.found.map((f) => f.nonce).join(), '0,1,2', 'Find finds note 0');
   });
@@ -479,7 +479,7 @@ console.log('the pools read without naming a note');
       const notes = [], b = TC.poolBook({ getLogs: getLogsOf(all), blockNumber: async () => HEAD, read: r, caches: ['https://c.example'], fetchImpl: fc });
       await b.deposits([P01], F, (p) => { if (p.note) notes.push(p.note); });
       eq(!!b.deposit(P01, 6n), true, `the left-out leaf is read (${old})`);
-      eq(notes.some((x) => /0\.1 ETH pool's deposits read did not add up/.test(x)), true, notes.join(' | '));
+      eq(notes.some((x) => /0\.1 ETH pool’s deposits read did not add up/.test(x)), true, notes.join(' | '));
     }
   });
   await test('a cache file that begins before the read holds earlier deposits: they are left out, and the read adds up', async () => {
@@ -636,7 +636,7 @@ console.log('a note out: spent only as the chain shows it, paid to this operatio
     noCode.add(lc(A1)); e = null;
     try { await run({ to: 'me', tx: TX }); } catch (x) { e = x; }
     noCode.clear();
-    eq(/No paymaster could be reached/.test(e?.message || ''), true, e?.message);
+    eq(/Gas from the note is not available right now/.test(e?.message || ''), true, e?.message);
   });
   await test('the fee cap holds for a listed paymaster: a fee over 3% of the note is not proved or sent', async () => {
     let e = null;
@@ -647,7 +647,7 @@ console.log('a note out: spent only as the chain shows it, paid to this operatio
     const b = TC.poolBook({ getLogs: async () => [], blockNumber: async () => TC.NOTES_FROM + 10, read: async () => { throw new Error('down'); }, caches: [] });
     let e = null;
     try { await b.deposits([pool]); } catch (x) { e = x; }
-    eq(/Could not read the pool's deposit count/.test(e?.message || ''), true, e?.message);
+    eq(/Could not read the pool’s deposit count/.test(e?.message || ''), true, e?.message);
   });
 }
 

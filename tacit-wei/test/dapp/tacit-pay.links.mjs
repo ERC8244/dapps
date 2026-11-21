@@ -87,7 +87,7 @@ for (const mode of ['box', 'prove']) {
   if (viaBox) {
     // The payee's page is open: ETH waiting at the link's address is announced under the balance, and taken in with a proof.
     await A.waitForFunction(() => /0\.002 ETH is waiting/.test(document.querySelector('#bal-note')?.textContent || ''), null, {timeout: 180e3}).catch(() => {});
-    ok(/0\.002 ETH is waiting at your deposit addresses on Ethereum/.test(await A.textContent('#bal-note')), 'the payee’s open page announces what waits at the link’s address', (await A.textContent('#bal-note')).trim());
+    ok(/0\.002 ETH is waiting at your deposit addresses/.test(await A.textContent('#bal-note')), 'the payee’s open page announces what waits at the link’s address', (await A.textContent('#bal-note')).trim());
     await A.click('#bal-take');
     await A.waitForSelector('#form [data-take]', {timeout: 60e3});
     await A.click('#form [data-take]');

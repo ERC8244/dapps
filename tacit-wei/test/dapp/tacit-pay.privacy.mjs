@@ -190,10 +190,10 @@ ok(await until(p, () => /waiting at your deposit address/.test(document.querySel
 const call = await p.textContent('#form .callout');
 ok(/Take it in from your wallet: no relay fee, just gas\. Your wallet then shows beside this address on chain\./.test(call.replace(/\s+/g, ' ')), 'and says the wallet then shows beside the address', call.replace(/\s+/g, ' ').slice(0, 200));
 const note = await p.evaluate(() => [...document.querySelectorAll('#form .note')].map((x) => x.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
-ok(/Taken in by the relay, nothing on chain ties them together\./.test(note) && !/Each works on every chain, and nothing on chain ties/.test(note), 'one-time addresses: it is the relay that keeps them apart', note.slice(0, 260));
+ok(/When the relay takes them in, nothing on chain ties them together\./.test(note) && !/Each works on every chain, and nothing on chain ties/.test(note), 'one-time addresses: it is the relay that keeps them apart', note.slice(0, 260));
 C[1].balances.set(addr0.toLowerCase(), 5n * 10n ** 14n);               // over it: the relay takes it, the wallet is still offered
 await p.click('#f-check');
-ok(await until(p, () => /The relay moves it in shortly, or take it in now from your wallet: no relay fee, just gas\. Your wallet then shows beside this address on chain\./.test((document.querySelector('#form .callout')?.textContent || '').replace(/\s+/g, ' ')), null, 30e3), 'over the minimum, the same line follows the relay’s');
+ok(await until(p, () => /The relay moves it in shortly, for up to 0\.25%\. Or take it in now from your wallet: no relay fee, just gas, but your wallet then shows beside this address on chain\./.test((document.querySelector('#form .callout')?.textContent || '').replace(/\s+/g, ' ')), null, 30e3), 'over the minimum, the same line follows the relay’s');
 
 console.log('\nthe wallet route');
 await p.click('#wallet'); await p.click('#w-conn');

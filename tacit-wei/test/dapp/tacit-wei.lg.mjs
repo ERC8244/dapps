@@ -57,8 +57,8 @@ console.log('2. 0.2 ETH with the smallest note 0.1: two whole notes in one forwa
   check((await p.inputValue('#lg-min')) === String(10n ** 17n), 'the select says 0.1 ETH (from the stored choice)');
   check(/Into whole notes ?0\.2 ETH/.test(await rcpt(p)) && !/Into your private balance/.test(await rcpt(p)), 'the receipt says "Into whole notes 0.2 ETH" and nothing into the balance', await rcpt(p));
   await p.click('#f-go');
-  const landed = await until(p, () => /large pools/.test(document.querySelector('#status')?.textContent || ''), null, 60e3);
-  check(landed, 'the status says the notes are in the large pools', await txt(p, '#status'));
+  const landed = await until(p, () => /whole notes are in Tornado Cash/.test(document.querySelector('#status')?.textContent || ''), null, 60e3);
+  check(landed, 'the status says the whole notes are in Tornado Cash', await txt(p, '#status'));
   // what the wallet was asked to sign
   check(env.typed.length === 0, 'signed in, the notes come from the Tacit key: the wallet is asked for no signature', JSON.stringify(env.typed.map((t) => t.message?.nonce)));
   // the one transaction
@@ -73,7 +73,7 @@ console.log('2. 0.2 ETH with the smallest note 0.1: two whole notes in one forwa
   check(t && t.slice(0, 4).flat(3).every((x) => x === 0n) && t[4] === '0x0000000000000000000000000000000000000000' && t[5] === 0n && t[6] === '0x0000000000000000000000000000000000000000' && t[7] === 0n && t[8] === '0x' && t[9] === '0x', 'and a zero Tacit part', t ? String(t) : '');
   check(await until(p, () => !document.querySelector('#lg-notes')?.hidden && document.querySelectorAll('#lg-notes [data-lg-out]').length === 2, null, 10e3), '#lg-notes is visible with 2 notes');
   const card = await txt(p, '#lg-notes');
-  check(/0\.1 ETH · note 0/.test(card) && /0\.1 ETH · note 1/.test(card), 'listed as "0.1 ETH · note 0" and "0.1 ETH · note 1"', card.slice(0, 200));
+  check(/0\.1 ETH/.test(card) && !/note \d/.test(card) && (card.match(/Make ready to pay/g) || []).length === 2, 'listed as two 0.1 ETH rows, each with "Make ready to pay", no internal note number', card.slice(0, 200));
   check(await until(p, () => /0\.2 ?in 2 whole notes/.test(document.querySelector('#bal')?.textContent || ''), null, 10e3), 'the balance counts them: "0.2 in 2 whole notes"', await txt(p, '#bal'));
   // signed in, the records that link deposits to withdrawals are sealed under the key: none in plain storage
   const plain = await p.evaluate(() => Object.keys(localStorage).filter((k) => /^tacit-wei-fixed-(notes|log|pending|next):/.test(k)));
@@ -154,7 +154,7 @@ if (kept) {
   await until(p, () => /^Sign in · 0x/.test(document.querySelector('#wallet-label')?.textContent || ''), null, 15e3);
   await signIn(p);
   check(await until(p, () => /1 spent/.test(document.querySelector('#lg-notes')?.textContent || '') && document.querySelectorAll('#lg-notes [data-lg-out]').length === 1, null, 15e3), 'note 1 spent on chain: after a reload it folds into "1 spent", one note left to use', await txt(p, '#lg-notes'));
-  check(/0\.1 ETH · note 0/.test(await p.$eval('#lg-notes', (e) => [...e.querySelectorAll('.kv')].filter((k) => !k.closest('.lg-spent')).map((k) => k.textContent).join(' '))), 'the one left is note 0');
+  check(((x) => /0\.1 ETH/.test(x) && !/note \d/.test(x))(await p.$eval('#lg-notes', (e) => [...e.querySelectorAll('.kv')].filter((k) => !k.closest('.lg-spent')).map((k) => k.textContent).join(' '))), 'the one left is a 0.1 ETH note');
   check(await until(p, () => /0\.1 ?in a whole note/.test(document.querySelector('#bal')?.textContent || ''), null, 10e3), 'the balance line now says 0.1 in a whole note', await txt(p, '#bal'));
   noErrors(p, 'scenario 5');
   await L.close(p);
@@ -209,7 +209,7 @@ console.log('7. Find brings the notes back from the sign-in, asking nothing; not
   check(env.typed.length === 0, 'with no signature asked for', JSON.stringify(env.typed.map((t) => t.message?.nonce)));
   check(await until(p, () => document.querySelectorAll('#lg-notes [data-lg-out]').length === 3, null, 10e3), '#lg-notes lists 3 notes', await txt(p, '#lg-notes'));
   const card = await txt(p, '#lg-notes');
-  check(/0\.1 ETH · note 0/.test(card) && /0\.1 ETH · note 1/.test(card) && /1 ETH · note 2/.test(card), 'note 0 and note 1 of 0.1 ETH, note 2 of 1 ETH', card.slice(0, 200));
+  check(/2 × 0\.1 ETH/.test(card) && /(^|[^.\d])1 ETH/.test(card) && !/note \d/.test(card), 'two notes of 0.1 ETH and one of 1 ETH, no internal note numbers', card.slice(0, 200));
   check((await p.evaluate(() => Object.keys(localStorage).filter((k) => /^tacit-wei-fixed-(notes|log|pending|next):/.test(k)))).length === 0, 'and keeps them sealed, not in plain storage');
   check(await until(p, () => /1\.2 ?in 3 whole notes/.test(document.querySelector('#bal')?.textContent || ''), null, 10e3), 'the balance says "1.2 in 3 whole notes"', await txt(p, '#bal'));
   check(env.C[1].sent.length === 0, 'nothing sent');
@@ -245,9 +245,9 @@ console.log('8. with post-quantum privacy on, whole notes come from the 24 words
   await p.click('#sheet-wallet [data-close]');
   await amount(p, '0.2');
   await until(p, () => /2 × 0\.1 ETH/.test(document.querySelector('#f-split')?.textContent || ''), null, 15e3);
-  check(/come from your post-quantum words, so there is nothing extra to sign/.test(await split(p)), 'the split card: nothing extra to sign', await split(p));
+  check(/Find brings the notes back on any device, nothing to sign/.test(await split(p)), 'the split card: nothing extra to sign', await split(p));
   await p.click('#f-go');
-  check(await until(p, () => /large pools/.test(document.querySelector('#status')?.textContent || ''), null, 60e3), 'the notes go in', await txt(p, '#status'));
+  check(await until(p, () => /whole notes are in Tornado Cash/.test(document.querySelector('#status')?.textContent || ''), null, 60e3), 'the notes go in', await txt(p, '#status'));
   check(env.typed.length === 0, 'with no signature asked for');
   // the notes are those of the root's seed: HMAC(root, "tacit-wei-tornado-v1")
   const root = L.vmEval('PQ.rootOf(' + JSON.stringify(words.join(' ')) + ')');

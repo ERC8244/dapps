@@ -174,10 +174,10 @@ console.log('the pool’s size line');
 ok(await until(p, () => /No one else is in this pool yet/.test(document.querySelector('#bal')?.textContent || ''), null, 30e3), 'a key that is alone in its pool is told so', await bal());
 C[1].deposit('22'.repeat(32), E); C[1].balances.set(POOL_L, 2n * E);
 await p.click('#bal-re');
-ok(await until(p, () => /The pool holds 2 ETH/.test(document.querySelector('#bal')?.textContent || ''), null, 30e3), 'and what the pool holds once another key is in it', await bal());
+ok(await until(p, () => /(The pool holds|Tacit) 2 ETH/.test(document.querySelector('#bal')?.textContent || ''), null, 30e3), 'and what the pool holds once another key is in it', await bal());
 C[1].balances.set(POOL_L, 3n * E);
 await p.click('#bal-re');
-ok(await until(p, () => /The pool holds 3 ETH/.test(document.querySelector('#bal')?.textContent || ''), null, 30e3), 'what it holds follows the pool', await bal());
+ok(await until(p, () => /(The pool holds|Tacit) 3 ETH/.test(document.querySelector('#bal')?.textContent || ''), null, 30e3), 'what it holds follows the pool', await bal());
 
 console.log('\ntaking a deposit in from the wallet');
 await p.click('#tabs [data-tab="shield"]');

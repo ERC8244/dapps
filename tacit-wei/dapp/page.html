@@ -93,6 +93,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .bal .v { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: lining-nums tabular-nums; }
 .bal .v.t { font: 400 28px/1.05 var(--serif); }
 .bal .u, .bal .side .err, .bal .note { grid-column: 2 / 4; }
+.pools summary { cursor: pointer; list-style: none; } .pools summary::-webkit-details-marker { display: none; } .pools span { margin-right: 10px; }
 .bal br { display: none; }
 #bal-re { grid-area: 1 / 3; }
 #bal-note > * { margin: 0 0 16px; }
@@ -6085,7 +6086,12 @@ function paintBal() {
   if (bs) bs.onclick = (e) => combine(e.currentTarget, 'self');
   if (bt) bt.onclick = () => { if (S.busy) return; S.tab = 'shield'; (S.inTok ||= {})[S.chain.chainId] = 'ex'; render(); $('#form').scrollIntoView({ behavior: smooth(), block: 'start' }); };
   refreshPool(c);
-  const pool = POOLETH[c.chainId]?.v, poolLine = pool != null ? html`<div class="u">${alone(st, pool) ? 'No one else is in this pool yet' : html`The pool holds <b class="num">${poolStr(pool)} ETH</b>`}</div>` : '';
+  // What the pools hold, apart: the Tacit pool and Tornado Cash's four (a split deposit's whole notes go there), each of
+  // those by its depth in notes, the crowd a note hides in, behind a tap.
+  let tv = null; try { tv = LG_TVL.v; } catch { /* read further down the module, after the first paint */ }
+  const pool = POOLETH[c.chainId]?.v, poolLine = pool == null ? '' : alone(st, pool) ? html`<div class="u">No one else is in this pool yet</div>`
+    : tv ? html`<details class="u pools"><summary>Pools hold: Tacit <b class="num">${poolStr(pool)} ETH</b> · ${LG_TORNADO} <b class="num">${lgEth(tv.tornado)} ETH</b></summary>${TC.POOLS.map((p, i) => html`<span class="nw">${TC.ethWords(p.denomination)} ETH: ${Number(tv.notes[i]).toLocaleString('en-US')} notes</span>`)}</details>`
+    : html`<div class="u">The pool holds <b class="num">${poolStr(pool)} ETH</b></div>`;
   if (!S.key) {
     mount($('#bal'), html`${tkOn(html`<svg class="tk" aria-hidden="true"><use href="#tk-peth"/></svg>`, c)}<div><div class="v t">Private ETH</div>${poolLine}${lgHeld() ? lgBalLine() : ''}</div>`);
     return;
@@ -10794,19 +10800,11 @@ function lgTvl() {
   LG_TVL.at = Date.now();
   return lgRead.batch([POOL, ...TC.POOLS.map((p) => p.address)].map((a) => ['eth_getBalance', [a, 'latest']])).then((r) => {
     const b = r.map((x) => BigInt(x.result));
-    LG_TVL.v = TC.held(b); store.set('tacit-wei-tvl', JSON.stringify({ at: LG_TVL.at, v: b.map(String) })); lgTvlLine();
+    LG_TVL.v = TC.held(b); store.set('tacit-wei-tvl', JSON.stringify({ at: LG_TVL.at, v: b.map(String) })); paintBal();
     return LG_TVL.v;
   }).catch(() => LG_TVL.v);
 }
 const lgEth = (v) => fmt(v, v < 10n ** 18n ? 3 : v < 10n ** 21n ? 1 : 0);
-// In the footer, beside the pool's address: what each kind of pool holds, apart.
-function lgTvlLine() {
-  const h = LG_TVL.v;
-  if (!h) return;
-  let el = $('#lg-tvl');
-  if (!el) { el = document.createElement('nav'); el.id = 'lg-tvl'; el.setAttribute('aria-label', 'What the pools hold'); $('footer nav')?.after(el); }
-  mount(el, html`<span>Held</span><span>Tornado ${lgEth(h.tornado)} ETH · Tacit ${lgEth(h.tacit)} ETH</span>`);
-}
 const lgSmallestSelect = () => html`<label class="nw">Smallest note <select id="lg-min" aria-label="Smallest note">${[...TC.SMALLEST.map((d) => [d, `${TC.ethWords(d)} ETH`]), [0n, 'Off']].map(([d, l]) => html`<option value="${d}" ${d === lgSmallest() ? 'selected' : ''}>${l}</option>`)}</select></label>`;
 // The split card, under the amount: the parts, the crowd each pool holds, the network fee, and what the wallet will ask.
 function lgSplitCard(p, { swapped = false } = {}) {
@@ -11626,7 +11624,7 @@ wcHeld();                // once: a later wallet announcing itself must not take
 restoreWallet();
 stayRestore();           // a pasted key kept for this tab; one opened by a wallet comes back as the wallet is bound
 readRegistry();
-lgTvlLine(); lgTvl();    // what the pools hold, in the footer (the same read for every visitor)
+lgTvl();                 // what the pools hold, beside the balance (the same read for every visitor)
 Promise.resolve().then(() => caches.open(ARTIFACTS)).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});
 </script>
 </body>

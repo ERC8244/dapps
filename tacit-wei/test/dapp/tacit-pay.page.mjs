@@ -240,8 +240,8 @@ ok(/not valid/.test(await p.textContent('#req-body')), 'a link that is not an ad
 await p.click('#req-x');
 
 console.log('the ETH the pool holds, and a withdrawal to a name');
-await p.waitForFunction(() => /pool holds/.test(document.querySelector('#bal')?.textContent || ''), null, {timeout: 20e3}).catch(() => {});
-ok(/The pool holds 1,234 ETH/.test(await p.textContent('#bal')), 'the pool’s ETH on the chain is shown beside the balance', (await p.textContent('#bal')).replace(/\s+/g, ' ').slice(0, 120));
+await p.waitForFunction(() => /pool holds|Pools hold/.test(document.querySelector('#bal')?.textContent || ''), null, {timeout: 20e3}).catch(() => {});
+ok(/(The pool holds|Tacit) 1,234 ETH/.test(await p.textContent('#bal')), 'the pool’s ETH on the chain is shown beside the balance', (await p.textContent('#bal')).replace(/\s+/g, ' ').slice(0, 120));
 await p.click('#tabs [data-tab="withdraw"]');
 const dest = async (v, amt = '') => { await p.fill('#f-wto', v); await p.fill('#f-wamt', amt); await p.waitForFunction(() => !/Reading/.test(document.querySelector('#f-rcpt')?.textContent || 'x'), null, {timeout: 10e3}).catch(() => {}); await p.waitForTimeout(150); return (await p.textContent('#f-rcpt')).replace(/\s+/g, ' '); };
 let w = await dest('bob.wei');

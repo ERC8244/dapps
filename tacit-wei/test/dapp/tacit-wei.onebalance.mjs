@@ -340,6 +340,8 @@ console.log('11. a withdrawal in 3 parts: the first now, two kept sealed, each o
   check(/same address, so they can still be grouped there and added up to the amount you typed/.test(note) && !/tie to each other/.test(note), 'which says the parts go to one address and can be grouped there, not that they cannot be tied to each other');
   const r = await rcpt(p), first = /Arrives ?([\d.]+) ETH/.exec(r)?.[1], later = /Later, in 2 parts ?([\d.]+) ETH/.exec(r)?.[1];
   check(!!first && !!later && /^0\.\d{1,4}$/.test(first), 'the first part is round (four significant digits)', r);
+  const feeNow = /Relay fee ?([\d.]+) ETH/.exec(r)?.[1], feeLater = /Fee, each later part ?about ([\d.]+) ETH/.exec(r)?.[1];
+  check(!!feeNow && feeLater === feeNow, 'the receipt says each later part pays a fee of its own: about the relay fee this one does, at today\'s price', `${feeNow} / ${feeLater} in ${r}`);
   if (process.env.ARTIFACTS) {
     await p.click('#f-go');
     check(await until(p, () => /Withdrew/.test(document.querySelector('#status')?.textContent || ''), null, 300e3) && relays(env) === 1, 'the first part goes now, once', await txt(p, '#status'));

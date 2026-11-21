@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-R8xxITu0R9Z4RoU7IRkTIPMFJuM6kCelhJuK1NrZsRM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-BYpI5TXSxEPWCQNyOqVmo5qOLIMqd3xuHJ/Akci+DWE=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -6787,7 +6787,7 @@ function formWithdraw(f) {
     const a0 = parseEth(amt.value), ps = partsOf(a0), a = ps ? ps[0] : a0, raw = to.value.trim(), fee = feeOf(tab), bal = cur().bal;
     shown = fee;
     rc.hidden = true; go.disabled = true; go.textContent = label;
-    const say = (v) => { mount(rc, html`${v}${ps ? kvRow(`Later, in ${ps.length - 1} part${ps.length > 2 ? 's' : ''}`, `${fmt(a0 - a, 18)} ETH`) : ''}`); rc.hidden = false; };
+    const say = (v) => { mount(rc, html`${v}${ps ? html`${kvRow(`Later, in ${ps.length - 1} part${ps.length > 2 ? 's' : ''}`, `${fmt(a0 - a, 18)} ETH`)}${laterFeeRow(fee, lgExitPlan(a))}` : ''}`); rc.hidden = false; };
     // A wallet deposit not confirmed yet holds a withdrawal only when the wallet would send it too.
     if (sentHolds(c) && !(S.sent.dep && viaOf(tab) !== 'self')) { say(sentNote(c)); return sentWire(renderForm, $('#f-rcpt')); }
     const w = destCheck(raw, c, say, go);
@@ -6817,6 +6817,10 @@ function formWithdraw(f) {
   };
 }
 
+// Each later part of a withdrawal in parts goes out as this one does and pays a fee of its own, known only when it is sent:
+// said beside this part's, as what this part's is now (`fee`: the relay's, null while it is read; `x`: the whole notes this part takes).
+const laterFeeRow = (fee, x) => (x && x.rest === 0n ? kvRow('Fee, each later part', `from its note, as this one’s (at most ${TC.MAX_FEE_PERCENT}%)`)
+  : fee == null ? '' : fee ? kvRow('Fee, each later part', `about ${ethStr(fee)} ETH${x ? ' and the notes’ gas' : ''}`) : kvRow('Fee, each later part', 'none · your wallet pays the gas'));
 // An amount out that is exactly one this key shielded can be matched to that deposit by anyone reading the chain: said.
 const sameNote = (a) => (cur().W?.history().some((r) => r.ext && BigInt(r.ext) === a) ? html`${NOTE_WARN}You shielded exactly this amount before, so the two can be matched. A different amount hides it better.</p>` : '');
 // Paying `a` out to an address, as a receipt: whole notes first (the largest that fit), the rest from the private balance.

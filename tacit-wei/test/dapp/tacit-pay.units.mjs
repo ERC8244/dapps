@@ -208,5 +208,19 @@ console.log('a withdrawal in parts: sizes and times drawn from the cryptographic
   ok(first === at + span / 3 && last < at + span && last > at + span * 0.99, 'at the lowest and highest draws, the start of the slice and just before its end', `${(first - at) / 3_600_000} h, ${(last - at) / 3_600_000} h`);
 }
 
+console.log('a withdrawal in parts: the receipt says what each later part pays');
+{
+  // the page's own row, with its helpers as plain text
+  const row = vm.runInNewContext(`${cut('const laterFeeRow =', '\n// An amount out that is exactly one')}\nlaterFeeRow`, {
+    kvRow: (label, value) => `${label}: ${value}`, ethStr: (v) => `${Number(v) / 1e18}`, TC: {MAX_FEE_PERCENT: 3},
+  });
+  const E18 = 10n ** 18n, notesOnly = {rest: 0n, notes: [1]}, mixed = {rest: E18 / 10n, notes: [1]};
+  ok(row(null, null) === '', 'while the relay\'s fee is still being read, nothing is said of it');
+  ok(row(0n, null) === 'Fee, each later part: none · your wallet pays the gas', 'a wallet that pays the gas pays it for each part', row(0n, null));
+  ok(row(E18 / 1000n, null) === 'Fee, each later part: about 0.001 ETH', 'a part from the balance: each later part pays about the relay fee this one does', row(E18 / 1000n, null));
+  ok(row(E18 / 1000n, mixed) === 'Fee, each later part: about 0.001 ETH and the notes’ gas', 'a part of notes and balance: that, and the notes\' gas', row(E18 / 1000n, mixed));
+  ok(row(E18 / 1000n, notesOnly) === 'Fee, each later part: from its note, as this one’s (at most 3%)' && row(null, notesOnly) === row(0n, notesOnly), 'a part wholly from notes: each pays from its own note, whatever the relay asks', row(null, notesOnly));
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

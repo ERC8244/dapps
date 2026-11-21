@@ -6,7 +6,12 @@
    their hashes; ARTIFACTS=<dir holding transact.wasm and transact_final.zkey> serves them from disk instead, and
    OFFLINE=1 refuses every mirror so the key must come from disk through the page's own file picker.
 
-   Forks come from FORK_<CHAIN>_RPC (ETHEREUM, BASE, ROBINHOOD), else a public node that serves old state.        */
+   Forks come from FORK_<CHAIN>_RPC (ETHEREUM, BASE, ROBINHOOD), else a public node that serves old state; for Ethereum
+   that is Tenderly's gateway, and publicnode where Tenderly does not answer. Logs from before the fork are read from
+   FORK_ETHEREUM_LOGS, else Tenderly: a node that serves long log ranges, which a network without Tenderly must name.
+   A run where Tenderly cannot be reached:
+     FORK_ETHEREUM_RPC=<archive node> FORK_ETHEREUM_LOGS=<node serving wide eth_getLogs ranges> \
+     ARTIFACTS=<dir with transact.wasm and transact_final.zkey> node test/dapp/tacit-pay.fork.mjs                    */
 import fs from 'node:fs';
 import http from 'node:http';
 import {spawn} from 'node:child_process';
@@ -27,8 +32,18 @@ export const ok = (cond, msg, extra) => {
 };
 export const finish = (cleanup) => { cleanup(); console.log(failures ? `\n${failures} FAILED` : '\nall passed'); process.exit(failures ? 1 : 0); };
 
-// Robinhood's own node answers anvil with a bot-protection page, so its second public node is the fork source.
-const FORK_FROM = {ethereum: 'https://mainnet.gateway.tenderly.co', base: 'https://mainnet.base.org', robinhood: 'https://robinhood.drpc.org'};
+// Robinhood's own node answers anvil with a bot-protection page, so its second public node is the fork source. Each
+// chain's list is tried in order; the first node that answers within five seconds is forked.
+const FORK_FROM = {ethereum: ['https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.publicnode.com'], base: ['https://mainnet.base.org'], robinhood: ['https://robinhood.drpc.org']};
+async function answering(urls) {
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}', signal: AbortSignal.timeout(5000)});
+      if ((await r.json()).result) return u;
+    } catch {}
+  }
+  return urls[urls.length - 1];
+}
 // The first development account, as a plain account: on real chains it carries delegation code.
 export const ACCT = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266';
 const TRANSACT = new Interface(['function transact(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[11] publicInputs, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1)']);
@@ -47,7 +62,8 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
   for (const name of names) {
     const c = CHAINS.find((x) => x.key === name);
     const port = 18545 + Math.floor(Math.random() * 4000), url = `http://127.0.0.1:${port}`;
-    const from = process.env[`FORK_${name.toUpperCase()}_RPC`] || FORK_FROM[name];
+    const from = process.env[`FORK_${name.toUpperCase()}_RPC`] || (await answering(FORK_FROM[name]));
+    if (name === 'ethereum' && !process.env.FORK_ETHEREUM_LOGS && !/tenderly/.test(from)) console.log(`  note: forking ${from}; Tenderly did not answer, so logs before the fork need FORK_ETHEREUM_LOGS`);
     const anvil = spawn('anvil', ['--port', String(port), '--fork-url', from, '--chain-id', String(c.chainId), '--silent', '--no-rate-limit', ...(blockTime ? ['--block-time', String(blockTime)] : [])], {stdio: 'ignore'});
     process.on('exit', () => anvil.kill('SIGKILL'));
     // A public node behind anvil sometimes answers a burst of state requests with a challenge page; asking again works.

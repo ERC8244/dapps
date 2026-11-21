@@ -5,14 +5,14 @@
    worker source (TC.WORKER) running the pinned wasm, and is accepted by the real pool's verifier on the fork. The pool's
    history is read the page's way (the published chunk cache, then the tail from the fork's node).
 
-   node test/dapp/tornado.fork.mjs     (FORK=<upstream rpc>; PAGE_SRC=<page with the primitives>; TACIT=<z0r0z/tacit checkout
+   node test/dapp/tornado.fork.mjs     (FORK=<upstream rpc>; PAGE_SRC=<page with the primitives; default this dapp's dapp/page.html>; TACIT=<z0r0z/tacit checkout
    holding dapp/vendor/fixed-pool-prover_bg.wasm>; ONLY_SWAP=1 runs only 6-8; needs anvil; a few minutes)                                          */
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { loadTC } from './tornado-lib.mjs';
 import { startAnvil, makeWallet, threadProver, mockBundler, EP_ABI, ethers as E, hx } from './tornado-fork-lib.mjs';
 
-const PAGE = process.env.PAGE_SRC || '/Users/z/dapps-tacitwei/tacit-pay/dapp/page.html';
+const PAGE = process.env.PAGE_SRC || new URL('../../dapp/page.html', import.meta.url).pathname;
 const TACIT = process.env.TACIT || '/Users/z/tacit-wt-tacitwei';
 const TACIT_POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
 const ETHER = 10n ** 18n, TENTH = ETHER / 10n;

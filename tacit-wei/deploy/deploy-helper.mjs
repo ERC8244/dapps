@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// Serves a page on localhost that deploys tacit-pay from a browser wallet: the chunks from out/, then
+// Serves a page on localhost that deploys a first version of the tacit.wei page (a new lineage) from a browser wallet: the chunks from out/, then
 // TacitPay8244(steward, 0, chunks, keccak(page)) from forge's artifact. Each chunk's runtime is checked against its
 // build as it lands; the wrapper's gas is estimated first, which succeeds only if the chunks reassemble to the page.
 // Progress is kept in the page's localStorage and checked against the chain on every connect, so a closed tab resumes
 // where it stopped. Each contract is looked for at the address its transaction creates (deployer and nonce), so a
 // transaction the wallet replaced or sped up is found where it landed instead of being sent twice.
-//   node ../scripts/chunk.mjs tacit-pay && forge build && node deploy/deploy-helper.mjs [port]     (from tacit-pay/)
+//   bash deploy/repin.sh && forge build && node deploy/deploy-helper.mjs [port]     (from tacit-wei/)
+// The live lineage takes new versions through deploy/deploy-next-helper.mjs instead. The wrapper's steward is the ops
+// multisig unless STEWARD names another account.
 // Never `forge build --force` or `forge clean` between chunk.mjs and this: they delete out/.
 // The wrapper goes through CreateX's CREATE3 with a salt mined for the connected account, so its address starts with zero
 // bytes, is known before anything is sent, and only that account can claim it. Needs the miner built once:
@@ -17,7 +19,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const DIR = new URL('../', import.meta.url).pathname;
-const STEWARD = '0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20';
+const STEWARD = process.env.STEWARD || '0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2';   // the ops multisig
 const manifest = JSON.parse(readFileSync(DIR + 'manifest.json', 'utf8'));
 const page = readFileSync(DIR + manifest.page);
 if (page.length !== manifest.bytes || createHash('sha256').update(page).digest('hex') !== manifest.sha256) throw new Error('the page is not the one the manifest pins');
@@ -46,7 +48,7 @@ const mine = (from) => MINED.get(from) || MINED.set(from, new Promise((resolve, 
 const NAME = 'tacit.wei', WNS = '0x0000000000696760e15f265e828db644a0c242eb', TOKEN = namehash(NAME);
 const pageHash = keccak256(page), GAS = Math.round(page.length * 225 + 1.6e6);   // measured: 54.7M for the 243 KB page
 
-const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tacit-pay</title>
+const html = `<!doctype html><html><head><meta charset="utf-8"><title>deploy tacit.wei</title>
 <style>body{font:14px/1.6 ui-monospace,Menlo,monospace;max-width:760px;margin:40px auto;padding:0 16px}button{font:inherit;padding:8px 14px;margin:4px 0}code{overflow-wrap:anywhere}.ok{color:#0a7d3a}.err{color:#b8341d}li{margin:4px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f1e8;padding:12px}
 #pick{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}#pick button{display:flex;align-items:center;gap:8px}#pick img{width:20px;height:20px;border-radius:4px}</style></head><body>
 <h2>deploy tacit.wei</h2>
@@ -296,4 +298,4 @@ http.createServer((q, r) => {
   }
   r.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); r.end(html);
 })
-  .listen(port, '127.0.0.1', () => console.log(`deploy tacit-pay: http://127.0.0.1:${port}/  (${chunks.length} chunks + wrapper, steward ${STEWARD})`));
+  .listen(port, '127.0.0.1', () => console.log(`deploy tacit.wei: http://127.0.0.1:${port}/  (${chunks.length} chunks + wrapper, steward ${STEWARD})`));

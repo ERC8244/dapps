@@ -1,38 +1,67 @@
 # tacit.wei: deploying the page
 
-The page is generation 1 of its own lineage (`previous = 0`), with ross.wei as steward. anon.wei and its lineage are
-not touched: the helpers name `tacit.wei` only.
+The page is generation 1 of its own lineage (`previous = 0`) at `0x000000000009dde9bb333bbad42ad74bbacc2bd6`. Every
+control over it sits with the ops multisig; anon.wei and its lineage are separate and not touched by these tools.
 
 | | |
 | --- | --- |
-| steward and name owner | `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20` (ross.wei; owns `tacit.wei` in WNS) |
-| WNS | `0x0000000000696760e15f265e828db644a0c242eb`, `setAddr(namehash("tacit.wei"), wrapper)` |
-| cost | each 24 KB chunk is about 5.4M gas (under the 16.7M per-transaction cap); the whole page about 115M gas |
+| ops multisig | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2`: 2 of 5 owners, a one-hour delay between queueing and release |
+| page contract steward | the ops multisig (`steward()`), the only account that can call `deployNext` |
+| name | `tacit.wei` in WNS `0x0000000000696760e15f265e828db644a0c242eb`, owned by the ops multisig; `resolve` gives the page contract |
+| TacitPayRegistry | `0x0000000000029534a955A164223417fc5f4fA405`, owned by the ops multisig |
+| cost | each 24 KB chunk is about 5.4M gas (under the 16.7M per-transaction cap); a whole page about 115M gas |
 
-## Steps
+The multisig's calls: `execute(address,uint256,bytes,bytes)` queues a call once two owners have signed its op id
+(`getTransactionHash(address,uint256,bytes,uint32)` at the multisig's `nonce()`); after the delay, anyone releases it with
+`executeQueued(address,uint256,bytes,uint32)`; `queued(bytes32)` gives the release time, and zero once released. The
+multisig answers a selector it does not know with success and no effect, so every step below is checked by reading its
+effect on chain, never by a transaction's status.
 
-1. **Build the final bytes.** `bash deploy/repin.sh` writes `dapp/page.min.html`, `manifest.json` and the chunks in
-   `out/`, and checks that they reassemble. Note the sha256 it prints. Then `forge build` (never `--force` or
-   `forge clean` after repin: they delete `out/`).
-2. **Deploy.** `node deploy/deploy-helper.mjs` and open the page it serves in a browser with the steward's wallet. It
-   deploys each chunk (checked against its build as it lands), then `TacitPay8244(steward, 0, chunks, keccak(page))`,
-   whose gas estimate only succeeds if the chunks reassemble to the page. A closed tab resumes where it stopped.
-3. **Check it.** `node deploy/check-deployment.mjs https://ethereum-rpc.publicnode.com <wrapper> dapp/page.min.html`:
-   every chunk's code hash, `html()` equal to the page byte for byte, and `PAGE_HASH`. Then verify the wrapper on Sourcify
-   and Etherscan.
-4. **Open it** at `https://<wrapper>.w4eth.io/`: no page errors, sign in, the balance reads.
-5. **Point the name.** The helper's last step sends WNS `setAddr` from the name's owner (simulated first, then read
-   back). Check `https://tacit.wei.limo/` serves the same bytes.
-6. **Smoke test on the live URL**, with small amounts: a shield, a private send, a withdrawal.
-7. **Record it** in a `TACIT-WEI.deployed.md` (wrapper, chunks, page sha256, keccak, transactions), as the anon.wei
-   deployment record does.
+## The next version
 
-## Later versions
+Each version serves its own bytes forever. `deployNext(initcode, salt)` on the live version creates its successor by
+CREATE2 (so the successor's `PREVIOUS` is unforgeable) from creation code built from `src/TacitPay8244.sol`; then
+`tacit.wei` is pointed at it. The page shows a "newer version" link only when a version's `latest()` is what
+`tacit.wei` resolves to. The page's code is minified as a whole, so a new build usually changes every chunk: plan on all
+21 (about 114M gas) plus about 2.45M for `deployNext`.
 
-`deploy/deploy-next-helper.mjs` appends a successor from the steward through `deployNext` (a CREATE2 contract that
-records this one as `PREVIOUS`), then points `tacit.wei` at it. Each version serves its own bytes forever; the page shows a
-"newer version" link only when the version's `latest()` is what `tacit.wei` resolves to. Renouncing the steward freezes
-the lineage.
+1. **Build.** After `npm ci` at the repo root: `bash deploy/repin.sh` writes `dapp/page.min.html`, the manifest's size and
+   hash, and the chunks in `out/`, and checks that they reassemble and carry their pins. Then `forge build` (never
+   `--force` or `forge clean` after repin: they delete `out/`). Run the page suites against the new
+   `dapp/page.min.html`, and the fork suites with `FORK_ETHEREUM_RPC`, `FORK_ETHEREUM_LOGS` and `ARTIFACTS` set (see
+   `test/dapp/fork-lib.mjs`).
+2. **Simulate.** `node deploy/deploy-next-helper.mjs --sim` estimates `deployNext` from the multisig against mainnet, with
+   the chunks that are not yet on chain put in place by a state override, and `setAddr` from the multisig. It prints the
+   successor's address and the op id at the multisig's next nonce. A call from any other account reverts `NotSteward`.
+3. **Chunks.** `node deploy/deploy-next-helper.mjs` serves a page; from any funded wallet it sends each new chunk through
+   CreateX at an address fixed by its code (two per transaction from a wallet that batches calls). Chunks whose bytes
+   the lineage already holds are reused. The page reads each address back.
+4. **deployNext.** Once every chunk is on chain with its exact bytes, `--plan` (or the served page) gives the call
+   (to the live version, value 0, data), its op id, and the `execute` call. Two owners sign the op id;
+   `node deploy/deploy-next-helper.mjs --execute deployNext 0x<signatures>` prints the `execute` calldata to send to the
+   multisig. After the delay, `--plan` prints the `executeQueued` call (gas limit 3.5M), which any account may send.
+5. **setAddr.** Offered only once the live version's `successor()` is the predicted address and the successor reads back
+   with this page's `PAGE_HASH`, the multisig as steward and the live version as `PREVIOUS`. Queue and release it the
+   same way (`--execute setAddr 0x<signatures>`, then `executeQueued`).
+6. **Read back.** `--plan` reports `done` once `tacit.wei` resolves to the successor and `https://tacit.wei.limo/` serves
+   bytes with the manifest's SHA-256, and prints the `deployment` record for `manifest.json`. Then
+   `node deploy/check-deployment.mjs https://ethereum-rpc.publicnode.com <successor> dapp/page.min.html`, verify the
+   successor on Sourcify and Etherscan (solc 0.8.30, 200 runs, prague), and check the "newer version" link on
+   `https://0x000000000009dde9bb333bbad42ad74bbacc2bd6.w4eth.io/`.
+7. **Record it** in `TACIT-WEI.deployed.md`: the successor, its chunks, the page's sha256 and keccak, and the multisig's
+   op ids and transactions.
+
+Rehearse steps 4 and 5 on an anvil fork first (two owners impersonated: `execute`, the delay passed with
+`evm_increaseTime`, then `executeQueued`), and confirm `successor()`, `resolve` and `html()` there.
+
+To go back, the multisig points `tacit.wei` at an earlier version: every version still serves its own page. Renouncing
+the steward freezes the lineage.
+
+## A new lineage
+
+`deploy/deploy-helper.mjs` deploys a first version from a browser wallet: each chunk, then
+`TacitPay8244(steward, 0, chunks, keccak(page))`, whose gas estimate only succeeds if the chunks reassemble to the page.
+Its steward is the ops multisig unless `STEWARD` names another account.
 
 ## Rehearsal (Sepolia, 2026-11-20)
 

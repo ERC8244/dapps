@@ -32,9 +32,12 @@ PY
 pin dapp/page.html
 node ../scripts/strip.mjs tacit-wei
 pin dapp/page.min.html dapp/page.html
-B=$(wc -c < dapp/page.min.html | tr -d ' '); H=$(shasum -a 256 dapp/page.min.html | cut -d' ' -f1)
-sed -i '' -E "s/\"bytes\": [0-9]+,/\"bytes\": $B,/; s/\"sha256\": \"[0-9a-f]{64}\"/\"sha256\": \"$H\"/" manifest.json
-sed -i '' -E "s/PAGE_BYTES = [0-9]+;/PAGE_BYTES = $B;/" test/TacitPay8244.t.sol
+B=$(node -p 'require("fs").statSync("dapp/page.min.html").size'); H=$(node -p 'require("crypto").createHash("sha256").update(require("fs").readFileSync("dapp/page.min.html")).digest("hex")')
+# The page's size and hash into the manifest's top-level fields and the contract test, edited in place as text (the same
+# on macOS and Linux), so the rest of each file keeps its form.
+node -e 'const fs=require("fs"),[B,H]=process.argv.slice(1),put=(f,re,v)=>fs.writeFileSync(f,fs.readFileSync(f,"utf8").replace(re,v));
+put("manifest.json",/"bytes": [0-9]+,/,"\"bytes\": "+B+",");put("manifest.json",/"sha256": "[0-9a-f]{64}"/,"\"sha256\": \""+H+"\"");
+put("test/TacitPay8244.t.sol",/PAGE_BYTES = [0-9]+;/,"PAGE_BYTES = "+B+";")' "$B" "$H"
 grep -q "\"bytes\": $B," manifest.json && grep -q "\"sha256\": \"$H\"" manifest.json && grep -q "PAGE_BYTES = $B;" test/TacitPay8244.t.sol || { echo 'manifest.json or the contract test did not take the new size and hash' >&2; exit 1; }
 rm -f out/TacitPay8244.chunk*.creation.txt          # a page that needs fewer chunks must not leave an old one behind
 out=$(node ../scripts/chunk.mjs tacit-wei) || { echo "$out"; exit 1; }

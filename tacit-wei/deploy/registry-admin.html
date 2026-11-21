@@ -83,7 +83,7 @@ pre { background: var(--field); border: 1px solid var(--hair); border-radius: 8p
   </section>
   <section id="pay-card" hidden>
     <h2>Last payload</h2>
-    <p class="mute">Built for every action, so an owner that is a contract (a DAO, a Safe) can submit the same call.</p>
+    <p class="mute">Built for every action, so an owner that is a contract can submit the same call. The registry's owner is the ops multisig (0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2, 2 of 5, one-hour delay): each payload goes through its queue (execute with two owners' signatures over the op id, then executeQueued after the delay), from the ops page (registry-admin's ops.html). Check the effect on chain afterwards: the multisig answers an unknown call with success.</p>
     <pre id="pay"></pre>
   </section>
   <div id="toast" role="status" aria-live="polite"></div>

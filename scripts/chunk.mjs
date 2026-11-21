@@ -20,6 +20,9 @@ const parts = split(m, bytes);
 
 const out = path.join(m.dir, "out");
 fs.mkdirSync(out, {recursive: true});
+// Chunk files from an earlier build go first, so a page that now needs fewer chunks leaves none of the old ones behind.
+const mine = new RegExp(`^${m.chunks.artifact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.chunk\\d+\\.creation\\.txt$`);
+for (const f of fs.readdirSync(out)) if (mine.test(f)) fs.rmSync(path.join(out, f));
 
 console.log(`${m.name}/${m.page}: ${bytes.length} B, sha256 ${sha256} -> ${parts.length} chunk(s)`);
 for (const p of parts) {
@@ -31,4 +34,5 @@ for (const p of parts) {
       ` -> ${path.relative(m.dir, file)}`
   );
 }
-console.log(`reassembly verified; headroom at this chunk count: ${EIP170 * parts.length - bytes.length} B`);
+const prefix = (m.chunks.prefix || "").length / 2;   // each chunk's prefix byte takes a byte of its EIP-170 room
+console.log(`reassembly verified; headroom at this chunk count: ${(EIP170 - prefix) * parts.length - bytes.length} B`);

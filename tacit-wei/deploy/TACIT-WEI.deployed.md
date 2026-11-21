@@ -3,8 +3,9 @@
 | | |
 | --- | --- |
 | wrapper | `0x000000000009dde9bb333bbad42ad74bbacc2bd6` (CreateX CREATE3, banked deployer salt) |
-| steward | `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20` (ross.wei) |
-| name | `tacit.wei`, WNS `setAddr` to the wrapper (2026-11-20); `https://tacit.wei.limo/` serves the page bytes |
+| steward | the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` (2 of 5 owners, one-hour delay), since 2026-11-21: ops nonce 84, `acceptStewardship` |
+| name | `tacit.wei`, owned by the ops multisig since 2026-11-21; WNS `setAddr` to the wrapper (2026-11-20); `https://tacit.wei.limo/` serves the page bytes |
+| registry | TacitPayRegistry `0x0000000000029534a955A164223417fc5f4fA405`, owned by the ops multisig since 2026-11-21: ops nonce 83, `acceptOwnership` |
 | page | 503,436 B, sha256 `c58a4815f9a328856026eaa6b33c61fba16b220c525c6341dc344458d288057b`, keccak256 `0xcc3ebcd1896fda9d4171f01a72b83edba3fc74dd6f9e214c4b691853c662671a` |
 | wrapper transaction | `0xda2f9aea6fac3474927cd243e12693fde1699d01c0fe4e56fa150cf74e171728` |
 | deployer | `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7` (chunks by CREATE, wrapper through CreateX `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`) |

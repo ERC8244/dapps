@@ -47,9 +47,10 @@ pragma solidity ^0.8.30;
 ///
 /// WHAT THE PAGE DOES NOT DO
 ///   It never sends a key anywhere: the Tacit key is derived in the tab from the wallet's signature over a fixed
-///   message (the same in every Tacit app) and is never stored. It fetches no code: the prover, its field
-///   arithmetic (WebAssembly the page writes itself), Poseidon (constants derived in the page), the curves and
-///   the hashes are all in the document. A proof the wallet sends is checked against the pool's verifier through the wallet's node first;
+///   message (the same in every Tacit app) and is never stored. The Tacit pool's prover, its field arithmetic
+///   (WebAssembly the page writes itself), Poseidon (constants derived in the page), the curves and the hashes are
+///   all in the document; the one piece of code it fetches is the Tornado Cash withdrawal prover above, run only when
+///   its SHA-256 equals the page's pin. A proof the wallet sends is checked against the pool's verifier through the wallet's node first;
 ///   one the relay sends is checked by the relay.
 ///
 /// HOW TO READ THE DAPP
@@ -63,7 +64,8 @@ pragma solidity ^0.8.30;
 ///   - Or a browser with web3:// protocol support.
 contract TacitPay8244 {
     string public constant NAME = "tacit.wei";
-    string public constant VERSION = "1";
+    /// @notice The release of this source; `generation()` counts the versions in the lineage.
+    string public constant VERSION = "2";
 
     /// @notice The shielded ETH pool the page pays through, on Ethereum.
     address public constant POOL = 0x000000c2A20657CE25f2Ba99737933D031AFBEE9;

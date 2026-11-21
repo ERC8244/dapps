@@ -35,9 +35,12 @@ ok(/0\.003 ETH is waiting at your deposit addresses/.test(await A.textContent('#
 
 const B = await lab.page();
 await B.openKey(K1);
-await B.waitForFunction(() => /0\.003 ETH is waiting/.test(document.querySelector('#bal-note')?.textContent || ''), null, {timeout: 120e3}).catch(() => {});
-ok(/0\.003 ETH is waiting/.test(await B.textContent('#bal-note')), 'a browser that issued nothing finds it too, from the key alone', (await B.textContent('#bal-note')).trim());
+// A browser reads every one-time address only when asked (each read is one more address a node can tie to it): Check for
+// arrivals finds what another browser handed out, from the key alone.
 await exchange(B);
+await B.click('#f-check');
+await B.waitForFunction(() => /0\.003 ETH is waiting/.test(document.querySelector('#bal-note')?.textContent || ''), null, {timeout: 180e3}).catch(() => {});
+ok(/0\.003 ETH is waiting/.test(await B.textContent('#bal-note')), 'a browser that issued nothing finds it too, from the key alone, once asked to check', (await B.textContent('#bal-note')).trim());
 rows = await rowsOf(B);
 // Its own Receive tab may have issued an address for its payment link meanwhile: that one has nothing waiting.
 const ready = rows.filter((r) => r.take);

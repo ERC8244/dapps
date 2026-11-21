@@ -5980,10 +5980,10 @@ function paintTabs() {
   mount($('#tabs'), html`${TABS.map(([k, l]) => html`<button type="button" role="tab" data-tab="${k}" aria-selected="${String(k === S.tab)}" tabindex="${k === S.tab ? 0 : -1}" ${S.busy ? 'disabled' : ''}>${l}</button>`)}`);
   $$('#tabs [data-tab]').forEach((b) => b.onclick = () => { if (S.busy) return; S.tab = b.dataset.tab; mount($('#status'), ''); paintTabs(); renderForm(); });
 }
-// Where signing is safe: the signature is the key and is not bound to a site. tacit.wei.limo, tacit.finance, and a host that
-// names a contract in tacit.wei's line of versions (checked by servedBy); null until that is known.
-const HOST = { ok: ['tacit.wei.limo', 'tacit.finance', 'www.tacit.finance'].includes(location.hostname) || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || null };
-const hostNote = () => html`<p class="note${HOST.ok === false ? ' err' : ''}">Sign it only on tacit.wei.limo or tacit.finance: the signature opens your balance.${HOST.ok === false ? ` This page is on ${location.hostname}: open tacit.wei.limo to sign in.` : HOST.ok == null ? ` This page is on ${location.hostname}, which has not been checked against tacit.wei yet.` : ''}</p>`;
+// Where signing is safe: the signature is the key and is not bound to a site. tacit.wei.limo, tacit.gwei.limo, tacit.finance,
+// and a host that names a contract in tacit.wei's line of versions (checked by servedBy); null until that is known.
+const HOST = { ok: ['tacit.wei.limo', 'tacit.gwei.limo', 'tacit.finance', 'www.tacit.finance'].includes(location.hostname) || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || null };
+const hostNote = () => html`<p class="note${HOST.ok === false ? ' err' : ''}">Sign it only on tacit.wei.limo, tacit.gwei.limo or tacit.finance: the signature opens your balance.${HOST.ok === false ? ` This page is on ${location.hostname}: open tacit.wei.limo to sign in.` : HOST.ok == null ? ` This page is on ${location.hostname}, which has not been checked against tacit.wei yet.` : ''}</p>`;
 function signIn(id) {
   const who = S.account;
   return html`<div class="opts" id="${id}">
@@ -6007,7 +6007,7 @@ function wireSignIn(root, after) {
     say('');
     // A host that is not this page's own (a shared or path-style gateway), or one not checked yet: whoever serves it could
     // take the signature.
-    if (HOST.ok !== true && !HOST.anyway && !(HOST.anyway = confirm(`This page is on ${location.hostname}, ${HOST.ok === false ? 'not tacit.wei.limo or tacit.finance' : 'which has not been checked against tacit.wei'}. Whoever serves it could open your balance with what you sign or paste here. Sign in here anyway?`))) return;
+    if (HOST.ok !== true && !HOST.anyway && !(HOST.anyway = confirm(`This page is on ${location.hostname}, ${HOST.ok === false ? 'not tacit.wei.limo, tacit.gwei.limo or tacit.finance' : 'which has not been checked against tacit.wei'}. Whoever serves it could open your balance with what you sign or paste here. Sign in here anyway?`))) return;
     busy(b, async () => {
       try { if (b.dataset.in === 'eth') await openWithWallet(say); else if (b.dataset.in === 'wc') { await connectWc(); await openWithWallet(say); } else { openWithKey($('input', box).value); $('input', box).value = ''; } after?.(); }
       catch (e) { say(e instanceof Quiet ? '' : errText(e), !(e instanceof Quiet) && codeOf(e) !== 4001); }
@@ -8810,18 +8810,18 @@ $$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close())
 // A sheet closes on a click on its backdrop, not on a drag that began inside it and ended there.
 $$('dialog.sheet').forEach((d) => { let down = null; d.addEventListener('close', () => $('#toasts').append(...$$('.toast', d))); d.addEventListener('pointerdown', (e) => { down = e.target; }); d.addEventListener('click', (e) => { if (e.target === d && down === d) d.close(); }); });
 mount($('#contracts'), html`${CHAINS.map((c) => html`<a href="${c.explorer}/address/${POOL}" rel="noopener">${c.name}</a>`)}`);
-// The contract this page is stored in: an <address>.<gateway> host names it, and a <name>.wei.limo host is resolved
-// through WNS on Ethereum. A newer version is pointed to only when tacit.wei itself now resolves to it, so the lineage alone
+// The contract this page is stored in: an <address>.<gateway> host names it, and a <name>.wei.limo or <name>.gwei.limo
+// host is resolved through WNS or GNS on Ethereum. A newer version is pointed to only when tacit.wei itself now resolves to it, so the lineage alone
 // (one steward key) cannot steer earlier versions anywhere; nothing is redirected.
 const WNS = '0x0000000000696760e15f265e828db644a0c242eb';
 async function servedBy() {
-  // A WNS name's id is its namehash under .wei (what the registry's computeId gives), so only resolve() is asked.
-  const addrOf = (w) => lc('0x' + String(w).slice(-40)), resolve = (n) => quorum(WNS, calldata('resolve(uint256)', ['uint256'], [big(namehash(`${lc(n)}.wei`))])).then(addrOf);
+  // A WNS or GNS name's id is its namehash under .wei or .gwei (what each registry's computeId gives), so only resolve() is asked.
+  const addrOf = (w) => lc('0x' + String(w).slice(-40)), resolve = (n, t = 'wei') => quorum(t === 'gwei' ? GNS : WNS, calldata('resolve(uint256)', ['uint256'], [big(namehash(`${lc(n)}.${t}`))])).then(addrOf);
   let here = lc(/^(0x[0-9a-f]{40})\.(w3eth\.io|w4eth\.io|(?:1\.)?w3link\.io|eth\.limo)$/i.exec(location.hostname)?.[1] || '');
   // tacit.wei itself is asked only where the host names a version to compare it with.
-  const name = lc(/^([a-z0-9-]+)\.wei\.limo$/i.exec(location.hostname)?.[1] || ''), homeAt = here || name ? resolve('tacit') : null;
+  const [, name = '', tld = ''] = (/^([a-z0-9-]+)\.(g?wei)\.limo$/i.exec(location.hostname) || []).map((x) => lc(x)), homeAt = here || name ? resolve('tacit') : null;
   homeAt?.catch(() => {});
-  if (!here && name) here = await (name === 'tacit' ? homeAt : resolve(name));
+  if (!here && name) here = await (name === 'tacit' && tld === 'wei' ? homeAt : resolve(name, tld));
   if (!isAddr(here) || !BigInt(here)) { HOST.ok ??= false; return; }
   mount($('#served'), html`tacit.wei · stored in <a href="https://etherscan.io/address/${here}#code" rel="noopener">${short(here)}</a> on Ethereum`);
   const [tip, home] = await Promise.all([quorum(here, '0x' + hex(selector('latest()'))).then(addrOf), homeAt]);

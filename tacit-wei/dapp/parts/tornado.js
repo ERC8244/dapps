@@ -163,6 +163,8 @@ const TC = (() => {
     return cat(sig.subarray(0, 32), be(s > SN / 2n ? SN - s : s));
   }
   const trunc31 = (tag, pool, rs) => keccak(cat(utf8(tag), addr20(pool), rs)).subarray(0, 31);
+  // The commitment alone, for looking a note up (its nullifier hash is made once it is found).
+  const commitmentOf = (rs, pool) => pedersenPoint(cat(trunc31('nullifier', pool, rs), trunc31('secret', pool, rs)))[0];
   function secretsOf(rs, pool) {
     const nullifier = trunc31('nullifier', pool, rs), secret = trunc31('secret', pool, rs), preimage = cat(nullifier, secret);
     return { nullifier, secret, preimage, commitment: pedersenPoint(preimage)[0], nullifierHash: pedersenPoint(nullifier)[0] };
@@ -206,9 +208,10 @@ const TC = (() => {
     return cat(...parts);
   }
   const MAX_GZ = 64 << 20, MAX_RAW = 256 << 20;
-  const gunzip = (bytes) => capped(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')), MAX_RAW);
-  // `from`: only the files that reach past that block; `manifest`: the index, when it was read already.
-  async function readChunkCache({ base, pool, fetchImpl, onProgress = () => {}, from = 0, manifest = null }) {
+  const gunzip = (bytes, max = MAX_RAW) => capped(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')), max);
+  // `from`: only the files that reach past that block, and `until`: that start before it; `manifest`: the index, when it
+  // was read already.
+  async function readChunkCache({ base, pool, fetchImpl, onProgress = () => {}, from = 0, until = Infinity, manifest = null }) {
     manifest ||= await (await fetchImpl(`${base}/index.json`)).json();
     const entry = manifest.availableProtocols?.[`tornado-cash-${CHAIN_ID}-eth-${ethWords(pool.denomination)}`];
     if (!entry) throw new Error('the cache has no stream for this pool');
@@ -218,7 +221,7 @@ const TC = (() => {
     const all = [...entry.chunks, ...(entry.hotHead ? [entry.hotHead] : [])], deposits = [];
     // one run of blocks with no gap or overlap, from the first file on
     for (let i = 1; i < all.length; i++) if (num(all[i].fromBlock) !== num(all[i - 1].toBlock)) throw new Error('the cache\'s files are not one run of blocks');
-    const parts = all.filter((p) => num(p.toBlock) > from);
+    const parts = all.filter((p) => num(p.toBlock) > from && num(p.fromBlock) < until);
     if (parts.length && num(parts[0].fromBlock) > Math.max(from, pool.deployBlock)) throw new Error('the cache starts after the blocks asked for');
     let upTo = 0, done = 0;
     for (const part of parts) {
@@ -276,13 +279,15 @@ const TC = (() => {
     }
   }
   async function leavesFrom({ pool, getLogs, blockNumber, caches = CACHES, fetchImpl = (u, i) => fetch(u, i), onProgress = () => {} }) {
-    let deposits = [], upTo = pool.deployBlock, why = null;
+    let deposits = [], upTo = pool.deployBlock, why = null, cached = false;
     for (const base of caches) {
-      try { ({ deposits, upTo } = await readChunkCache({ base, pool, fetchImpl, onProgress })); why = null; break; } catch (e) { deposits = []; upTo = pool.deployBlock; why = e; }
+      try { ({ deposits, upTo } = await readChunkCache({ base, pool, fetchImpl, onProgress })); why = null; cached = true; break; } catch (e) { deposits = []; upTo = pool.deployBlock; why = e; }
     }
     if (why) onProgress({ note: `cache: ${why.message}` });
-    const tip = await blockNumber();
-    const tail = await readTail({ getLogs, address: pool.address, from: upTo, to: tip + 1 });
+    const tip = await blockNumber(), me = lc(pool.address);
+    // the stretch after a cache is asked of the node for every pool (the request names none); with no cache, for this pool
+    // alone, since every pool from its start is many times the logs
+    const tail = (await readTail({ getLogs, address: cached ? ALL_POOLS.map((p) => p.address) : pool.address, from: upTo, to: tip + 1 })).filter((d) => d.pool === me);
     const byIndex = new Map(), blockAt = new Map();
     for (const d of [...deposits, ...tail]) {
       const had = byIndex.get(d.index);
@@ -326,21 +331,27 @@ const TC = (() => {
     // made from a seed, else the 100,000-block run it falls in), each read going on from the last (64 blocks back, for a
     // node whose logs lag its head). The pools named in a call only say what is looked for here.
     const pools = ALL_POOLS, edge = (b) => (b >= NOTES_FROM ? NOTES_FROM : Math.max(0, b - (b % 100_000)));
-    // Every deposit from block `from` (or each pool's first) to the head.
-    async function deposits(_, from = NOTES_FROM, onProgress = () => {}) {
+    // Every deposit from block `from` (or each pool's first) to the head. Reads run one at a time, so two callers share
+    // what the first fetched; a read from further back fetches only the files before what was read already.
+    let queue = Promise.resolve();
+    const deposits = (...a) => (queue = queue.catch(() => {}).then(() => depositsNow(...a)));
+    async function depositsNow(_, from = NOTES_FROM, onProgress = () => {}) {
       const t = await tip();
       from = edge(from);
       for (const p of pools) {
-        const s = at(p), start = Math.max(from, p.deployBlock);
-        if (s.from <= start) continue;
+        const s = at(p), start = Math.max(from, p.deployBlock), until = s.from;
+        if (until <= start) continue;
         let got = null;
         for (const base of caches) {
-          try { got = await readChunkCache({ base, pool: p, fetchImpl, onProgress, from: start, manifest: await manifestOf(base) }); break; } catch (e) { onProgress({ note: `cache: ${e.message}` }); }
+          try { got = await readChunkCache({ base, pool: p, fetchImpl, onProgress, from: start, until, manifest: await manifestOf(base) }); break; } catch (e) { onProgress({ note: `cache: ${e.message}` }); }
         }
-        s.byC = new Map();
         for (const d of got?.deposits ?? []) s.byC.set(d.commitment, { index: d.index, block: d.block });
-        s.from = start; s.upTo = got ? got.upTo : start;
-        s.cw = got?.withdrawals ? { start, upTo: got.upTo, list: got.withdrawals } : null;
+        // with no cache, the node reads from the new start; a cache that ends before what was read leaves the gap to the tail
+        s.upTo = !got ? start : until === Infinity || got.upTo < until ? got.upTo : s.upTo;
+        const joins = got && s.cw && got.upTo >= until;
+        if (got?.withdrawals) s.cw = { start, upTo: joins ? Math.max(got.upTo, s.cw.upTo) : got.upTo, list: [...got.withdrawals, ...(joins ? s.cw.list : [])] };
+        else if (until === Infinity) s.cw = null;
+        s.from = start; delete s.ok; delete s.n0;
       }
       await tail(pools, t);
       const off = [];
@@ -357,18 +368,22 @@ const TC = (() => {
       for (const d of await readTail({ getLogs, address: pools.map((p) => p.address), from: lo, to: t + 1 })) P.get(d.pool)?.byC.set(d.commitment, { index: d.index, block: d.block });
       for (const p of pools) at(p).upTo = Math.max(at(p).upTo, t + 1);
     }
-    // The leaf numbers read run with no gap from the first to the pool's count at the last block read (from its first leaf
-    // when read from its deployment). None read: right from the deployment only when the count is 0; else after a read
-    // from the node alone. A count that cannot be read stops the read (`read` tries the nodes in turn).
+    // The leaf numbers read run with no gap from the pool's count at the block before the first read (0 from its
+    // deployment) to its count at the last block read. That first count needs a node that keeps old state: with none
+    // answering, deposits from the cache are read again from the node, and the node's own are taken from their first
+    // leaf. A count at the head that cannot be read stops the read (`read` tries the nodes in turn).
     async function whole(p, first) {
       const s = at(p);
       if (!read || s.ok === s.upTo) return true;
-      let n;
-      try { n = Number(BigInt(await read('eth_call', [{ to: p.address, data: '0xfc7e9c6f' }, q(s.upTo - 1)]))); } catch { throw new Error('Could not read the pool\'s deposit count, so the deposits read are not checked. Try again in a minute.'); }
+      const count = async (b) => Number(BigInt(await read('eth_call', [{ to: p.address, data: '0xfc7e9c6f' }, q(b)])));
+      let n, n0 = s.from > p.deployBlock ? null : 0;
+      try { n = await count(s.upTo - 1); } catch { throw new Error('Could not read the pool\'s deposit count, so the deposits read are not checked. Try again in a minute.'); }
+      if (n0 == null) n0 = s.n0 ?? (s.n0 = await count(s.from - 1).catch(() => null));
       let lo = Infinity, hi = -1;
       for (const d of s.byC.values()) { lo = Math.min(lo, d.index); hi = Math.max(hi, d.index); }
-      const ok = s.byC.size ? hi === n - 1 && n - lo === s.byC.size && (s.from > p.deployBlock || lo === 0) : s.from <= p.deployBlock ? n === 0 : !first || s.quiet;
-      if (ok) { s.ok = s.upTo; if (!s.byC.size) s.quiet = true; }
+      const ok = n0 != null ? (s.byC.size ? hi === n - 1 && lo === n0 && n - lo === s.byC.size : n === n0)
+        : !first && (s.byC.size ? hi === n - 1 && n - lo === s.byC.size : true);
+      if (ok) s.ok = s.upTo;
       return ok;
     }
     // Every withdrawal from block `from` to the head: from the cache's files over the blocks they cover (no node is asked),
@@ -416,11 +431,8 @@ const TC = (() => {
   // It runs in a worker made from the source below, which is part of this module and so pinned with it.
   const WASM = { sha256: '6fd8e180318003cc44ddc48c0ed3d37b0f5013f4ac20962f24622dcc97abab59', bytes: 11473654, name: 'fixed-pool-prover_bg.wasm' };
   // Whole-file URLs, each checked by the SHA-256 above: the IPFS pin (Filebase) and two copies of the repo. The registry
-  // can add more ("tmirrors"), and the last resort is the onchain copy on Base Sepolia and Sepolia (TC_ONCHAIN below).
+  // can add more ("tmirrors"), and the last resort is the onchain copy on Base Sepolia and Sepolia (the page's fromChain).
   const WASM_MIRRORS = ['https://ipfs.filebase.io/ipfs/QmfZgme9jnnCYAE2URB7xt9Lv8n52hfLd3ZWL1VKJqGUzf', 'https://raw.githubusercontent.com/z0r0z/tacit/main/dapp/vendor/fixed-pool-prover_bg.wasm', 'https://raw.githubusercontent.com/src-company/tacit/main/dapp/vendor/fixed-pool-prover_bg.wasm'];
-  // The onchain copy: 467 pieces and a manifest (format "tacit-artifact-v1", deploy/artifact-backup.mjs SET=tornado), at the
-  // same content-derived addresses on both testnets.
-  const WASM_ONCHAIN = { manifest: '0xb56C33665525231Cd9fBD6F618Ac6b7af6C3c987', chains: [84532, 11155111] };
   // The worker: the wasm-bindgen glue of that build, cut to what the prover calls. Strings go in as UTF-8 through the
   // module's allocator; results and errors come back as the build hands them over.
   // (a function in this module, made into the worker's source, so the build minifies it with the rest)
@@ -582,12 +594,13 @@ const TC = (() => {
     const tip = await read('eth_maxPriorityFeePerGas', []).then(quantity).catch(() => 0n);
     return { baseFeePerGas: quantity(block.baseFeePerGas), maxPriorityFeePerGas: tip };
   }
-  // A price from the node for when no bundler quotes one: twice the coming base fee plus the highest median tip.
-  async function nodeGasPrice(read) {
+  // A price from the node for when no bundler quotes one: twice the coming base fee (`up` quarters of it) plus the
+  // highest median tip.
+  async function nodeGasPrice(read, up = 8n) {
     const h = await read('eth_feeHistory', ['0xa', 'latest', [50]]);
     let tip = feeRows(h);
     if (tip < MIN_TIP) tip = MIN_TIP;
-    return { maxFeePerGas: quantity(h.baseFeePerGas.at(-1)) * 2n + tip, maxPriorityFeePerGas: tip };
+    return { maxFeePerGas: quantity(h.baseFeePerGas.at(-1)) * up / 4n + tip, maxPriorityFeePerGas: tip };
   }
   function priceWithinBounds(price, ref) {
     const est = ref.maxPriorityFeePerGas * 3n, tipCap = est < MIN_TIP_CAP ? MIN_TIP_CAP : est > MAX_TIP_CAP ? MAX_TIP_CAP : est, feeCap = ref.baseFeePerGas * 3n + tipCap;
@@ -638,11 +651,12 @@ const TC = (() => {
   // Simple7702Account.execute(target, value, data): the one call a swap-out's account makes.
   const executeCall = (target, value, data) => calldata('execute(address,uint256,bytes)', ['address', 'uint256', 'bytes'], [target, value, data]);
   // Sends what a one-time account holds, less the gas of sending it, to `to`, from the account itself (a plain type-2
-  // transaction it signs; the account pays its own gas). → tx hash. Refused when what is left would not cover the gas.
+  // transaction it signs; the account pays its own gas), at a fee cap of a quarter over the coming base fee, so what the
+  // cap holds back and the block does not charge stays small. → tx hash. Refused when what is left would not cover the gas.
   async function sweepThrowaway({ read, key, to }) {
     if (!isAddr(to) || /^0x0{40}$/i.test(to)) throw new Error('Enter the address it goes to.');
     const from = addressOf(key);
-    const [bal, nonce, price] = await Promise.all([read('eth_getBalance', [from, 'latest']).then(BigInt), read('eth_getTransactionCount', [from, 'pending']).then(BigInt), nodeGasPrice(read)]);
+    const [bal, nonce, price] = await Promise.all([read('eth_getBalance', [from, 'latest']).then(BigInt), read('eth_getTransactionCount', [from, 'pending']).then(BigInt), nodeGasPrice(read, 5n)]);
     const est = BigInt(await read('eth_estimateGas', [{ from, to, value: '0x1' }]).catch(() => '0x5208'));
     const gas = est * 6n / 5n > 21_000n ? est * 6n / 5n : 21_000n;
     if (gas > 200_000n) throw new Error('That address takes too much gas to receive ETH.');
@@ -880,7 +894,9 @@ const TC = (() => {
   // With `seed` the notes come from it instead (scheme 'k' from the Tacit key, 'q' from the post-quantum root): no signature
   // is asked for, and the wallet only sends.
   const newSession = () => ({ sigs: new Map(), checked: false });
-  const SEL = { commitments: sel('commitments(bytes32)'), isSpent: sel('isSpent(bytes32)'), denomination: sel('denomination()'), isKnownRoot: sel('isKnownRoot(bytes32)') };
+  const SEL = { commitments: sel('commitments(bytes32)'), isSpent: sel('isSpent(bytes32)'), denomination: sel('denomination()'), isKnownRoot: sel('isKnownRoot(bytes32)'), lastRoot: sel('getLastRoot()') };
+  // Several reads in one request where the reader takes a batch (`read.batch`), else one by one: → [{ result } | { error }].
+  const many = (read, calls) => (read.batch ? read.batch(calls) : Promise.all(calls.map(([m, p]) => read(m, p).then((result) => ({ result }), (error) => ({ error })))));
   // `book` (poolBook): whether a note is in its pool, or spent, is looked for in what it read, so no node is asked about a
   // note; with none, `noteRead` (the reader's own node) or `read` is asked directly.
   function makeFlow({ read, wallet = null, account = null, session = newSession(), store = null, sendTx = null, waitTx = null, poll = 3000, timeout = 10 * 60 * 1000, seed = null, scheme = seed ? 'k' : 'w', book = null, noteRead = null, onFound = null }) {
@@ -897,8 +913,19 @@ const TC = (() => {
       await book.withdrawals([pool], from);
       return book.withdrawal(pool, nh) ? (await book.confirmed(pool, nh)) || null : false;
     };
-    const where = (pool, c) => { const d = book?.deposit(pool, c); return d ? { block: d.block, index: d.index } : {}; };
+    // Where a note's deposit is (its block and leaf): in what the book read, else from the reader's own node; {} when
+    // neither can say.
+    const where = async (pool, c) => {
+      const d = book?.deposit(pool, c), l = d || book || !noteRead ? null : (await noteRead('eth_getLogs', [{ address: pool.address, topics: [DEPOSIT_TOPIC, b32(c)], fromBlock: q(pool.deployBlock), toBlock: 'latest' }]).catch(() => null))?.[0];
+      const x = d || (l && depositOf(l));
+      return x ? { block: x.block, index: x.index } : {};
+    };
     const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + b32(BigInt(root)).slice(2))) !== 0n;
+    // A root the pool knows: its last root, read for every pool at once (the request names none), else asked of the pool.
+    const rootOk = async (pool, root) => {
+      const r = await many(read, ALL_POOLS.map((p) => ['eth_call', [{ to: p.address, data: SEL.lastRoot }, 'latest']])).catch(() => []);
+      return lc(r[ALL_POOLS.indexOf(pool)]?.result) === b32(BigInt(root)) || knownRoot(pool, root);
+    };
     const needWallet = () => { if (!wallet || !account) throw new Error('Connect your wallet first.'); };
     const rawSign = (nonce) => { needWallet(); return wallet('eth_signTypedData_v4', [account, JSON.stringify(noteTypedData(nonce))]); };
     // One signature per number, kept for the session. The first is asked for twice: a wallet whose signature changes from
@@ -916,7 +943,7 @@ const TC = (() => {
     }
     async function probe(nonce) {
       const rs = await rsAt(nonce);
-      const hits = await Promise.all(ALL_POOLS.map(async (pool) => { const secrets = secretsOf(rs, pool.address); return (await seen(pool, secrets.commitment)) ? { nonce, pool, secrets, s: scheme, ...where(pool, secrets.commitment) } : null; }));
+      const hits = await Promise.all(ALL_POOLS.map(async (pool) => { const c = commitmentOf(rs, pool.address); return (await seen(pool, c)) ? { nonce, pool, secrets: secretsOf(rs, pool.address), s: scheme, ...(await where(pool, c)) } : null; }));
       return hits.filter(Boolean);
     }
     // the next free number, kept per wallet for signed notes and per seed (by a hash of it) for the others
@@ -938,7 +965,7 @@ const TC = (() => {
       }
       // with a book, the withdrawals of the pools found in, since the oldest found (each note then checked in what was read)
       const olds = found.map((f) => f.block).filter(Boolean), head = book && olds.length ? await book.tip() : 0;
-      if (olds.length && head - Math.min(...olds) <= SPENT_SPAN) await book.withdrawals([...new Set(found.filter((f) => f.block).map((f) => f.pool))], Math.min(...olds));
+      if (book && olds.length && head - Math.min(...olds) <= SPENT_SPAN) await book.withdrawals([...new Set(found.filter((f) => f.block).map((f) => f.pool))], Math.min(...olds));
       for (const f of found) {
         f.spent = await spent(f.pool, f.secrets.nullifierHash, f.block ?? null);
         f.own = !book;
@@ -974,19 +1001,20 @@ const TC = (() => {
       if (!(w.rc.status === '0x1' || Number(w.rc.status) === 1)) throw new Error('The transaction failed on chain.');
       return { hash: w.rc.transactionHash || hash };
     }
-    // The notes of `plan`, made but not sent: the next free numbers are found, and each is signed for.
+    // The notes of `plan`, made but not sent: the next free numbers are found, and each is signed for. The notes of one
+    // call share a mark (`g`), kept with them, which says they went in together.
     async function prepareNotes(plan, { onStep = () => {} } = {}) {
       const wanted = plan.notes.flatMap((n) => Array.from({ length: n.count }, () => poolOf(n.address)));
       if (!wanted.length) return [];
       for (const p of new Set(wanted)) await checkPool(p);
       onStep({ step: 'find' });
       const { next } = await scan({ from: hint(), onProbe: (n, signs) => onStep({ step: 'probe', n, signs }) });
-      const notes = [];
+      const notes = [], g = hex(randomBytes(4));
       for (let i = 0; i < wanted.length; i++) {
         const nonce = next + i;
         onStep({ step: 'sign', i, of: wanted.length, signs: asks(nonce) });
         const secrets = secretsOf(await rsAt(nonce), wanted[i].address);
-        notes.push({ nonce, pool: wanted[i], secrets, s: scheme, call: depositCall(wanted[i], secrets.commitment) });
+        notes.push({ nonce, pool: wanted[i], secrets, s: scheme, g, call: depositCall(wanted[i], secrets.commitment) });
       }
       return notes;
     }
@@ -996,7 +1024,7 @@ const TC = (() => {
       for (const n of notes) {
         let landed = false;
         for (let t = 0; t < (wait ? 8 : 1) && !landed; t++) { if (t) await sleep(poll); try { book?.again(); await book?.deposits([n.pool]); landed = await seen(n.pool, n.secrets.commitment); } catch { /* not landed yet */ } }
-        if (landed) { ok.push(n); Object.assign(n, where(n.pool, n.secrets.commitment)); }
+        if (landed) { ok.push(n); Object.assign(n, await where(n.pool, n.secrets.commitment)); }
       }
       if (ok.length) remember(Math.max(...ok.map((n) => n.nonce)) + 1);
       return ok;
@@ -1024,8 +1052,8 @@ const TC = (() => {
       if ((await landedNotes(notes)).length !== notes.length) throw Object.assign(new Error('The deposit was sent but its notes are not in their pools yet. Find shows them in a minute.'), { done: notes, notes, hash });
       return { notes, hash };
     }
-    // What both withdrawals check before any proof: the note is for this chain and a pool, the pool is what it says, the
-    // note is unspent and among the deposits, and the tree built from them lands on a root the pool knows. `cache`
+    // What both withdrawals check before any proof: the note is for this chain and one of the pinned pools, it is unspent
+    // and among the deposits, and the tree built from them lands on a root the pool knows. `cache`
     // ({ pools: Map, loaded }) lets a run of notes read each pool and build its tree once.
     async function readyToWithdraw({ noteText, recipient, prover, onStep, leaves, caches, cache = null }) {
       const note = parseNote(noteText);
@@ -1033,24 +1061,23 @@ const TC = (() => {
       const pool = ALL_POOLS.find((p) => ethWords(p.denomination) === note.amount);
       if (!pool) throw new Error('No pool takes this note.');
       if (!isAddr(recipient) || /^0x0{40}$/i.test(recipient)) throw new Error('Enter the address that should receive it.');
-      await checkPool(pool);
       const spentError = () => Object.assign(new Error('This note is already spent.'), { spent: true });
       if (!book && await spent(pool, note.nullifierHash)) throw spentError();
-      const mine = b32(note.commitment).slice(2);
-      const leafOf = (bytes, count) => { for (let i = 0; i < count; i++) if (hex(bytes.subarray(i * 32, i * 32 + 32)) === mine) return i; return -1; };
-      const has = (bytes, count) => leafOf(bytes, count) >= 0;
-      let src = cache?.pools.get(pool.address) ?? null, reused = false;
-      if (src && has(src.bytes, src.count) && (await knownRoot(pool, src.root))) reused = true; else src = null;
+      const mine = hexBytes(b32(note.commitment));
+      // the note's leaf number, or -1
+      const leafOf = (bytes, count) => { for (let i = 0, o = 0; i < count; i++, o += 32) { let k = 0; while (k < 32 && bytes[o + k] === mine[k]) k++; if (k === 32) return i; } return -1; };
+      let src = cache?.pools.get(pool.address) ?? null, reused = false, at = src ? leafOf(src.bytes, src.count) : -1;
+      if (at >= 0 && (await rootOk(pool, src.root))) reused = true; else src = null;
       const readLeaves = async (from) => {
         onStep({ step: 'read' });
         const r = await leaves({ pool, caches: from, getLogs: (f) => read('eth_getLogs', [f]), blockNumber: async () => Number(await read('eth_blockNumber', [])), onProgress: (p) => onStep({ step: 'read', ...p }) });
-        if (!has(r.bytes, r.count)) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
+        if ((at = leafOf(r.bytes, r.count)) < 0) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
         return { bytes: r.bytes, count: r.count, blocks: r.blocks };
       };
       let fromNode = false;
       if (!src) src = await readLeaves(caches);
       // with a book, the pool's withdrawals since this note's deposit (a note too old for that is refused by its withdrawal)
-      const block = src.blocks?.[leafOf(src.bytes, src.count)] || null;
+      const block = src.blocks?.[at] || null;
       if (book && (await spent(pool, note.nullifierHash, block)) === true) throw spentError();
       let root;
       if (reused) {
@@ -1066,7 +1093,7 @@ const TC = (() => {
           const keep = cache ? src.bytes.slice() : null;
           if (cache) cache.loaded = null;
           ({ root } = await prover.load(src.bytes));
-          if (await knownRoot(pool, root)) { if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root, blocks: src.blocks }); cache.loaded = pool.address; } break; }
+          if (await rootOk(pool, root)) { if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root, blocks: src.blocks }); cache.loaded = pool.address; } break; }
           // a cache whose deposits give another root (a reorganised head, or a host that is wrong) is read past: the node alone, once
           if (fromNode || !caches.length) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
           fromNode = true;
@@ -1172,7 +1199,7 @@ const TC = (() => {
       if (c && b32(secrets.commitment) !== lc(c)) throw new Error(s === 'w' ? 'This note was made by another wallet: connect that one to take it out.' : 'This note was made under another sign-in: sign in with that one to take it out.');
       return noteString(p.denomination, secrets.preimage);
     }
-    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, noteText, spent, seen, knownRoot, checkPool, hint, remember };
+    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
   }
 
   // ---- what the page shows about a note ----
@@ -1231,11 +1258,12 @@ const TC = (() => {
   // What is kept of a note in this browser: where it is and what it is called on chain. None of it opens the note.
   // (with the address of its swap-out account, which comes from the note: so Find, on any device, finds what is left there too)
   // A note not made with wallet signatures says which seed scheme it came from (s: 'k' or 'q').
-  // Also, when known: its deposit's block and leaf number (b, i), that it is spent (sp), the block up to which its pool's
-  // withdrawals were read without finding it (w), and that its swap-out account was paid (left: 1; 0 once nothing is there).
+  // Also, when known: the mark of the deposit it was made in (g), its deposit's block and leaf number (b, i), that it is
+  // spent (sp), the block up to which its pool's withdrawals were read without finding it (w), and that its swap-out
+  // account was paid (left: 1; 0 while nothing worth sending is there).
   const metaOf = (n) => {
     const acct = addressOf(noteKey(n.secrets.preimage));
-    return { nonce: n.nonce, pool: n.pool.address, c: b32(n.secrets.commitment), nh: b32(n.secrets.nullifierHash), acct, ...(n.s && n.s !== 'w' ? { s: n.s } : {}),
+    return { nonce: n.nonce, pool: n.pool.address, c: b32(n.secrets.commitment), nh: b32(n.secrets.nullifierHash), acct, ...(n.s && n.s !== 'w' ? { s: n.s } : {}), ...(n.g ? { g: n.g } : {}),
       ...(n.block ? { b: n.block, i: n.index } : {}), ...(n.spent === true ? { sp: 1, sv: 1 } : n.spent === false ? { sp: 0, ms: 0, ...(n.own ? { so: 1 } : {}) } : {}), ...(n.maybe ? { ms: 1 } : {}), ...(n.checked ? { w: n.checked } : {}), ...(n.to && lc(n.to) === lc(acct) ? { left: 1 } : {}) };
   };
   const notesKey = (account) => `tacit-wei-fixed-notes:${lc(account)}`;
@@ -1249,7 +1277,7 @@ const TC = (() => {
     for (const n of list) {
       const k = noteKeyOf(n), had = keys.get(k);
       if (!had) { const m = { ...n }; keys.set(k, m); out.push(m); continue; }
-      for (const f of ['acct', 'b', 'i']) if (n[f] != null && had[f] == null) had[f] = n[f];
+      for (const f of ['acct', 'b', 'i', 'g']) if (n[f] != null && had[f] == null) had[f] = n[f];
       if (n.sv) had.sv = 1;
       if (n.sp != null && !(had.sv && !n.sp && !n.so)) { had.sp = n.sp; if (!n.sp) had.sv = 0; }
       for (const f of ['o', 'ob', 'left', 'ms']) if (n[f] != null) had[f] = n[f];
@@ -1259,11 +1287,24 @@ const TC = (() => {
     return out;
   }
 
+  // How many of `notes` went in together: the most that share a deposit's mark, or whose deposits came within 50 blocks
+  // (ten minutes) of one another, one after the next. Either set, taken out together to one address, can be matched.
+  function together(notes) {
+    const by = new Map(), bs = notes.map((n) => n.b).filter((b) => b != null).sort((x, y) => x - y);
+    let most = 0;
+    for (const n of notes) if (n.g) most = Math.max(most, by.set(n.g, (by.get(n.g) || 0) + 1).get(n.g));
+    for (let i = 0, run = 0; i < bs.length; i++) most = Math.max(most, (run = i && bs[i] - bs[i - 1] <= 50 ? run + 1 : 1));
+    return most;
+  }
+  // What the pools hold, from the balances of the Tacit pool and then the four large pools: the large pools' sum and the
+  // whole notes in each (a note is in until it is withdrawn, so a pool's balance over its size is its notes).
+  const held = (bals) => ({ tacit: bals[0], tornado: bals.slice(1).reduce((t, b) => t + b, 0n), notes: POOLS.map((p, i) => bals[i + 1] / p.denomination) });
+
   return {
-    ETHER, CHAIN_ID, POOLS, MORE_POOLS, ALL_POOLS, poolOf, MAX_NOTES, SMALLEST, planSplit, planExit, ethWords,
+    ETHER, CHAIN_ID, POOLS, MORE_POOLS, ALL_POOLS, poolOf, together, held, gunzip, commitmentOf, MAX_NOTES, SMALLEST, planSplit, planExit, ethWords,
     blake256, pedersenPoint, noteTypedData, canonicalRS, deriveSecrets, secretsOf, seedRS, depositCall, noteString, parseNote, b32,
     CACHES, poolLeaves, readChunkCache, readTail, poolBook, NOTES_FROM, SPENT_SPAN, WITHDRAWAL_TOPIC,
-    WASM, WASM_MIRRORS, WASM_ONCHAIN, WORKER, workerProver, checkWithdrawCall,
+    WASM, WASM_MIRRORS, WORKER, workerProver, checkWithdrawCall,
     ENTRY_POINT, SIMPLE_7702, PAYMASTER, PAYMASTERS, parsePaymasters, vetPaymasters, BUNDLERS, MAX_FEE_PERCENT, MAX_CALL_GAS, noteKey, executeCall, sweepThrowaway, minimumViableFee, withinCeiling, worstCaseFee, gasReference, nodeGasPrice, priceWithinBounds, limitsWithinBounds, fallbackGas,
     paymasterData, authorizationDigest, userOpDigest, directUserOp, addressOf, signRecoverable, bundlerSet, estimationUnavailable, prepareSponsored, sendSponsored, BASELINE,
     FORWARDER, splitDepositCall, forwarderOk,

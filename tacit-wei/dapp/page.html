@@ -9041,6 +9041,8 @@ const TC = (() => {
     return cat(sig.subarray(0, 32), be(s > SN / 2n ? SN - s : s));
   }
   const trunc31 = (tag, pool, rs) => keccak(cat(utf8(tag), addr20(pool), rs)).subarray(0, 31);
+  // The commitment alone, for looking a note up (its nullifier hash is made once it is found).
+  const commitmentOf = (rs, pool) => pedersenPoint(cat(trunc31('nullifier', pool, rs), trunc31('secret', pool, rs)))[0];
   function secretsOf(rs, pool) {
     const nullifier = trunc31('nullifier', pool, rs), secret = trunc31('secret', pool, rs), preimage = cat(nullifier, secret);
     return { nullifier, secret, preimage, commitment: pedersenPoint(preimage)[0], nullifierHash: pedersenPoint(nullifier)[0] };
@@ -9084,9 +9086,10 @@ const TC = (() => {
     return cat(...parts);
   }
   const MAX_GZ = 64 << 20, MAX_RAW = 256 << 20;
-  const gunzip = (bytes) => capped(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')), MAX_RAW);
-  // `from`: only the files that reach past that block; `manifest`: the index, when it was read already.
-  async function readChunkCache({ base, pool, fetchImpl, onProgress = () => {}, from = 0, manifest = null }) {
+  const gunzip = (bytes, max = MAX_RAW) => capped(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')), max);
+  // `from`: only the files that reach past that block, and `until`: that start before it; `manifest`: the index, when it
+  // was read already.
+  async function readChunkCache({ base, pool, fetchImpl, onProgress = () => {}, from = 0, until = Infinity, manifest = null }) {
     manifest ||= await (await fetchImpl(`${base}/index.json`)).json();
     const entry = manifest.availableProtocols?.[`tornado-cash-${CHAIN_ID}-eth-${ethWords(pool.denomination)}`];
     if (!entry) throw new Error('the cache has no stream for this pool');
@@ -9096,7 +9099,7 @@ const TC = (() => {
     const all = [...entry.chunks, ...(entry.hotHead ? [entry.hotHead] : [])], deposits = [];
     // one run of blocks with no gap or overlap, from the first file on
     for (let i = 1; i < all.length; i++) if (num(all[i].fromBlock) !== num(all[i - 1].toBlock)) throw new Error('the cache\'s files are not one run of blocks');
-    const parts = all.filter((p) => num(p.toBlock) > from);
+    const parts = all.filter((p) => num(p.toBlock) > from && num(p.fromBlock) < until);
     if (parts.length && num(parts[0].fromBlock) > Math.max(from, pool.deployBlock)) throw new Error('the cache starts after the blocks asked for');
     let upTo = 0, done = 0;
     for (const part of parts) {
@@ -9154,13 +9157,15 @@ const TC = (() => {
     }
   }
   async function leavesFrom({ pool, getLogs, blockNumber, caches = CACHES, fetchImpl = (u, i) => fetch(u, i), onProgress = () => {} }) {
-    let deposits = [], upTo = pool.deployBlock, why = null;
+    let deposits = [], upTo = pool.deployBlock, why = null, cached = false;
     for (const base of caches) {
-      try { ({ deposits, upTo } = await readChunkCache({ base, pool, fetchImpl, onProgress })); why = null; break; } catch (e) { deposits = []; upTo = pool.deployBlock; why = e; }
+      try { ({ deposits, upTo } = await readChunkCache({ base, pool, fetchImpl, onProgress })); why = null; cached = true; break; } catch (e) { deposits = []; upTo = pool.deployBlock; why = e; }
     }
     if (why) onProgress({ note: `cache: ${why.message}` });
-    const tip = await blockNumber();
-    const tail = await readTail({ getLogs, address: pool.address, from: upTo, to: tip + 1 });
+    const tip = await blockNumber(), me = lc(pool.address);
+    // the stretch after a cache is asked of the node for every pool (the request names none); with no cache, for this pool
+    // alone, since every pool from its start is many times the logs
+    const tail = (await readTail({ getLogs, address: cached ? ALL_POOLS.map((p) => p.address) : pool.address, from: upTo, to: tip + 1 })).filter((d) => d.pool === me);
     const byIndex = new Map(), blockAt = new Map();
     for (const d of [...deposits, ...tail]) {
       const had = byIndex.get(d.index);
@@ -9204,21 +9209,27 @@ const TC = (() => {
     // made from a seed, else the 100,000-block run it falls in), each read going on from the last (64 blocks back, for a
     // node whose logs lag its head). The pools named in a call only say what is looked for here.
     const pools = ALL_POOLS, edge = (b) => (b >= NOTES_FROM ? NOTES_FROM : Math.max(0, b - (b % 100_000)));
-    // Every deposit from block `from` (or each pool's first) to the head.
-    async function deposits(_, from = NOTES_FROM, onProgress = () => {}) {
+    // Every deposit from block `from` (or each pool's first) to the head. Reads run one at a time, so two callers share
+    // what the first fetched; a read from further back fetches only the files before what was read already.
+    let queue = Promise.resolve();
+    const deposits = (...a) => (queue = queue.catch(() => {}).then(() => depositsNow(...a)));
+    async function depositsNow(_, from = NOTES_FROM, onProgress = () => {}) {
       const t = await tip();
       from = edge(from);
       for (const p of pools) {
-        const s = at(p), start = Math.max(from, p.deployBlock);
-        if (s.from <= start) continue;
+        const s = at(p), start = Math.max(from, p.deployBlock), until = s.from;
+        if (until <= start) continue;
         let got = null;
         for (const base of caches) {
-          try { got = await readChunkCache({ base, pool: p, fetchImpl, onProgress, from: start, manifest: await manifestOf(base) }); break; } catch (e) { onProgress({ note: `cache: ${e.message}` }); }
+          try { got = await readChunkCache({ base, pool: p, fetchImpl, onProgress, from: start, until, manifest: await manifestOf(base) }); break; } catch (e) { onProgress({ note: `cache: ${e.message}` }); }
         }
-        s.byC = new Map();
         for (const d of got?.deposits ?? []) s.byC.set(d.commitment, { index: d.index, block: d.block });
-        s.from = start; s.upTo = got ? got.upTo : start;
-        s.cw = got?.withdrawals ? { start, upTo: got.upTo, list: got.withdrawals } : null;
+        // with no cache, the node reads from the new start; a cache that ends before what was read leaves the gap to the tail
+        s.upTo = !got ? start : until === Infinity || got.upTo < until ? got.upTo : s.upTo;
+        const joins = got && s.cw && got.upTo >= until;
+        if (got?.withdrawals) s.cw = { start, upTo: joins ? Math.max(got.upTo, s.cw.upTo) : got.upTo, list: [...got.withdrawals, ...(joins ? s.cw.list : [])] };
+        else if (until === Infinity) s.cw = null;
+        s.from = start; delete s.ok; delete s.n0;
       }
       await tail(pools, t);
       const off = [];
@@ -9235,18 +9246,22 @@ const TC = (() => {
       for (const d of await readTail({ getLogs, address: pools.map((p) => p.address), from: lo, to: t + 1 })) P.get(d.pool)?.byC.set(d.commitment, { index: d.index, block: d.block });
       for (const p of pools) at(p).upTo = Math.max(at(p).upTo, t + 1);
     }
-    // The leaf numbers read run with no gap from the first to the pool's count at the last block read (from its first leaf
-    // when read from its deployment). None read: right from the deployment only when the count is 0; else after a read
-    // from the node alone. A count that cannot be read stops the read (`read` tries the nodes in turn).
+    // The leaf numbers read run with no gap from the pool's count at the block before the first read (0 from its
+    // deployment) to its count at the last block read. That first count needs a node that keeps old state: with none
+    // answering, deposits from the cache are read again from the node, and the node's own are taken from their first
+    // leaf. A count at the head that cannot be read stops the read (`read` tries the nodes in turn).
     async function whole(p, first) {
       const s = at(p);
       if (!read || s.ok === s.upTo) return true;
-      let n;
-      try { n = Number(BigInt(await read('eth_call', [{ to: p.address, data: '0xfc7e9c6f' }, q(s.upTo - 1)]))); } catch { throw new Error('Could not read the pool\'s deposit count, so the deposits read are not checked. Try again in a minute.'); }
+      const count = async (b) => Number(BigInt(await read('eth_call', [{ to: p.address, data: '0xfc7e9c6f' }, q(b)])));
+      let n, n0 = s.from > p.deployBlock ? null : 0;
+      try { n = await count(s.upTo - 1); } catch { throw new Error('Could not read the pool\'s deposit count, so the deposits read are not checked. Try again in a minute.'); }
+      if (n0 == null) n0 = s.n0 ?? (s.n0 = await count(s.from - 1).catch(() => null));
       let lo = Infinity, hi = -1;
       for (const d of s.byC.values()) { lo = Math.min(lo, d.index); hi = Math.max(hi, d.index); }
-      const ok = s.byC.size ? hi === n - 1 && n - lo === s.byC.size && (s.from > p.deployBlock || lo === 0) : s.from <= p.deployBlock ? n === 0 : !first || s.quiet;
-      if (ok) { s.ok = s.upTo; if (!s.byC.size) s.quiet = true; }
+      const ok = n0 != null ? (s.byC.size ? hi === n - 1 && lo === n0 && n - lo === s.byC.size : n === n0)
+        : !first && (s.byC.size ? hi === n - 1 && n - lo === s.byC.size : true);
+      if (ok) s.ok = s.upTo;
       return ok;
     }
     // Every withdrawal from block `from` to the head: from the cache's files over the blocks they cover (no node is asked),
@@ -9294,11 +9309,8 @@ const TC = (() => {
   // It runs in a worker made from the source below, which is part of this module and so pinned with it.
   const WASM = { sha256: '6fd8e180318003cc44ddc48c0ed3d37b0f5013f4ac20962f24622dcc97abab59', bytes: 11473654, name: 'fixed-pool-prover_bg.wasm' };
   // Whole-file URLs, each checked by the SHA-256 above: the IPFS pin (Filebase) and two copies of the repo. The registry
-  // can add more ("tmirrors"), and the last resort is the onchain copy on Base Sepolia and Sepolia (TC_ONCHAIN below).
+  // can add more ("tmirrors"), and the last resort is the onchain copy on Base Sepolia and Sepolia (the page's fromChain).
   const WASM_MIRRORS = ['https://ipfs.filebase.io/ipfs/QmfZgme9jnnCYAE2URB7xt9Lv8n52hfLd3ZWL1VKJqGUzf', 'https://raw.githubusercontent.com/z0r0z/tacit/main/dapp/vendor/fixed-pool-prover_bg.wasm', 'https://raw.githubusercontent.com/src-company/tacit/main/dapp/vendor/fixed-pool-prover_bg.wasm'];
-  // The onchain copy: 467 pieces and a manifest (format "tacit-artifact-v1", deploy/artifact-backup.mjs SET=tornado), at the
-  // same content-derived addresses on both testnets.
-  const WASM_ONCHAIN = { manifest: '0xb56C33665525231Cd9fBD6F618Ac6b7af6C3c987', chains: [84532, 11155111] };
   // The worker: the wasm-bindgen glue of that build, cut to what the prover calls. Strings go in as UTF-8 through the
   // module's allocator; results and errors come back as the build hands them over.
   // (a function in this module, made into the worker's source, so the build minifies it with the rest)
@@ -9460,12 +9472,13 @@ const TC = (() => {
     const tip = await read('eth_maxPriorityFeePerGas', []).then(quantity).catch(() => 0n);
     return { baseFeePerGas: quantity(block.baseFeePerGas), maxPriorityFeePerGas: tip };
   }
-  // A price from the node for when no bundler quotes one: twice the coming base fee plus the highest median tip.
-  async function nodeGasPrice(read) {
+  // A price from the node for when no bundler quotes one: twice the coming base fee (`up` quarters of it) plus the
+  // highest median tip.
+  async function nodeGasPrice(read, up = 8n) {
     const h = await read('eth_feeHistory', ['0xa', 'latest', [50]]);
     let tip = feeRows(h);
     if (tip < MIN_TIP) tip = MIN_TIP;
-    return { maxFeePerGas: quantity(h.baseFeePerGas.at(-1)) * 2n + tip, maxPriorityFeePerGas: tip };
+    return { maxFeePerGas: quantity(h.baseFeePerGas.at(-1)) * up / 4n + tip, maxPriorityFeePerGas: tip };
   }
   function priceWithinBounds(price, ref) {
     const est = ref.maxPriorityFeePerGas * 3n, tipCap = est < MIN_TIP_CAP ? MIN_TIP_CAP : est > MAX_TIP_CAP ? MAX_TIP_CAP : est, feeCap = ref.baseFeePerGas * 3n + tipCap;
@@ -9516,11 +9529,12 @@ const TC = (() => {
   // Simple7702Account.execute(target, value, data): the one call a swap-out's account makes.
   const executeCall = (target, value, data) => calldata('execute(address,uint256,bytes)', ['address', 'uint256', 'bytes'], [target, value, data]);
   // Sends what a one-time account holds, less the gas of sending it, to `to`, from the account itself (a plain type-2
-  // transaction it signs; the account pays its own gas). → tx hash. Refused when what is left would not cover the gas.
+  // transaction it signs; the account pays its own gas), at a fee cap of a quarter over the coming base fee, so what the
+  // cap holds back and the block does not charge stays small. → tx hash. Refused when what is left would not cover the gas.
   async function sweepThrowaway({ read, key, to }) {
     if (!isAddr(to) || /^0x0{40}$/i.test(to)) throw new Error('Enter the address it goes to.');
     const from = addressOf(key);
-    const [bal, nonce, price] = await Promise.all([read('eth_getBalance', [from, 'latest']).then(BigInt), read('eth_getTransactionCount', [from, 'pending']).then(BigInt), nodeGasPrice(read)]);
+    const [bal, nonce, price] = await Promise.all([read('eth_getBalance', [from, 'latest']).then(BigInt), read('eth_getTransactionCount', [from, 'pending']).then(BigInt), nodeGasPrice(read, 5n)]);
     const est = BigInt(await read('eth_estimateGas', [{ from, to, value: '0x1' }]).catch(() => '0x5208'));
     const gas = est * 6n / 5n > 21_000n ? est * 6n / 5n : 21_000n;
     if (gas > 200_000n) throw new Error('That address takes too much gas to receive ETH.');
@@ -9758,7 +9772,9 @@ const TC = (() => {
   // With `seed` the notes come from it instead (scheme 'k' from the Tacit key, 'q' from the post-quantum root): no signature
   // is asked for, and the wallet only sends.
   const newSession = () => ({ sigs: new Map(), checked: false });
-  const SEL = { commitments: sel('commitments(bytes32)'), isSpent: sel('isSpent(bytes32)'), denomination: sel('denomination()'), isKnownRoot: sel('isKnownRoot(bytes32)') };
+  const SEL = { commitments: sel('commitments(bytes32)'), isSpent: sel('isSpent(bytes32)'), denomination: sel('denomination()'), isKnownRoot: sel('isKnownRoot(bytes32)'), lastRoot: sel('getLastRoot()') };
+  // Several reads in one request where the reader takes a batch (`read.batch`), else one by one: → [{ result } | { error }].
+  const many = (read, calls) => (read.batch ? read.batch(calls) : Promise.all(calls.map(([m, p]) => read(m, p).then((result) => ({ result }), (error) => ({ error })))));
   // `book` (poolBook): whether a note is in its pool, or spent, is looked for in what it read, so no node is asked about a
   // note; with none, `noteRead` (the reader's own node) or `read` is asked directly.
   function makeFlow({ read, wallet = null, account = null, session = newSession(), store = null, sendTx = null, waitTx = null, poll = 3000, timeout = 10 * 60 * 1000, seed = null, scheme = seed ? 'k' : 'w', book = null, noteRead = null, onFound = null }) {
@@ -9775,8 +9791,19 @@ const TC = (() => {
       await book.withdrawals([pool], from);
       return book.withdrawal(pool, nh) ? (await book.confirmed(pool, nh)) || null : false;
     };
-    const where = (pool, c) => { const d = book?.deposit(pool, c); return d ? { block: d.block, index: d.index } : {}; };
+    // Where a note's deposit is (its block and leaf): in what the book read, else from the reader's own node; {} when
+    // neither can say.
+    const where = async (pool, c) => {
+      const d = book?.deposit(pool, c), l = d || book || !noteRead ? null : (await noteRead('eth_getLogs', [{ address: pool.address, topics: [DEPOSIT_TOPIC, b32(c)], fromBlock: q(pool.deployBlock), toBlock: 'latest' }]).catch(() => null))?.[0];
+      const x = d || (l && depositOf(l));
+      return x ? { block: x.block, index: x.index } : {};
+    };
     const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + b32(BigInt(root)).slice(2))) !== 0n;
+    // A root the pool knows: its last root, read for every pool at once (the request names none), else asked of the pool.
+    const rootOk = async (pool, root) => {
+      const r = await many(read, ALL_POOLS.map((p) => ['eth_call', [{ to: p.address, data: SEL.lastRoot }, 'latest']])).catch(() => []);
+      return lc(r[ALL_POOLS.indexOf(pool)]?.result) === b32(BigInt(root)) || knownRoot(pool, root);
+    };
     const needWallet = () => { if (!wallet || !account) throw new Error('Connect your wallet first.'); };
     const rawSign = (nonce) => { needWallet(); return wallet('eth_signTypedData_v4', [account, JSON.stringify(noteTypedData(nonce))]); };
     // One signature per number, kept for the session. The first is asked for twice: a wallet whose signature changes from
@@ -9794,7 +9821,7 @@ const TC = (() => {
     }
     async function probe(nonce) {
       const rs = await rsAt(nonce);
-      const hits = await Promise.all(ALL_POOLS.map(async (pool) => { const secrets = secretsOf(rs, pool.address); return (await seen(pool, secrets.commitment)) ? { nonce, pool, secrets, s: scheme, ...where(pool, secrets.commitment) } : null; }));
+      const hits = await Promise.all(ALL_POOLS.map(async (pool) => { const c = commitmentOf(rs, pool.address); return (await seen(pool, c)) ? { nonce, pool, secrets: secretsOf(rs, pool.address), s: scheme, ...(await where(pool, c)) } : null; }));
       return hits.filter(Boolean);
     }
     // the next free number, kept per wallet for signed notes and per seed (by a hash of it) for the others
@@ -9816,7 +9843,7 @@ const TC = (() => {
       }
       // with a book, the withdrawals of the pools found in, since the oldest found (each note then checked in what was read)
       const olds = found.map((f) => f.block).filter(Boolean), head = book && olds.length ? await book.tip() : 0;
-      if (olds.length && head - Math.min(...olds) <= SPENT_SPAN) await book.withdrawals([...new Set(found.filter((f) => f.block).map((f) => f.pool))], Math.min(...olds));
+      if (book && olds.length && head - Math.min(...olds) <= SPENT_SPAN) await book.withdrawals([...new Set(found.filter((f) => f.block).map((f) => f.pool))], Math.min(...olds));
       for (const f of found) {
         f.spent = await spent(f.pool, f.secrets.nullifierHash, f.block ?? null);
         f.own = !book;
@@ -9852,19 +9879,20 @@ const TC = (() => {
       if (!(w.rc.status === '0x1' || Number(w.rc.status) === 1)) throw new Error('The transaction failed on chain.');
       return { hash: w.rc.transactionHash || hash };
     }
-    // The notes of `plan`, made but not sent: the next free numbers are found, and each is signed for.
+    // The notes of `plan`, made but not sent: the next free numbers are found, and each is signed for. The notes of one
+    // call share a mark (`g`), kept with them, which says they went in together.
     async function prepareNotes(plan, { onStep = () => {} } = {}) {
       const wanted = plan.notes.flatMap((n) => Array.from({ length: n.count }, () => poolOf(n.address)));
       if (!wanted.length) return [];
       for (const p of new Set(wanted)) await checkPool(p);
       onStep({ step: 'find' });
       const { next } = await scan({ from: hint(), onProbe: (n, signs) => onStep({ step: 'probe', n, signs }) });
-      const notes = [];
+      const notes = [], g = hex(randomBytes(4));
       for (let i = 0; i < wanted.length; i++) {
         const nonce = next + i;
         onStep({ step: 'sign', i, of: wanted.length, signs: asks(nonce) });
         const secrets = secretsOf(await rsAt(nonce), wanted[i].address);
-        notes.push({ nonce, pool: wanted[i], secrets, s: scheme, call: depositCall(wanted[i], secrets.commitment) });
+        notes.push({ nonce, pool: wanted[i], secrets, s: scheme, g, call: depositCall(wanted[i], secrets.commitment) });
       }
       return notes;
     }
@@ -9874,7 +9902,7 @@ const TC = (() => {
       for (const n of notes) {
         let landed = false;
         for (let t = 0; t < (wait ? 8 : 1) && !landed; t++) { if (t) await sleep(poll); try { book?.again(); await book?.deposits([n.pool]); landed = await seen(n.pool, n.secrets.commitment); } catch { /* not landed yet */ } }
-        if (landed) { ok.push(n); Object.assign(n, where(n.pool, n.secrets.commitment)); }
+        if (landed) { ok.push(n); Object.assign(n, await where(n.pool, n.secrets.commitment)); }
       }
       if (ok.length) remember(Math.max(...ok.map((n) => n.nonce)) + 1);
       return ok;
@@ -9902,8 +9930,8 @@ const TC = (() => {
       if ((await landedNotes(notes)).length !== notes.length) throw Object.assign(new Error('The deposit was sent but its notes are not in their pools yet. Find shows them in a minute.'), { done: notes, notes, hash });
       return { notes, hash };
     }
-    // What both withdrawals check before any proof: the note is for this chain and a pool, the pool is what it says, the
-    // note is unspent and among the deposits, and the tree built from them lands on a root the pool knows. `cache`
+    // What both withdrawals check before any proof: the note is for this chain and one of the pinned pools, it is unspent
+    // and among the deposits, and the tree built from them lands on a root the pool knows. `cache`
     // ({ pools: Map, loaded }) lets a run of notes read each pool and build its tree once.
     async function readyToWithdraw({ noteText, recipient, prover, onStep, leaves, caches, cache = null }) {
       const note = parseNote(noteText);
@@ -9911,24 +9939,23 @@ const TC = (() => {
       const pool = ALL_POOLS.find((p) => ethWords(p.denomination) === note.amount);
       if (!pool) throw new Error('No pool takes this note.');
       if (!isAddr(recipient) || /^0x0{40}$/i.test(recipient)) throw new Error('Enter the address that should receive it.');
-      await checkPool(pool);
       const spentError = () => Object.assign(new Error('This note is already spent.'), { spent: true });
       if (!book && await spent(pool, note.nullifierHash)) throw spentError();
-      const mine = b32(note.commitment).slice(2);
-      const leafOf = (bytes, count) => { for (let i = 0; i < count; i++) if (hex(bytes.subarray(i * 32, i * 32 + 32)) === mine) return i; return -1; };
-      const has = (bytes, count) => leafOf(bytes, count) >= 0;
-      let src = cache?.pools.get(pool.address) ?? null, reused = false;
-      if (src && has(src.bytes, src.count) && (await knownRoot(pool, src.root))) reused = true; else src = null;
+      const mine = hexBytes(b32(note.commitment));
+      // the note's leaf number, or -1
+      const leafOf = (bytes, count) => { for (let i = 0, o = 0; i < count; i++, o += 32) { let k = 0; while (k < 32 && bytes[o + k] === mine[k]) k++; if (k === 32) return i; } return -1; };
+      let src = cache?.pools.get(pool.address) ?? null, reused = false, at = src ? leafOf(src.bytes, src.count) : -1;
+      if (at >= 0 && (await rootOk(pool, src.root))) reused = true; else src = null;
       const readLeaves = async (from) => {
         onStep({ step: 'read' });
         const r = await leaves({ pool, caches: from, getLogs: (f) => read('eth_getLogs', [f]), blockNumber: async () => Number(await read('eth_blockNumber', [])), onProgress: (p) => onStep({ step: 'read', ...p }) });
-        if (!has(r.bytes, r.count)) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
+        if ((at = leafOf(r.bytes, r.count)) < 0) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
         return { bytes: r.bytes, count: r.count, blocks: r.blocks };
       };
       let fromNode = false;
       if (!src) src = await readLeaves(caches);
       // with a book, the pool's withdrawals since this note's deposit (a note too old for that is refused by its withdrawal)
-      const block = src.blocks?.[leafOf(src.bytes, src.count)] || null;
+      const block = src.blocks?.[at] || null;
       if (book && (await spent(pool, note.nullifierHash, block)) === true) throw spentError();
       let root;
       if (reused) {
@@ -9944,7 +9971,7 @@ const TC = (() => {
           const keep = cache ? src.bytes.slice() : null;
           if (cache) cache.loaded = null;
           ({ root } = await prover.load(src.bytes));
-          if (await knownRoot(pool, root)) { if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root, blocks: src.blocks }); cache.loaded = pool.address; } break; }
+          if (await rootOk(pool, root)) { if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root, blocks: src.blocks }); cache.loaded = pool.address; } break; }
           // a cache whose deposits give another root (a reorganised head, or a host that is wrong) is read past: the node alone, once
           if (fromNode || !caches.length) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
           fromNode = true;
@@ -10050,7 +10077,7 @@ const TC = (() => {
       if (c && b32(secrets.commitment) !== lc(c)) throw new Error(s === 'w' ? 'This note was made by another wallet: connect that one to take it out.' : 'This note was made under another sign-in: sign in with that one to take it out.');
       return noteString(p.denomination, secrets.preimage);
     }
-    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, noteText, spent, seen, knownRoot, checkPool, hint, remember };
+    return { scheme, signNonce, scan, prepareNotes, landedNotes, deposit, depositWith, sendOne, withdraw, withdrawSponsored, noteText, spent, seen, where, knownRoot, checkPool, hint, remember };
   }
 
   // ---- what the page shows about a note ----
@@ -10109,11 +10136,12 @@ const TC = (() => {
   // What is kept of a note in this browser: where it is and what it is called on chain. None of it opens the note.
   // (with the address of its swap-out account, which comes from the note: so Find, on any device, finds what is left there too)
   // A note not made with wallet signatures says which seed scheme it came from (s: 'k' or 'q').
-  // Also, when known: its deposit's block and leaf number (b, i), that it is spent (sp), the block up to which its pool's
-  // withdrawals were read without finding it (w), and that its swap-out account was paid (left: 1; 0 once nothing is there).
+  // Also, when known: the mark of the deposit it was made in (g), its deposit's block and leaf number (b, i), that it is
+  // spent (sp), the block up to which its pool's withdrawals were read without finding it (w), and that its swap-out
+  // account was paid (left: 1; 0 while nothing worth sending is there).
   const metaOf = (n) => {
     const acct = addressOf(noteKey(n.secrets.preimage));
-    return { nonce: n.nonce, pool: n.pool.address, c: b32(n.secrets.commitment), nh: b32(n.secrets.nullifierHash), acct, ...(n.s && n.s !== 'w' ? { s: n.s } : {}),
+    return { nonce: n.nonce, pool: n.pool.address, c: b32(n.secrets.commitment), nh: b32(n.secrets.nullifierHash), acct, ...(n.s && n.s !== 'w' ? { s: n.s } : {}), ...(n.g ? { g: n.g } : {}),
       ...(n.block ? { b: n.block, i: n.index } : {}), ...(n.spent === true ? { sp: 1, sv: 1 } : n.spent === false ? { sp: 0, ms: 0, ...(n.own ? { so: 1 } : {}) } : {}), ...(n.maybe ? { ms: 1 } : {}), ...(n.checked ? { w: n.checked } : {}), ...(n.to && lc(n.to) === lc(acct) ? { left: 1 } : {}) };
   };
   const notesKey = (account) => `tacit-wei-fixed-notes:${lc(account)}`;
@@ -10127,7 +10155,7 @@ const TC = (() => {
     for (const n of list) {
       const k = noteKeyOf(n), had = keys.get(k);
       if (!had) { const m = { ...n }; keys.set(k, m); out.push(m); continue; }
-      for (const f of ['acct', 'b', 'i']) if (n[f] != null && had[f] == null) had[f] = n[f];
+      for (const f of ['acct', 'b', 'i', 'g']) if (n[f] != null && had[f] == null) had[f] = n[f];
       if (n.sv) had.sv = 1;
       if (n.sp != null && !(had.sv && !n.sp && !n.so)) { had.sp = n.sp; if (!n.sp) had.sv = 0; }
       for (const f of ['o', 'ob', 'left', 'ms']) if (n[f] != null) had[f] = n[f];
@@ -10137,11 +10165,24 @@ const TC = (() => {
     return out;
   }
 
+  // How many of `notes` went in together: the most that share a deposit's mark, or whose deposits came within 50 blocks
+  // (ten minutes) of one another, one after the next. Either set, taken out together to one address, can be matched.
+  function together(notes) {
+    const by = new Map(), bs = notes.map((n) => n.b).filter((b) => b != null).sort((x, y) => x - y);
+    let most = 0;
+    for (const n of notes) if (n.g) most = Math.max(most, by.set(n.g, (by.get(n.g) || 0) + 1).get(n.g));
+    for (let i = 0, run = 0; i < bs.length; i++) most = Math.max(most, (run = i && bs[i] - bs[i - 1] <= 50 ? run + 1 : 1));
+    return most;
+  }
+  // What the pools hold, from the balances of the Tacit pool and then the four large pools: the large pools' sum and the
+  // whole notes in each (a note is in until it is withdrawn, so a pool's balance over its size is its notes).
+  const held = (bals) => ({ tacit: bals[0], tornado: bals.slice(1).reduce((t, b) => t + b, 0n), notes: POOLS.map((p, i) => bals[i + 1] / p.denomination) });
+
   return {
-    ETHER, CHAIN_ID, POOLS, MORE_POOLS, ALL_POOLS, poolOf, MAX_NOTES, SMALLEST, planSplit, planExit, ethWords,
+    ETHER, CHAIN_ID, POOLS, MORE_POOLS, ALL_POOLS, poolOf, together, held, gunzip, commitmentOf, MAX_NOTES, SMALLEST, planSplit, planExit, ethWords,
     blake256, pedersenPoint, noteTypedData, canonicalRS, deriveSecrets, secretsOf, seedRS, depositCall, noteString, parseNote, b32,
     CACHES, poolLeaves, readChunkCache, readTail, poolBook, NOTES_FROM, SPENT_SPAN, WITHDRAWAL_TOPIC,
-    WASM, WASM_MIRRORS, WASM_ONCHAIN, WORKER, workerProver, checkWithdrawCall,
+    WASM, WASM_MIRRORS, WORKER, workerProver, checkWithdrawCall,
     ENTRY_POINT, SIMPLE_7702, PAYMASTER, PAYMASTERS, parsePaymasters, vetPaymasters, BUNDLERS, MAX_FEE_PERCENT, MAX_CALL_GAS, noteKey, executeCall, sweepThrowaway, minimumViableFee, withinCeiling, worstCaseFee, gasReference, nodeGasPrice, priceWithinBounds, limitsWithinBounds, fallbackGas,
     paymasterData, authorizationDigest, userOpDigest, directUserOp, addressOf, signRecoverable, bundlerSet, estimationUnavailable, prepareSponsored, sendSponsored, BASELINE,
     FORWARDER, splitDepositCall, forwarderOk,
@@ -10216,7 +10257,7 @@ const ROUTE = (() => {
       const m = JSON.parse(td.decode(out.subarray(4, 4 + n)));
       if (!m || !Number.isInteger(m.s) || !Number.isInteger(m.l) || m.l < 0 || 4 + n + m.l > out.length) throw new Error('not a reply');
       let body = out.subarray(4 + n, 4 + n + m.l);
-      if (m.z) body = new Uint8Array(await new Response(new Blob([body]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+      if (m.z) body = await TC.gunzip(body, MAX_REPLY * 8);
       return { status: m.s, headers: m.h && typeof m.h === 'object' ? m.h : {}, body };
     };
     return { bytes: cat(head, ct), open };
@@ -10236,8 +10277,14 @@ const ROUTE = (() => {
         let r;
         // a request lost on its way back may have been carried: the answer then says so (x-tried), and a refusal is not "nothing sent"
         try { r = await fetch(pathOf(fw), { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: env.bytes, signal: init.signal }); } catch (e) { if (init.signal?.aborted) throw e; last = e; tried = true; continue; }
-        if (r.status !== 200) { last = new Error(`a forwarder answered ${r.status}`); if (r.status < 500 && r.status !== 429) throw last; tried ||= r.status !== 429; continue; }
-        try { const o = await env.open(new Uint8Array(await r.arrayBuffer())); return new Response([101, 204, 205, 304].includes(o.status) ? null : o.body, { status: o.status, headers: { ...o.headers, ...(tried ? { 'x-tried': '1' } : {}) } }); } catch (e) { last = e; tried = true; }
+        const answer = (o) => new Response([101, 204, 205, 304].includes(o.status) ? null : o.body, { status: o.status, headers: { ...o.headers, ...(tried ? { 'x-tried': '1' } : {}) } });
+        // a forwarder's own refusal (4xx) passes to the next one; a body that opens under this request's key is the relay's answer
+        if (r.status !== 200) {
+          last = new Error(`a forwarder answered ${r.status}`);
+          if (r.status < 500 && r.status !== 429) { const o = await env.open(new Uint8Array(await r.arrayBuffer())).catch(() => null); if (o) return answer(o); } else tried ||= r.status !== 429;
+          continue;
+        }
+        try { return answer(await env.open(new Uint8Array(await r.arrayBuffer()))); } catch (e) { last = e; tried = true; }
       }
       throw last;
     };
@@ -10351,7 +10398,7 @@ const LG_STORE = {
   set: (k, v) => { if (!LG_LINKS.test(k)) return store.set(k, v); if (!S.key) return lgTab.set(k, v); const all = vget('lg') || {}; all[k] = v; vset('lg', all); store.del(k); return true; },
 };
 const lgChain = () => CHAINS[0];
-const lgRead = (method, params = []) => rpcOn(lgChain())(method, params);
+const lgRead = Object.assign((method, params = []) => rpcOn(lgChain())(method, params), { batch: (calls) => rpcOn(lgChain()).batch(calls) });
 // A read that names a note (is this commitment in, is this nullifier spent, what does this note's account hold) tells the
 // node which notes are this reader's. With a node of their own set (Endpoints) it is asked; otherwise no node is: the
 // pools' deposits and withdrawals are read in bulk (LG_BOOK: the deposit cache, then every pool's logs for a run of
@@ -10422,11 +10469,36 @@ function lgPlan(wei) {
 const LG_SZ = new Map();
 const lgSizeOf = (p) => TC.cachedSize(p) ?? LG_SZ.get(p.address) ?? LG_SZ.set(p.address, TC.poolSize(lgRead, p).catch(() => null).finally(() => LG_SZ.delete(p.address))).get(p.address);
 const lgSize = (pool) => { for (const p of TC.ALL_POOLS) lgSizeOf(p); return Promise.resolve(lgSizeOf(pool)); };
+// What the pools hold: the Tacit pool and the four large pools, in one request that is the same for every reader, kept ten
+// minutes (and in this browser, since it is public). → TC.held(…), or null; a read that fails is passed over quietly.
+const LG_TVL = { v: null, at: 0 };
+try { const o = JSON.parse(store.get('tacit-wei-tvl')); if (o.v.length === 5) Object.assign(LG_TVL, { v: TC.held(o.v.map(BigInt)), at: +o.at || 0 }); } catch { /* read again */ }
+function lgTvl() {
+  if (Date.now() - LG_TVL.at < 600_000) return Promise.resolve(LG_TVL.v);
+  LG_TVL.at = Date.now();
+  return lgRead.batch([POOL, ...TC.POOLS.map((p) => p.address)].map((a) => ['eth_getBalance', [a, 'latest']])).then((r) => {
+    const b = r.map((x) => BigInt(x.result));
+    LG_TVL.v = TC.held(b); store.set('tacit-wei-tvl', JSON.stringify({ at: LG_TVL.at, v: b.map(String) })); lgTvlLine();
+    return LG_TVL.v;
+  }).catch(() => LG_TVL.v);
+}
+const lgEth = (v) => fmt(v, v < 10n ** 18n ? 3 : v < 10n ** 21n ? 1 : 0);
+// In the footer, beside the pool's address: what each kind of pool holds, apart.
+function lgTvlLine() {
+  const h = LG_TVL.v;
+  if (!h) return;
+  let el = $('#lg-tvl');
+  if (!el) { el = document.createElement('nav'); el.id = 'lg-tvl'; el.setAttribute('aria-label', 'What the pools hold'); $('footer nav')?.after(el); }
+  mount(el, html`<span>Held</span><span>Tornado ${lgEth(h.tornado)} ETH · Tacit ${lgEth(h.tacit)} ETH</span>`);
+}
 const lgSmallestSelect = () => html`<label class="nw">Smallest note <select id="lg-min" aria-label="Smallest note">${[...TC.SMALLEST.map((d) => [d, `${TC.ethWords(d)} ETH`]), [0n, 'Off']].map(([d, l]) => html`<option value="${d}" ${d === lgSmallest() ? 'selected' : ''}>${l}</option>`)}</select></label>`;
 // The split card, under the amount: the parts, the crowd each pool holds, the network fee, and what the wallet will ask.
 function lgSplitCard(p, { swapped = false } = {}) {
   if (!p) return '';
-  const sizes = p.notes.map((n) => { const s = TC.cachedSize(TC.poolOf(n.address)); return s ? html`<p class="note mute" data-lg-size="${n.address}">${TC.ethWords(n.denomination)} ETH pool: ${s.deposits.toLocaleString('en-US')} deposits, ${s.held.toLocaleString('en-US')} notes in it now.</p>` : html`<p class="note mute" data-lg-size="${n.address}" hidden></p>`; });
+  // where each part goes, and what is there already
+  const h = LG_TVL.v, leg = (t) => html`<p class="note mute" data-lg-size>${t}</p>`;
+  const sizes = h ? [...p.notes.map((n) => { const d = TC.ethWords(n.denomination); return leg(`${n.count} × ${d} ETH → Tornado ${d} ETH pool, ${n.count > 1 ? 'among' : 'one of'} ${h.notes[TC.POOLS.findIndex((q) => q.address === n.address)].toLocaleString('en-US')} notes`); }),
+    p.remainder > 0n ? leg(`${fmt(p.remainder, 18)} ETH → Tacit pool (${lgEth(h.tacit)} ETH held)`) : ''] : '';
   const fee = LG.gasPrice != null ? TC.depositGas(p.noteCount, p.remainder > 0n) * LG.gasPrice : null;
   const dust = p.remainder > 0n && LG.gasPrice != null && 380_000n * LG.gasPrice * 10n > p.remainder;
   return html`<div class="lg-split"><div class="lbl"><span>Split</span><span>${LG.chosen || LG.pick ? lgSmallestSelect() : html`Smallest note ${TC.ethWords(lgSmallest())} ETH · <button class="link" type="button" id="lg-change">Change</button>`}</span></div>
@@ -10446,11 +10518,7 @@ function lgWireSplit(f, p, onChange, { setAmount } = {}) {
   $('#lg-drop', f)?.addEventListener('click', () => setAmount?.(p.noteTotal));
   $('#lg-change', f)?.addEventListener('click', () => { LG.pick = true; onChange(); });
   if (!p) return;
-  for (const n of p.notes) {
-    const pool = TC.poolOf(n.address);
-    if (TC.cachedSize(pool)) continue;
-    lgSize(pool).then((s) => { if (!s) return; const el = $(`[data-lg-size="${n.address}"]`, f); if (el) { el.textContent = `${TC.ethWords(pool.denomination)} ETH pool: ${s.deposits.toLocaleString('en-US')} deposits, ${s.held.toLocaleString('en-US')} notes in it now.`; el.hidden = false; } }, () => {});
-  }
+  if (!LG_TVL.v && Date.now() - LG_TVL.at >= 600_000) lgTvl().then((v) => { if (v && !S.busy) onChange(); });
   if (LG.gasPrice == null || Date.now() - LG.gasAt > 60_000) lgGasPrice().then(() => { if (!S.busy) onChange(); });
   if (LG_FORWARDER_OK.v == null) lgForwarder(p).then((ok) => { if (ok === false && !S.busy) onChange(); }, () => {});
 }
@@ -10567,7 +10635,7 @@ function lgOpenable(n) {
   if (!seed || !pool) return false;
   if (!n.c) return true;
   const k = `${hex(seed).slice(0, 16)}|${lc(n.c)}`;
-  if (!LG_OPEN.has(k)) LG_OPEN.set(k, TC.b32(TC.secretsOf(TC.seedRS(seed, n.nonce), pool.address).commitment) === lc(n.c));
+  if (!LG_OPEN.has(k)) LG_OPEN.set(k, TC.b32(TC.commitmentOf(TC.seedRS(seed, n.nonce), pool.address)) === lc(n.c));
   return LG_OPEN.get(k);
 }
 // A kept note's text: from the sign-in for a note made from it (no prompt), else from the wallet's signature.
@@ -10591,23 +10659,29 @@ const lgChecks = () => {
   if (lgChecking) { lgCheckAgain = true; return lgChecking; }
   return (lgChecking = lgCheck().catch(() => {}).finally(() => { lgChecking = null; if (lgCheckAgain) { lgCheckAgain = false; lgChecks(); } }));
 };
+// Each part stands alone: one that cannot read now leaves the others to run.
 async function lgCheck() {
-  const acct = lgIds().join(), book = lgBook(), changed = [];
+  const acct = lgIds().join(), book = lgBook(), changed = [], r = lgReader();
   if (!acct) return;
   const pk = lgPendKey(), pend = lgPending(pk), live = LG.notes.filter((n) => !n.sp && TC.poolOf(n.pool));
-  if (pend.length) {
-    const r = lgReader();
+  const at = async (n) => ({ ...n, ...((d) => (d.block ? { b: d.block, i: d.index } : {}))(await r.where(TC.poolOf(n.pool), BigInt(n.c))) });
+  if (pend.length) try {
     if (book) await book.deposits(TC.ALL_POOLS);
     const landed = [];
-    for (const { at, ...n } of pend) { const d = book?.deposit(TC.poolOf(n.pool), n.c); if (d || (!book && (await r.seen(TC.poolOf(n.pool), BigInt(n.c)).catch(() => false)))) landed.push({ ...n, ...(d ? { b: d.block, i: d.index } : {}) }); }
+    for (const { at: _, ...n } of pend) if (await r.seen(TC.poolOf(n.pool), BigInt(n.c)).catch(() => false)) landed.push(await at(n));
     // kept among the notes first, then out of the list as it is now (another deposit may have added to it meanwhile)
     if (landed.length && lgIds().join() === acct) {
       LG.notes = lgWrite(landed);
       try { LG_STORE.set(pk, JSON.stringify(lgPending(pk).filter((n) => !landed.some((x) => x.c === n.c)))); } catch { /* kept a day */ }
     }
-  }
+  } catch { /* the next check */ }
+  // a note kept without its deposit's block finds it among the deposits since the seeds began, or from the reader's own node
+  const lack = live.filter((n) => n.b == null && n.c);
+  if (lack.length) try {
+    if (book) await book.deposits(TC.ALL_POOLS);
+    for (const n of lack) { const m = await at(n); if (m.b != null) { n.b = m.b; n.i = m.i; changed.push(m); } }
+  } catch { /* the next check */ }
   if (!book) {
-    const r = lgReader();
     for (const n of live) {
       const v = await r.spent(TC.poolOf(n.pool), BigInt(n.nh)).catch(() => null);
       if (v) { changed.push({ ...n, sp: 1, sv: 1 }); continue; }
@@ -10617,13 +10691,7 @@ async function lgCheck() {
       const stale = n.o && Date.now() - n.o > LG_SEEN_MS;
       if (n.ms || stale) changed.push({ ...n, ms: 0, ...(stale ? { o: 0 } : {}) });
     }
-  } else if (live.length) {
-    // a note kept without its deposit's block finds it among the deposits since the seeds began
-    const lack = live.filter((n) => n.b == null && n.c);
-    if (lack.length) {
-      await book.deposits(TC.ALL_POOLS);
-      for (const n of lack) { const d = book.deposit(TC.poolOf(n.pool), n.c); if (d) { n.b = d.block; n.i = d.index; changed.push({ ...n }); } }
-    }
+  } else if (live.length) try {
     // a sent note from the head it went at (one sent before that was kept, from its deposit); others from their last check
     const from = (n) => (n.o ? n.ob || n.b : n.w ?? n.b), head = await book.tip(), known = live.filter((n) => n.b != null && head - from(n) <= TC.SPENT_SPAN);
     if (known.length) {
@@ -10641,12 +10709,13 @@ async function lgCheck() {
         else if (n.ms) changed.push(n);
       }
     }
-  }
+  } catch { /* the next check */ }
+  // the form drawn again too: what it says of the notes (when they went in) may have changed
   if (changed.length && lgIds().join() === acct) {
     LG.notes = lgWrite(changed);
     lgSpentMap();
     lgPaint();
-    if (!S.busy) paintBal();
+    if (!S.busy) { paintBal(); FORM.check?.(); }
   }
   lgSeen().catch(() => {});
   lgLeftovers().catch(() => {});
@@ -10756,6 +10825,7 @@ function lgCloseAsk() { if (!LG.ask) return; LG.ask.hidden = true; mount(LG.ask,
 function lgFind(btn, s, chain = false) {
   return act(btn, async (step, c) => {
     const bk = chain && !lgOwn() ? lgNewBook([]) : lgBook(), flow = lgFlow(s, bk);
+    lgWarm();
     if (flow.scheme === 'w') await walletReady(c, step);
     const onRead = (p) => step(p.of ? `reading the pools' deposits (${p.done} of ${p.of})` : 'reading the pools\' deposits');
     const { found, next } = await flow.scan({ from: 0, onRead, onProbe: (n, signs) => step(signs ? `sign in your wallet to look for note number ${n}` : 'looking for your notes') });
@@ -10765,8 +10835,8 @@ function lgFind(btn, s, chain = false) {
     lgKeep(found);
     LG.open = true;
     const said = found.length ? `${found.length} found, ${found.filter((f) => !f.spent).length} unspent.` : flow.scheme === 'w' ? 'No notes found for this wallet.' : `No notes found for ${flow.scheme === 'q' ? 'these words or this sign-in' : 'this sign-in'}.`;
-    // none found, the deposit cache may have left them out: the pools read from the chain's logs alone (slower)
-    const deep = !found.length && !chain && !lgOwn() ? html` <button class="link" type="button" id="lg-findc">Read the pools from the chain</button> (slower; skips the deposit cache).` : '';
+    // read through the deposit cache, which may leave notes out: the pools read from the chain's logs alone find them (slower)
+    const deep = !chain && !lgOwn() && lgCaches().length ? html` ${found.length ? 'Missing one?' : 'The deposit cache may have left them out:'} <button class="link" type="button" id="lg-findc">Read the pools from the chain</button> (slower; skips the cache, and finds any it left out).` : '';
     const wire = () => $('#lg-findc')?.addEventListener('click', (e) => lgFind(e.currentTarget, s, true));
     if (flow.scheme === 'w') { mount($('#status'), html`${said}${deep}`); return wire(); }
     mount($('#status'), html`${said}${deep}${flow.scheme === 'k' ? ' Turned on post-quantum privacy on another device? Enter your 24 words in the wallet sheet to see what was made with them.' : ''} Notes made with wallet signatures (in another app, or here before)? <button class="link" type="button" id="lg-findw">Look for those</button> (your wallet asks once per note).`);
@@ -10812,8 +10882,9 @@ function lgWasm(onBytes = () => {}) {
     throw new Error(`The withdrawal prover could not be downloaded. Try again in a minute, add a mirror under Endpoints, or load ${a.name} from disk (This device).`);
   })().finally(() => { LG_PROVER.busy = null; }));
 }
-// Fetched ahead, quietly, once a wallet with notes opens Withdraw: the first withdrawal then waits for no download.
-const lgWarm = () => { if (lgLive().length && !LG_PROVER.bytes && !LG_PROVER.cached && !LG_PROVER.busy && !navigator.connection?.saveData) lgWasm().then(() => { if (LG_PROVER.cached) LG_PROVER.bytes = null; }, () => {}); };
+// Fetched ahead, quietly, the first time Withdraw or Find is opened in a visit, whether or not any notes are held (so the
+// fetch says nothing of them); the first withdrawal then waits for no download.
+const lgWarm = () => { if (!LG_PROVER.warm && !LG_PROVER.bytes && !LG_PROVER.cached && !LG_PROVER.busy && !navigator.connection?.saveData) { LG_PROVER.warm = true; lgWasm().then(() => { if (LG_PROVER.cached) LG_PROVER.bytes = null; }, () => {}); } };
 // The worker gets its own copy; the 11.5 MB here is let go when the browser's cache keeps the file.
 const lgProver = () => { LG_TREES.loaded = null; return TC.workerProver(() => lgWasm().then((b) => { const x = b.slice().buffer; if (LG_PROVER.cached) LG_PROVER.bytes = null; return x; })); };
 // The deposit histories read in this visit, by pool: a second withdrawal from a pool reads and builds nothing again.
@@ -10863,8 +10934,8 @@ function lgConfirm({ fee, receive, denomination, route }, { what, to, swap, fres
       <div class="row"><button class="btn sm" type="button" id="lg-yes">Send</button><button class="btn ghost sm" type="button" id="lg-no">Cancel</button></div></div></div>`);
     const fin = (ok) => { clearTimeout(t); ask.hidden = true; mount(ask, ''); resolve(ok); if (LG.dirty) { LG.dirty = false; lgPaint(); } };
     const t = setTimeout(() => fin(false), 180_000);
-    // An address that already holds something, has sent before or carries code links more easily than a fresh one.
-    if (to && !fresh) Promise.all([lgRead('eth_getBalance', [to, 'latest']), lgRead('eth_getTransactionCount', [to, 'latest']), lgRead('eth_getCode', [to, 'latest'])]).then(([b, n, code]) => {
+    // An address that already holds something, has sent before or carries code links more easily than a fresh one (one request).
+    if (to && !fresh) lgRead.batch([['eth_getBalance', [to, 'latest']], ['eth_getTransactionCount', [to, 'latest']], ['eth_getCode', [to, 'latest']]]).then((r) => r.map((x) => x.result)).then(([b, n, code]) => {
       if (BigInt(b) === 0n && BigInt(n) === 0n && (code === '0x' || !code)) return;
       const box = $('.lg-fee > div', ask);
       if (box && !$('[data-used]', box)) box.insertAdjacentHTML('afterbegin', html`<p class="note warn" data-used>This address has been used before. A fresh address links less to you.</p>`.s);
@@ -10885,17 +10956,18 @@ function lgAcct(n, acct) {
   if (lc(kept?.acct) !== lc(acct)) throw new Error('This browser could not save where the note goes on its way out, so it was not sent. Free some browser storage, or take the note out as ETH.');
 }
 // What a swap-out's one-time account holds (only a note that went out as a token pays its own account): read from the
-// reader's own node when one is set; otherwise not asked, since the read would name the note's withdrawal, and offered to
-// send on as it may hold something. acct → wei (0: nothing worth sending), or missing: not read.
+// reader's own node when one is set, each time (what was not worth sending is offered again once it is); otherwise not
+// asked, since the read would name the note's withdrawal, and offered to send on as it may hold something.
+// acct → wei (0: nothing worth sending), or missing: not read.
 const LG_LEFT = new Map();
 async function lgLeftovers() {
   if (!lgOwn()) return;
   const gas = (await lgGasPrice()) ?? 10n ** 9n;
-  for (const n of LG.notes.filter((x) => x.acct && x.left && LG.spent.get(x.nh) === true)) {
+  for (const n of LG.notes.filter((x) => x.acct && x.left != null && LG.spent.get(x.nh) === true)) {
     const v = await lgOwnRead()('eth_getBalance', [n.acct, 'latest']).then(BigInt, () => null);
     if (v == null) continue;
     const worth = v > 21_000n * gas * 3n ? v : 0n;
-    if (!worth) lgMark(n, { left: 0 });
+    if (+!!worth !== n.left) lgMark(n, { left: (n.left = +!!worth) });
     if (LG_LEFT.get(n.acct) !== worth) { LG_LEFT.set(n.acct, worth); lgPaint(); }
   }
 }
@@ -10955,7 +11027,7 @@ function lgCover(a, fee) {
 }
 // Send's offer when the balance falls short and whole notes cover it: the notes move in, then the payment goes.
 const lgCoverSay = (notes, bal) => { const total = notes.reduce((s, n) => s + TC.poolOf(n.pool).denomination, 0n);
-  return html`<p class="note">${fmt(bal)} ETH is ready to pay. Move ${notes.length === 1 ? `a ${TC.ethWords(total)} ETH note` : `${notes.length} notes (${fmt(total)} ETH)`} into your balance first: ${LG.gas === 'wallet' ? 'your wallet pays the gas and shows as the sender; the relay takes up to 0.25%' : `gas (up to ${TC.MAX_FEE_PERCENT}%) and the relay’s fee (up to 0.25%) come out of ${notes.length === 1 ? 'it' : 'them'}`}. It takes a few minutes.</p>
+  return html`<p class="note">${fmt(bal)} ETH is ready to pay. Move ${notes.length === 1 ? `a ${TC.ethWords(total)} ETH note` : `${notes.length} notes (${fmt(total)} ETH)`} into your balance first: ${LG.gas === 'wallet' ? 'your wallet pays the gas and shows as the sender; the relay takes up to 0.25%' : `gas (up to ${TC.MAX_FEE_PERCENT}%) and the relay’s fee (up to 0.25%) come out of ${notes.length === 1 ? 'it' : 'them'}`}. It takes a few minutes. A payment right after the move can be linked to it by timing and amount; waiting in between helps.</p>
     <button class="btn" type="button" id="f-move">${notes.length === 1 ? `Move a ${TC.ethWords(total)} ETH note in, then pay` : `Move ${notes.length} notes in, then pay`}</button>`; };
 // Inside act(): the notes moved in one by one (each within the notes' fee ceiling), then a wait until `ready()`.
 async function lgMoveThen(c, step, notes, ready, moved = () => {}) {
@@ -11039,13 +11111,11 @@ function lgExitPlan(amount, swap = false) {
 function lgExitRows(x, { swap = null } = {}) {
   if (!x) return '';
   const seens = x.notes.map((n) => LG.seen.get(n.c)), warnText = TC.exitWarning(seens);
-  // notes that went in together (in one block) and would go out together to one address: anyone can match the two sets
-  const by = new Map();
-  for (const n of x.notes) if (n.b != null) by.set(n.b, (by.get(n.b) || 0) + 1);
-  const together = Math.max(0, ...by.values()), least = (LG.gas === 'wallet' && !swap ? x.total : x.total * (100n - TC.MAX_FEE_PERCENT) / 100n) + x.rest;
+  // notes that went in together (one deposit, or minutes apart) and would go out together to one address: anyone can match the two sets
+  const together = TC.together(x.notes), least = (LG.gas === 'wallet' && !swap ? x.total : x.total * (100n - TC.MAX_FEE_PERCENT) / 100n) + x.rest;
   return html`${kvRow(`From whole notes (${x.notes.length})`, `${fmt(x.total)} ETH`)}${x.rest > 0n ? kvRow('From your private balance', `${fmt(x.rest, 18)} ETH`) : ''}${swap ? '' : kvRow('Arrives, at least', `${fmt(least, 6, true)} ETH`)}
-    <p class="note mute">${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%.`}${x.notes.length > 1 && together < 2 ? ' Notes paid to one address one after another can be linked; spreading them out over time hides them better.' : ''}</p>
-    ${together > 1 ? html`<p class="note warn">${together} of these notes went in together, in one deposit. Taken out together to one address, anyone can match the two. Take one now and the rest later, or send them to different addresses. <button class="link" type="button" id="lg-one" data-amt="${plain(TC.poolOf(x.notes[0].pool).denomination)}">Take one now</button></p>` : ''}
+    <p class="note mute">${swap ? `Each note swaps to ${swap.t.sym} on its way out, gas from the note (at most ${TC.MAX_FEE_PERCENT}% each).` : LG.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of each note, at most ${TC.MAX_FEE_PERCENT}%.`}${x.notes.length + (x.rest > 0n ? 1 : 0) > 1 && together < 2 ? ` Paid to one address together, the notes${x.rest > 0n ? ' and the part from your balance' : ''} can be linked by their timing and amounts; spreading them out over time hides them better.` : ''}</p>
+    ${together > 1 ? html`<p class="note warn">${together} of these notes went in together, in one deposit or minutes apart. Taken out together to one address, anyone can match the two. Take one now and the rest later, or send them to different addresses. <button class="link" type="button" id="lg-one" data-amt="${plain(TC.poolOf(x.notes[0].pool).denomination)}">Take one now</button></p>` : ''}
     ${warnText ? html`<p class="note warn">${warnText}</p>` : ''}`;
 }
 // Inside act(): the notes of `x` to `to` (as `swap`'s token when given), one prover and one tree per pool for the run.
@@ -11167,6 +11237,7 @@ started = true;
 wcHeld();                // once: a later wallet announcing itself must not take the mark of a send still under way
 restoreWallet();
 readRegistry();
+lgTvlLine(); lgTvl();    // what the pools hold, in the footer (the same read for every visitor)
 Promise.resolve().then(() => caches.open(ARTIFACTS)).then((c) => c.match(`${location.origin}/${CEREMONY.zkey.name}?sha256=${CEREMONY.zkey.sha256}`)).then((hit) => { PROVER.saved = !!hit; paintDevice(); }).catch(() => {});
 </script>
 </body>

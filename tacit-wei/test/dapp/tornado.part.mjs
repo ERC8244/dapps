@@ -115,9 +115,35 @@ console.log('notes from a seed (no signatures)');
     eq(TC.writeNotes(st2, '0x' + '11'.repeat(20), [a, b, a, { ...b, acct: '0x' + '22'.repeat(20) }]).length, 2, 'kept');
     eq(TC.readNotes(st2, '0x' + '11'.repeat(20)).find((x) => x.s === 'k').acct, '0x' + '22'.repeat(20), 'acct merged');
   });
+  await test('the notes of one deposit share a mark, kept with them and merged into a record without it; another deposit has its own', async () => {
+    const DEN = '0x' + hex(D.keccak_256(new TextEncoder().encode('denomination()')).slice(0, 4));
+    const r2 = async (m, p) => (m === 'eth_getCode' ? '0x6080' : m === 'eth_call' && p[0].data === DEN ? '0x' + TC.poolOf(p[0].to).denomination.toString(16).padStart(64, '0') : read(m, p));
+    const f2 = TC.makeFlow({ read: r2, wallet, account: '0x' + '11'.repeat(20), seed, store: { get: () => null, set() {} } });
+    const plan = TC.planSplit(3n * E + E / 10n, { min: E / 10n });
+    const a = await f2.prepareNotes(plan), b = await f2.prepareNotes(plan);
+    eq(a.length, 4, 'notes'); eq(new Set(a.map((n) => n.g)).size === 1 && /^[0-9a-f]{8}$/.test(a[0].g), true, 'one mark: ' + a.map((n) => n.g));
+    eq(a[0].g !== b[0].g, true, 'another deposit, another mark');
+    const m = TC.metaOf(a[1]);
+    eq(m.g, a[0].g, 'kept in the record');
+    const s3 = new Map(), st3 = { get: (k) => s3.get(k), set: (k, v) => s3.set(k, v) }, { g, ...bare } = m;
+    eq(TC.writeNotes(st3, '0x' + '11'.repeat(20), [bare, m, { ...bare, g: 'ffffffff' }])[0].g, g, 'merged, and the first mark stays');
+  });
 }
 
 console.log('plans');
+await test('notes that went in together: one mark, or deposits within 50 blocks of one another', () => {
+  eq(TC.together([]), 0, 'none');
+  eq(TC.together([{ g: 'a' }, { g: 'a' }, { g: 'b' }]), 2, 'one mark, no blocks known yet');
+  eq(TC.together([{ b: 100 }, { b: 140 }, { b: 189 }, { b: 300 }]), 3, 'a run of deposits minutes apart');
+  eq(TC.together([{ b: 100 }, { b: 151 }, { b: 300 }]), 1, 'further apart');
+  eq(TC.together([{ g: 'a', b: 100 }, { g: 'a', b: 100 }, { b: 5000 }]), 2, 'one block');
+  eq(TC.together([{ g: 'x' }, { g: 'y' }, { b: 10 }, { b: 20 }, { b: 30 }]), 3, 'the larger set');
+});
+await test('what the pools hold: the large pools summed apart from Tacit, and each pool\'s whole notes', () => {
+  const h = TC.held([147n * E / 10n, 657n * E + E / 20n, 4288n * E, 23750n * E, 281100n * E]);
+  eq(h.tacit, 147n * E / 10n, 'tacit'); eq(h.tornado, 309795n * E + E / 20n, 'tornado');
+  eq(h.notes.join(), '6570,4288,2375,2811', 'notes');
+});
 await test('split plans match the app for random amounts and every smallest note', () => {
   for (let i = 0; i < 2000; i++) {
     const wei = BigInt('0x' + hex(rnd(9))) % (400n * E), min = [10n ** 17n, E, 10n * E, 100n * E][i % 4];
@@ -153,15 +179,24 @@ await test('a cache in the published shape is read: bracketed file names, digest
   const index = { availableProtocols: { 'tornado-cash-1-eth-0.1': { trackedAddresses: [pool.address.toLowerCase()], chunks: [part(keys[0], '0x10', '0x20')], hotHead: part(keys[1], '0x20', '0x30') } } };
   const asked = [];
   const fetchImpl = async (u) => { asked.push(u); const name = decodeURIComponent(u.slice('https://c.example/'.length)); if (name === 'index.json') return new Response(JSON.stringify(index)); return raw[name] ? new Response(gzipSync(raw[name])) : new Response('no', { status: 404 }); };
-  const getLogs = async (f) => (BigInt(f.fromBlock) <= 0x31n ? [ev(3, 0x31)] : []);
+  const tails = [], other = { ...ev(9, 0x32), address: TC.POOLS[1].address };
+  const getLogs = async (f) => { tails.push(f); return BigInt(f.fromBlock) <= 0x31n ? [ev(3, 0x31), other] : []; };
   const r = await TC.poolLeaves({ pool, caches: ['https://c.example'], getLogs, blockNumber: async () => 0x40, fetchImpl });
-  eq(r.count, 4, 'leaves');
+  eq(r.count, 4, 'leaves (another pool\'s deposit in the tail is not one)');
+  eq(tails.every((f) => f.address.length === TC.ALL_POOLS.length), true, 'the tail after the cache names every pool');
   eq(hex(r.bytes.subarray(96, 128)), (1003n).toString(16).padStart(64, '0'), 'the tail leaf');
   eq(asked.some((u) => u.includes('%5B0x10%2C0x20)')), true, 'names are sent encoded');
   raw[keys[0]] = Buffer.from(raw[keys[0]].toString().replace('0x11', '0x13'));   // changed after its digest was taken
   let note = null;
   await TC.poolLeaves({ pool, caches: ['https://c.example'], getLogs: async () => [ev(0, 0x11), ev(1, 0x12), ev(2, 0x25), ev(3, 0x31)], blockNumber: async () => 0x40, fetchImpl, onProgress: (p) => { if (p.note) note = p.note; } });
   eq(/digest/.test(note || ''), true, 'a file that does not match its digest sends the read to the node');
+});
+await test('a gzip that opens to more than its cap is refused', async () => {
+  const { gzipSync } = await import('node:zlib'), z = gzipSync(Buffer.alloc(5000));
+  eq((await TC.gunzip(z, 5000)).length, 5000, 'at the cap');
+  let e = null;
+  try { await TC.gunzip(z, 4999); } catch (x) { e = x; }
+  eq(/larger than any should be/.test(e?.message || ''), true, e?.message);
 });
 
 console.log('the paymaster path');
@@ -310,9 +345,10 @@ console.log('the pools read without naming a note');
   const logs = [dep(P01, n1.commitment, 3, F + 200), dep(P1, n2.commitment, 0, F + 300), wd(P01, n1.nullifierHash, acct1, F + 400)];
   const filters = [];
   const getLogs = async (f) => { filters.push(f); const addrs = [].concat(f.address).map((a) => a.toLowerCase()), lo = Number(BigInt(f.fromBlock)), hi = Number(BigInt(f.toBlock)); return logs.filter((l) => addrs.includes(l.address.toLowerCase()) && l.topics[0] === f.topics[0] && Number(BigInt(l.blockNumber)) >= lo && Number(BigInt(l.blockNumber)) <= hi); };
-  // each pool's deposit count at the head (nextIndex, which names no note); any other call is one that would
-  const named = [], counts = { [P01.address]: 4, [P1.address]: 1 };
-  const read = async (m, p) => { if (m === 'eth_call') { if (p[0].data === '0xfc7e9c6f') return '0x' + w32(counts[p[0].to] ?? 0); named.push(p[0].data.slice(0, 10)); return '0x' + '0'.repeat(64); } throw new Error('unexpected ' + m); };
+  // each pool's deposit count at a block (nextIndex, which names no note); any other call is one that would
+  const named = [], blocksOf = { [P01.address]: [P01.deployBlock + 1, F + 10, F + 20, F + 200], [P1.address]: [F + 300] };
+  const countAt = (to, b) => (blocksOf[to] ?? []).filter((x) => x <= b).length;
+  const read = async (m, p) => { if (m === 'eth_call') { if (p[0].data === '0xfc7e9c6f') return '0x' + w32(countAt(p[0].to, Number(BigInt(p[1])))); named.push(p[0].data.slice(0, 10)); return '0x' + '0'.repeat(64); } throw new Error('unexpected ' + m); };
   // other single nodes, for confirming a withdrawal: each serves `ls` filtered as asked
   const nodeOf = (ls, asked = []) => async (f) => { asked.push(f); return getLogsOf(ls)(f); };
   const getLogsOf = (ls) => async (f) => { const addrs = [].concat(f.address).map((a) => a.toLowerCase()), lo = Number(BigInt(f.fromBlock)), hi = Number(BigInt(f.toBlock)); return ls.filter((l) => addrs.includes(l.address.toLowerCase()) && l.topics[0] === f.topics[0] && Number(BigInt(l.blockNumber)) >= lo && Number(BigInt(l.blockNumber)) <= hi); };
@@ -327,6 +363,12 @@ console.log('the pools read without naming a note');
     eq(fetched.includes(ka), false, 'the file from before the seeds is not fetched');
     // every request the same for every reader: all nine pools, from NOTES_FROM, by event only (no note's block or pool)
     eq(filters.every((f) => f.address.length === TC.ALL_POOLS.length && [F, HEAD + 1 - 64].includes(Number(BigInt(f.fromBlock))) && !f.topics.slice(1).some(Boolean)), true, 'requests: ' + JSON.stringify(filters.map((f) => [f.address.length, Number(BigInt(f.fromBlock)) - F])));
+  });
+  await test('a read from further back fetches only the files before what was read, and keeps what was', async () => {
+    const before = fetched.length;
+    await book.deposits(TC.ALL_POOLS, 0);
+    eq(fetched.slice(before).includes(ka), true, 'the older file fetched');
+    eq(!!book.deposit(P01, 5n) && !!book.deposit(P01, n0.commitment) && !!book.deposit(P01, n1.commitment), true, 'the old leaf and the ones read before');
   });
   await test('spent from the withdrawals read in bulk; a swap-out to its own account is marked as such', () => {
     eq(found.map((f) => String(f.spent)).join(), 'false,true,false', 'spent');
@@ -365,6 +407,28 @@ console.log('the pools read without naming a note');
     const r = await TC.makeFlow({ read, account: randAddr(), seed, book: bookOf(all), store: { get: () => null, set: () => {} } }).scan();
     eq(r.found.map((f) => f.nonce).join(), '0,1,2', 'Find finds note 0');
   });
+  await test('a cache that leaves out the first deposits after its start is caught by the count at the block before, and read again from the node', async () => {
+    // every pool has a stream to the same block, so the node is asked only after it; the 0.1 pool's leaves out leaf 1
+    const cut = { ...raw, [kb]: Buffer.from([dep(P01, n0.commitment, 2, F + 20)].map((x) => JSON.stringify(x)).join('\n') + '\n'), 'empty.gz': Buffer.alloc(0) };
+    const ix = JSON.parse(JSON.stringify(index));
+    ix.availableProtocols['tornado-cash-1-eth-0.1'].hotHead.digest.data = '0x' + hex(D.sha256(cut[kb]));
+    const none = { file: 'empty.gz', fromBlock: '0x' + (F - 5).toString(16), toBlock: '0x' + (F + 100).toString(16), digest: { data: '0x' + hex(D.sha256(new Uint8Array(0))) } };
+    for (const q of TC.ALL_POOLS.slice(1)) ix.availableProtocols[`tornado-cash-1-eth-${TC.ethWords(q.denomination)}`] = { trackedAddresses: [q.address.toLowerCase()], chunks: [], hotHead: none };
+    const fc = async (u) => { const name = decodeURIComponent(u.slice('https://c.example/'.length)); return name === 'index.json' ? new Response(JSON.stringify(ix)) : cut[name] ? new Response(gzipSync(cut[name])) : new Response('no', { status: 404 }); };
+    for (const old of [true, false]) {
+      // `old`: a node that keeps old state; without one, the cache's deposits are read again from the node all the same
+      const r = old ? read : async (m, p) => (Number(BigInt(p[1])) < HEAD - 128 ? Promise.reject(new Error('missing trie node')) : read(m, p));
+      const notes = [], b = TC.poolBook({ getLogs: getLogsOf(all), blockNumber: async () => HEAD, read: r, caches: ['https://c.example'], fetchImpl: fc });
+      await b.deposits([P01], F, (p) => { if (p.note) notes.push(p.note); });
+      eq(!!b.deposit(P01, 6n), true, `the left-out leaf is read (${old})`);
+      eq(notes.some((x) => /0\.1 ETH pool's deposits read did not add up/.test(x)), true, notes.join(' | '));
+    }
+  });
+  await test('two reads at once fetch each file once', async () => {
+    const seen = [], b = TC.poolBook({ getLogs, blockNumber: async () => HEAD, read, caches: ['https://c.example'], fetchImpl: async (u) => { seen.push(u); return fetchImpl(u); } });
+    await Promise.all([b.deposits(TC.ALL_POOLS, F), b.deposits(TC.ALL_POOLS, F)]);
+    eq(seen.filter((u) => u.includes(encodeURIComponent(kb))).length, 1, seen.join(' '));
+  });
   await test('a node that refuses 5,000 blocks confirms over the 100-block run around the withdrawal (all pools)', async () => {
     const asked = [], small = (ls) => async (f) => { asked.push(f); if (BigInt(f.toBlock) - BigInt(f.fromBlock) > 99n) throw new Error('range'); return getLogsOf(ls)(f); };
     const b = TC.poolBook({ getLogs, blockNumber: async () => HEAD, read, others: () => [small(logs), small(logs)], caches: ['https://c.example'], fetchImpl });
@@ -400,10 +464,11 @@ console.log('a note out: spent only as the chain shows it, paid to this operatio
   const pool = TC.POOLS[1], seed = rnd(32), sec = TC.secretsOf(TC.seedRS(seed, 0), pool.address), noteText = TC.noteString(pool.denomination, sec.preimage);
   const w32 = (x) => BigInt(x).toString(16).padStart(64, '0'), word = (x) => '0x' + w32(x), ROOT = '0x' + '12'.repeat(32), TX = '0x' + 'ab'.repeat(32);
   const selOf = (s) => '0x' + hex(D.keccak_256(new TextEncoder().encode(s)).slice(0, 4)), DEN = selOf('denomination()'), WD = selOf('withdraw(bytes,bytes32,bytes32,address,address,uint256,uint256)');
-  const noCode = new Set(), unreadable = new Set(), lc = (s) => String(s).toLowerCase(), used = [];
+  const noCode = new Set(), unreadable = new Set(), lc = (s) => String(s).toLowerCase(), used = [], LAST = selOf('getLastRoot()'), calls = [], last = { root: ROOT };
   const read = async (m, p) => {
+    calls.push([m, p[0]?.to ?? p[0], p[0]?.data?.slice(0, 10)]);
     if (m === 'eth_getCode') { if (noCode.has(lc(p[0]))) return '0x'; if (m === 'eth_getCode' && unreadable.has(lc(p[0]))) throw new Error('down'); return '0x6080'; }
-    if (m === 'eth_call') return p[0].data === DEN ? word(pool.denomination) : word(1);
+    if (m === 'eth_call') return p[0].data === DEN ? word(pool.denomination) : p[0].data === LAST ? (lc(p[0].to) === lc(pool.address) ? last.root : word(7)) : word(1);
     if (m === 'eth_feeHistory') return { reward: [['0x5f5e100']], baseFeePerGas: ['0x3b9aca00', '0x3b9aca00'] };
     throw new Error('unexpected ' + m);
   };
@@ -434,6 +499,17 @@ console.log('a note out: spent only as the chain shows it, paid to this operatio
     const out = await run({ to: 'me', tx: TX });
     eq(out.spent, true, 'this one');
     eq(out.at, 100, 'and says the head block it was sent at (kept with a note sent but not seen)');
+  });
+  await test('the root is held to every pool\'s last root in one go; the pool is asked by name only when that differs, and its code and size are not read', async () => {
+    calls.length = 0;
+    await run({ to: 'me', tx: TX });
+    const KNOWN = selOf('isKnownRoot(bytes32)');
+    eq(calls.filter((c) => c[2] === LAST).length, TC.ALL_POOLS.length, 'every pool\'s last root');
+    eq(calls.some((c) => c[2] === KNOWN || c[2] === DEN || (c[0] === 'eth_getCode' && lc(c[1]) === lc(pool.address))), false, JSON.stringify(calls));
+    last.root = word(9); calls.length = 0;
+    await run({ to: 'me', tx: TX });
+    eq(calls.some((c) => c[2] === KNOWN && lc(c[1]) === lc(pool.address)), true, 'a moved last root: the pool is asked whether it knows the root');
+    last.root = ROOT;
   });
   await test('an operation mined with success=false counts as paid only if the note paid this recipient', async () => {
     let e = null;

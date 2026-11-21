@@ -217,17 +217,37 @@ console.log('stay signed in for this tab: kept only when asked, taken back only 
   await p.context().close();
 
   // a record that is not the account's, not the key this browser opened, or too old, is not used
-  for (const [what, o, again] of [['another account\'s', {a: '0x' + '11'.repeat(20)}, 1], ['not this browser\'s key', {k: '22'.repeat(32)}, 1], ['older than 12 hours', {t: Date.now() - 13 * 3_600_000}, 1]]) {
+  for (const [what, o, again, gone] of [['another account\'s', {a: '0x' + '11'.repeat(20)}, 1], ['not this browser\'s key', {k: '22'.repeat(32)}, 1], ['older than 12 hours', {t: Date.now() - 13 * 3_600_000}, 1, true]]) {
     p = await open([ALPHA]);
     await stayIn(p);
     await put(p, o);
     await back(p);
     ok(/^Sign in/.test(await label(p)), `a record that is ${what}: a reload is not signed in`, await label(p));
+    if (gone) ok(await rec(p) === null, `and a record that is ${what} is taken out of the tab by the reload, not left in it`, await rec(p));
     await p.click('#wallet'); await p.click('#sheet-wallet [data-in="eth"]');
     ok(await opened(p) && (await signs(p)) === again, `and signing in asks the wallet as usual (${again} signature)`, (await log(p)).join());
     ok(JSON.parse(await rec(p)).k === r0.k, 'and the right key is kept in the record\'s place');
     await p.context().close();
   }
+
+  // the choice turned off elsewhere: a key this tab still holds goes with it, at once from another tab and at the next load
+  p = await open([ALPHA]);
+  await stayIn(p);
+  await p.evaluate(() => localStorage.removeItem('tacit-wei-stay-v1'));      // as another tab turning it off (no event reaches this one)
+  await back(p);
+  ok(await rec(p) === null && /^Sign in/.test(await label(p)), 'with the choice off, a load takes out a key left in the tab', await rec(p));
+  await p.context().close();
+  p = await open([ALPHA]);
+  await stayIn(p);
+  const p2 = await p.context().newPage();
+  p2.errors = [];
+  p2.on('pageerror', (e) => p2.errors.push(String(e)));
+  await p2.goto(URL_); await p2.waitForTimeout(300);
+  ok(await stayIn(p2) && (await rec(p2)) !== null, 'a second tab of the same browser keeps a copy of its own');
+  await p.click('#wallet'); await p.uncheck('#sheet-wallet [data-stay]');
+  ok(await until(p2, (k) => sessionStorage.getItem(k) === null, REC), 'turning it off in the first tab takes the key out of the second at once');
+  ok(await rec(p) === null && !p.errors.length && !p2.errors.length, 'and out of the first, with no page errors', [...p.errors, ...p2.errors].join(' | '));
+  await p.context().close();
 
   // the wallet is not connected on the reload (locked): signing in again with the same account needs no signature
   p = await open([ALPHA]);

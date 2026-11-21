@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8nAXg7WeVla6CuDVUtF5543Lwm4CTb504y4pDjHXGLo=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2ojSkRz6hrQK/+Wlevpc7ZCIZxVdm+huM5qZcI1q9Yc=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -5290,14 +5290,18 @@ const anchorOf = (a) => 'tacit-pay-anchor-v2:' + hex(keccak(utf8(`tacit-pay-anch
 const sealOf = (key) => hex(keccak(cat(utf8('tacit-pay-anchor-v2'), key)).subarray(0, 16));
 // ── staying signed in for a tab ──
 // Off unless the reader turns it on (the choice is kept in this browser). On, the key opened is also kept in this tab's session
-// storage, so a reload does not ask the wallet again: until the tab is closed, the reader signs out, the wallet locks or
-// moves to another account, or 12 hours pass. Taken back only for the account that opened it (or for a pasted key), and only
-// if it is the key this browser opened for that account (its commitment).
+// storage, so a reload does not ask the wallet again: until the tab is closed, the reader signs out or turns it off (in any
+// tab), the wallet moves to another account, or 12 hours pass (the record is then removed, not only refused). A wallet that
+// locks does not end it: connecting the same account again signs in with no signature. Taken back only for the account that
+// opened it (or for a pasted key), and only if it is the key this browser opened for that account (its commitment).
 const STAY = 'tacit-wei-stay-v1', STAY_KEY = 'tacit-wei-stay-key-v1', STAY_MS = 12 * 3_600_000;
 const stayOn = () => store.get(STAY) === '1';
-const stayDrop = () => { try { sessionStorage.removeItem(STAY_KEY); } catch {} };
-const stayRec = () => { try { const o = JSON.parse(sessionStorage.getItem(STAY_KEY) || 'null'), age = Date.now() - o?.t; return /^[0-9a-f]{64}$/.test(o?.k) && age >= 0 && age < STAY_MS ? o : null; } catch { return null; } };
-const stayKeep = (key, account) => { const o = stayRec(), k = hex(key); try { sessionStorage.setItem(STAY_KEY, JSON.stringify({ k, a: account ? lc(account) : null, t: o?.k === k ? o.t : Date.now() })); } catch {} };
+let stayTimer = 0;
+const stayDrop = () => { clearTimeout(stayTimer); try { sessionStorage.removeItem(STAY_KEY); } catch {} };
+// A record under 12 hours old; any other (older, or not one) is removed here, not left sitting in storage.
+const stayRec = () => { try { const o = JSON.parse(sessionStorage.getItem(STAY_KEY) || 'null'), age = Date.now() - o?.t, live = /^[0-9a-f]{64}$/.test(o?.k) && age >= 0 && age < STAY_MS; if (o && !live) stayDrop(); return live ? o : null; } catch { stayDrop(); return null; } };
+// Kept with the time it was first kept (a reload does not extend it), and read again when that time is up so it is removed then.
+const stayKeep = (key, account) => { const o = stayRec(), k = hex(key), t = o?.k === k ? o.t : Date.now(); try { sessionStorage.setItem(STAY_KEY, JSON.stringify({ k, a: account ? lc(account) : null, t })); clearTimeout(stayTimer); stayTimer = setTimeout(stayRec, Math.max(0, t + STAY_MS - Date.now()) + 1000); } catch {} };
 function stayGet(account) {
   const o = stayRec();
   if (!o || !stayOn() || (o.a ?? null) !== (account ? lc(account) : null)) return null;
@@ -5307,9 +5311,12 @@ function stayGet(account) {
 // The kept key, when the account the wallet is on (none, for a pasted key) is the one that opened it.
 function stayRestore() {
   if (S.key || signing || S.busy) return;
+  if (!stayOn()) return stayDrop();            // the choice is off (turned off in another tab): nothing is kept
   const key = stayGet(S.account);
   if (key) setKey(key, S.account, false, S.provider, true);
 }
+// The choice turned off in another tab (or the browser's storage cleared) takes this tab's key out as well.
+addEventListener('storage', (e) => { if ((e.key === STAY || e.key === null) && e.newValue !== '1') stayDrop(); });
 // One sign-in at a time, however many buttons ask: a second would open a second prompt that cancels the first.
 let signing = null;
 // A first sign-in's first signature, while the second that checks it waits (refused, stopped, or dropped by the wallet):
@@ -8760,7 +8767,7 @@ function renderWalletSheet() {
     ${NOTE}Your Tacit address${S.key.account ? `, opened with ${short(S.key.account)}` : ''}. Address ID <b class="num nw">${addressId(S.key.address)}</b>.</p>
     <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Sign out</button></div>
     <div class="kv" style="margin-top:14px"><span>Wallet</span>${S.account ? html`<b>${S.wallet?.info.name ? `${S.wallet.info.name} · ` : ''}<span class="nw id">${whoShort(S.account)}</span></b>` : html`<button class="link" type="button" id="w-conn">Connect a wallet</button>`}</div>
-    ${stayBox()}<p class="note mute">Keeps your key in this tab, so a reload does not ask your wallet again. It goes when you sign out, close the tab, or after 12 hours (a browser may keep a copy for crash recovery a little longer). Not for a shared computer.</p>
+    ${stayBox()}<p class="note mute">Keeps your key in this tab, so a reload does not ask your wallet again. It goes when you sign out, turn this off, or after 12 hours, and with the tab; a browser that restores a closed tab, or recovers after a crash, can bring it back. A locked wallet does not end it: connecting it again signs you in. Not for a shared computer.</p>
     <p class="note" id="w-say" role="status"></p>${S.account ? html`<p class="note"><button class="link" type="button" id="w-swap">Use another wallet</button></p>` : ''}
     <p class="note">Your wallet, or your key, opens these funds on any device${S.key.pq ? ', plus your 24 words for what is sealed under them' : ''}. Keep ${S.key.pq ? 'them all' : 'both'} to yourself.</p>
     <div class="pq" id="w-pq">${pqSection()}</div>`);

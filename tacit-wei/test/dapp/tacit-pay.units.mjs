@@ -138,5 +138,40 @@ console.log('\nstored state, sealed');
   ok(seal.openState(v, old(false)) === text, 'and one written as enc1 under the oldest names');
 }
 
+console.log('stay signed in: the kept key is removed when its time is up, not only refused');
+{
+  // the page's own functions, with a fake clock, a fake tab storage, and timers that are only recorded
+  let now = 1_700_000_000_000;
+  const tab = new Map(), plain = new Map(), timers = [], cleared = [];
+  const SN = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const ctx = vm.createContext({
+    Date: {now: () => now}, JSON, RegExp, Number, String, Object, BigInt, Uint8Array, Buffer, Math, SN,
+    sessionStorage: {getItem: (k) => tab.get(k) ?? null, setItem: (k, v) => tab.set(k, String(v)), removeItem: (k) => tab.delete(k)},
+    store: {get: (k) => plain.get(k) ?? null, set: (k, v) => plain.set(k, v), del: (k) => plain.delete(k)},
+    setTimeout: (f, ms) => { timers.push({f, ms}); return timers.length; }, clearTimeout: (id) => cleared.push(id),
+    hex: (b) => Buffer.from(b).toString('hex'), unhex: (h) => Uint8Array.from(Buffer.from(h, 'hex')),
+    big: (b) => BigInt('0x' + Buffer.from(b).toString('hex')), lc: (s) => String(s).toLowerCase(),
+    anchorOf: (a) => 'anchor:' + a, sealOf: (k) => 'seal:' + Buffer.from(k).toString('hex').slice(0, 8),
+  });
+  vm.runInContext(`${cut("const STAY = 'tacit-wei-stay-v1'", 'function stayRestore()')}\nglobalThis.stay = { stayOn, stayDrop, stayRec, stayKeep, stayGet, STAY, STAY_KEY, STAY_MS };`, ctx);
+  const S = ctx.stay, HOUR = 3_600_000, key = Uint8Array.from(Buffer.from('11'.repeat(32), 'hex')), acct = '0xAbCd000000000000000000000000000000000001';
+  plain.set(S.STAY, '1'); plain.set('anchor:' + acct.toLowerCase(), 'seal:11111111');
+
+  S.stayKeep(key, acct);
+  ok(!!S.stayGet(acct) && tab.has(S.STAY_KEY), 'a key kept now is read back for its account');
+  ok(timers.length === 1 && timers[0].ms === 12 * HOUR + 1000, 'and a timer is set for the end of its twelve hours', String(timers[0]?.ms));
+  now += 5 * HOUR; S.stayKeep(key, acct);
+  ok(JSON.parse(tab.get(S.STAY_KEY)).t === 1_700_000_000_000 && timers.at(-1).ms === 7 * HOUR + 1000, 'kept again (a reload), it keeps its first time: the twelve hours are not extended', String(timers.at(-1)?.ms));
+  now = 1_700_000_000_000 + 12 * HOUR + 1000; timers.at(-1).f();
+  ok(!tab.has(S.STAY_KEY), 'when the timer ends the record is removed with nobody reading it');
+
+  now = 1_700_000_000_000; S.stayKeep(key, acct); now += 13 * HOUR;
+  ok(S.stayGet(acct) === null && !tab.has(S.STAY_KEY), 'a record read after its time is refused and removed, not left in storage');
+  tab.set(S.STAY_KEY, 'not json'); ok(S.stayRec() === null && !tab.has(S.STAY_KEY), 'a record that is not one is removed');
+  tab.set(S.STAY_KEY, JSON.stringify({k: 'zz', a: null, t: now})); ok(S.stayRec() === null && !tab.has(S.STAY_KEY), 'and one whose key is not 32 bytes of hex');
+  S.stayKeep(key, acct); const before = cleared.length; S.stayDrop();
+  ok(!tab.has(S.STAY_KEY) && cleared.length === before + 1, 'dropping a key also stops its timer');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

@@ -64,7 +64,9 @@ export async function startFork(names, {relay = null, account = ACCT, endpoints 
     const port = 18545 + Math.floor(Math.random() * 4000), url = `http://127.0.0.1:${port}`;
     const from = process.env[`FORK_${name.toUpperCase()}_RPC`] || (await answering(FORK_FROM[name]));
     if (name === 'ethereum' && !process.env.FORK_ETHEREUM_LOGS && !/tenderly/.test(from)) console.log(`  note: forking ${from}; Tenderly did not answer, so logs before the fork need FORK_ETHEREUM_LOGS`);
-    const anvil = spawn('anvil', ['--port', String(port), '--fork-url', from, '--chain-id', String(c.chainId), '--silent', '--no-rate-limit', ...(blockTime ? ['--block-time', String(blockTime)] : [])], {stdio: 'ignore'});
+    // FORK_<CHAIN>_BLOCK pins the fork, so runs ask the same questions (a caching node in front then answers them again).
+    const pin = process.env[`FORK_${name.toUpperCase()}_BLOCK`];
+    const anvil = spawn('anvil', ['--port', String(port), '--fork-url', from, '--chain-id', String(c.chainId), '--silent', '--no-rate-limit', ...(pin ? ['--fork-block-number', pin] : []), ...(blockTime ? ['--block-time', String(blockTime)] : [])], {stdio: 'ignore'});
     process.on('exit', () => anvil.kill('SIGKILL'));
     // A public node behind anvil sometimes answers a burst of state requests with a challenge page; asking again works.
     const rpc = async (method, params = []) => {

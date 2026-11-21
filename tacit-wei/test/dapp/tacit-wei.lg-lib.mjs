@@ -84,7 +84,8 @@ export function lgAnswer(env, n, {method, params = []}) {
       if (sel === SEL.denomination) return word(P.den);
       if (sel === SEL.commitments) return word(P.commits.has(arg) ? 1 : 0);
       if (sel === SEL.isSpent) return word(P.spent.has(arg) ? 1 : 0);
-      if (sel === SEL.nextIndex) return word(P.base + P.logs.length);
+      // the count at the block asked: the base deposits came before every deposit logged here
+      if (sel === SEL.nextIndex) { const at = /^0x[0-9a-f]+$/i.test(params[1] || '') ? parseInt(params[1], 16) : Infinity; return word(P.base + P.logs.filter((l) => parseInt(l.blockNumber, 16) <= at).length); }
       if (sel === SEL.isKnownRoot) return word(1);
       return '0x';
     }

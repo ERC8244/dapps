@@ -2,7 +2,9 @@
    a new balance's first action (the 24 words inline, "Not now" put off for a week, turning it on there) and as a line above
    a balance already there; Send offering to move a whole note in when the balance alone falls short; Send to an 0x address
    and Withdraw taking whole notes first, Max counting them, what is left with them counted, and notes that went in together
-   named; a key opened with no wallet finding and keeping its notes; Activity listing a split shield.
+   named; a key opened with no wallet finding and keeping its notes; Activity listing a split shield; gas from the wallet as a
+   link for the visit, and the wallet sending notes while the registry has gas from the note off; ETH at a one-time deposit
+   address said to be on its way in by the relay.
 
    Usage: node test/dapp/tacit-wei.onebalance.mjs     (PAGE=dapp/page.html runs it against the source)   */
 import * as H from './forms-lib.mjs';
@@ -101,14 +103,20 @@ console.log('3. a balance already there: a line above it instead, and Send moves
   check(await p.evaluate(() => !!document.querySelector('#lg-notes #lg-intake details')), 'and holds "Make whole notes from your private balance"');
   await p.click('#tabs [data-tab="send"]');
   await p.fill('#f-to', DEV_TACIT1); await p.fill('#f-amt', '0.5');
-  check(await until(p, () => /Move a 1 ETH note in, then pay/.test(document.querySelector('#f-move')?.textContent || ''), null, 15e3), 'paying 0.5 with 0.17 ready: "Move a 1 ETH note in, then pay"', await rcpt(p));
-  check(/0\.17 ETH is ready to pay/.test(await rcpt(p)) && /up to 3%/.test(await rcpt(p)) && /up to 0\.25%/.test(await rcpt(p)) && /a few minutes/.test(await rcpt(p)), 'saying what is ready, the costs and the wait', await rcpt(p));
+  check(await until(p, () => /Move a 1 ETH note in, then pay/.test(document.querySelector('#f-go')?.textContent || '') && !document.querySelector('#f-go').disabled, null, 15e3), 'paying 0.5 with 0.17 ready: the form\'s button says "Move a 1 ETH note in, then pay"', await txt(p, '#f-go'));
+  check(await p.$$eval('#form button.btn', (b) => b.length) === 1, 'and it is the only button of the form', await p.$$eval('#form button.btn', (b) => b.map((x) => x.textContent).join(' | ')));
+  check(/0\.17 ETH is ready to pay/.test(await rcpt(p)) && /No wallet needed/.test(await rcpt(p)) && /up to 3%/.test(await rcpt(p)) && /up to 0\.25%/.test(await rcpt(p)) && /a few minutes/.test(await rcpt(p)) && !/signs a message/.test(await rcpt(p)), 'saying what is ready, that no wallet is needed, the costs and the wait', await rcpt(p));
   await p.fill('#f-amt', '0.1'); await p.waitForTimeout(600);
-  check(!(await p.$('#f-move')) && /Left in balance ?1\.86999 ETH/.test(await rcpt(p)), 'an amount the balance covers pays from it; "Left in balance" counts the notes', await rcpt(p));
+  check(/Send privately/.test(await txt(p, '#f-go')) && /Left in balance ?1\.86999 ETH/.test(await rcpt(p)), 'an amount the balance covers pays from it; "Left in balance" counts the notes', await rcpt(p));
   // an 0x address: whole notes first, as Withdraw
   await p.fill('#f-to', PAYEE); await p.fill('#f-amt', '1.05');
   check(await until(p, () => /From whole notes \(1\) ?1 ETH/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 15e3), 'Send to an 0x address takes a whole note first', await rcpt(p));
   check(/Arrives, at least ?1\.02 ETH/.test(await rcpt(p)), 'and says what arrives at least (the note less up to 3%, and the rest)', await rcpt(p));
+  check(/no wallet needed/.test(await rcpt(p)) && !!(await p.$('#f-rcpt [data-lg-gas]')) && !(await p.$('#lg-gas')), 'gas from the note, no wallet needed; the wallet is a link in the receipt (no select in the notes card)', await rcpt(p));
+  await p.click('#f-rcpt [data-lg-gas]');
+  check(await until(p, () => /Your wallet sends each note/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 5e3) && /Arrives, at least ?1\.05 ETH/.test(await rcpt(p)) && await p.inputValue('#f-amt') === '1.05', 'the link: the wallet sends the notes, the whole note arrives, the amount kept', await rcpt(p));
+  await p.click('#f-rcpt [data-lg-gas]');
+  check(await until(p, () => /no wallet needed/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 5e3), 'and back', await rcpt(p));
   check(env.C[1].sent.length === 0, 'nothing sent');
   noErrors(p, 'scenario 3');
   await L.close(p);
@@ -175,6 +183,45 @@ console.log('6. Activity lists a split shield');
   check(await until(p, () => /large pools/.test(document.querySelector('#status')?.textContent || ''), null, 60e3), 'the notes go in', await txt(p, '#status'));
   check(await until(p, () => /Into whole notes \(2\)/.test(document.querySelector('#activity')?.textContent || ''), null, 10e3), 'Activity: "Into whole notes (2)"', (await txt(p, '#activity')).slice(0, 300));
   noErrors(p, 'scenario 6');
+  await L.close(p);
+}
+
+console.log('7. the registry has gas from the note off (bit 1): notes still count, the wallet sends them, said before the press');
+{
+  const {env, seed} = await holdings();
+  env.regFlags = 2;
+  const p = await L.open(env, {connected: true, seed});
+  await signIn(p); await ready(p);
+  await p.click('#tabs [data-tab="withdraw"]');
+  await p.fill('#f-wto', H.PAYEE);
+  await until(p, () => /fee/.test(document.querySelector('#form .route')?.textContent || ''), null, 15e3);
+  await p.fill('#f-wamt', '1.05');
+  check(await until(p, () => /From whole notes \(1\) ?1 ETH/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, 15e3) && /Gas from the note is off for now, so your wallet sends each note/.test(await rcpt(p)) && !(await p.$('#f-rcpt [data-lg-gas]')), 'Withdraw takes the note, saying the wallet sends it (no gas link)', await rcpt(p));
+  await p.click('#tabs [data-tab="send"]');
+  await p.fill('#f-to', DEV_TACIT1); await p.fill('#f-amt', '0.5');
+  check(await until(p, () => /then pay/.test(document.querySelector('#f-go')?.textContent || ''), null, 15e3) && /your wallet sends the move and shows as the sender/.test(await rcpt(p)), 'Send still offers the move, saying the wallet sends it', await rcpt(p));
+  check(env.C[1].sent.length === 0, 'nothing sent');
+  noErrors(p, 'scenario 7');
+  await L.close(p);
+}
+
+console.log('8. ETH at a one-time deposit address (a note moved in): the relay takes it in, the wallet is not asked for');
+{
+  const {env, seed} = await holdings();
+  const keys = H.poolKeys(Buffer.from(KEY, 'hex')), {lib} = await import('./engine-mock.mjs');
+  env.C[1].balances.set(H.receiveBoxAddress(H.ROUTER, lib.receiveKeys(keys, 1).npk).toLowerCase(), 997n * E / 10000n);
+  const p = await L.open(env, {connected: true, seed});
+  await signIn(p); await ready(p);
+  await p.click('#tabs [data-tab="shield"]');
+  await p.click('#f-tok'); await p.click('[data-from="exchange"]');
+  await until(p, () => !!document.querySelector('#f-check'), null, 30e3);
+  await p.click('#f-check');
+  check(await until(p, () => !!document.querySelector('#form [data-take]'), null, 60e3), 'the address shows 0.0997 ETH waiting');
+  const row = await txt(p, '#form .rows'), bal = await txt(p, '#bal-note');
+  check(/The relay moves it in shortly, or take it in now from your wallet/.test(row), 'its row says the relay moves it in, the wallet only as a choice', row);
+  check(/0\.0997 ETH is waiting at your deposit addresses on Ethereum; the relay moves it into your balance within minutes/.test(bal) && !(await p.$('#bal-note .callout')), 'the balance line says the relay moves it in (a line, not a call to act)', bal);
+  check(env.C[1].sent.length === 0, 'nothing sent');
+  noErrors(p, 'scenario 8');
   await L.close(p);
 }
 

@@ -7155,9 +7155,10 @@ async function swapRoute(c, t, amount, slip, to = null, sizing = false) {
   const by = (r) => (!r.multi ? floor(r) : price != null ? floor(r) - 300_000n * price * r.out / amount : floor(r) * (B - 5n) / B);
   const ok = got.filter((r) => r?.out && r.value === amount && r.data.includes(stand)).sort((a, b) => (by(b) > by(a) ? 1 : by(b) < by(a) ? -1 : 0));
   let best = null;
-  // A route one node gave, or into a token added by address, is read leg by leg for the minimums the router holds it to,
-  // then tried by other nodes; one that does not read as the router will run it is passed over for the next.
-  for (const r of ok) if ((!r.lone && !t.added) || (routeLegsOk(t, r, stand) && await routePays(c, t, r, stand, block))) { best = r; break; }
+  // Every route is read leg by leg for the minimums the router holds it to and where each leg pays (a read in the page, no
+  // request); a route one node gave, or into a token added by address, is then tried by other nodes too. One that does not
+  // read as the router will run it is passed over for the next.
+  for (const r of ok) if (routeLegsOk(t, r, stand) && ((!r.lone && !t.added) || await routePays(c, t, r, stand, block))) { best = r; break; }
   if (!best) return null;
   const r = { ...best, stand, deadline };
   if (sizing) return r;
@@ -7224,7 +7225,7 @@ async function routePays(c, t, r, stand, block) {
   }
   return false;
 }
-// A route one node gave, read as zRouter will run it: true only when every swap pays the stand-in or the router, every
+// A route, read as zRouter will run it: true only when every swap pays the stand-in or the router, every
 // sweep pays the stand-in, the stand-in appears nowhere else (withDest rewrites it everywhere), and the minimums the
 // router holds the legs to come to the route's limit in the token. A leg paying the stand-in counts its minimum; one
 // paying the router counts once a sweep of the router's whole balance follows, and only while nothing runs in between
@@ -7268,6 +7269,48 @@ function routeLegsOk(t, r, stand) {
     else throw 0;
   };
   try { walk(data); return got > 0n && got >= r.limit && data.split(stand).length === seen + 1 && eth === BigInt(r.value ?? 0); } catch { return false; }
+}
+// A route that buys exactly `amount` of ETH with the token (a shield's), read as zRouter will run it: true only when the
+// ETH paid to the stand-in comes to at least `amount`. Every swap is exact-out and pays the stand-in in ETH, or the router
+// in a hub token or ETH; it spends the token (from the sender, up to the allowance the route is given) or what an earlier
+// step left with the router. A deposit takes in only the token, an unwrap turns the router's WETH into ETH, and a sweep
+// pays the stand-in in ETH or `back` (where leftovers go) in anything; the stand-in and `back` appear nowhere else. Any
+// other call fails it, and the route takes no ETH.
+function shieldLegsOk(t, r, stand, back, amount) {
+  const tok = lc(t.addr).slice(2), zr = lc(ZROUTER).slice(2), z = '0'.repeat(40), weth = HUBS.slice(0, 40), data = lc(r.data).slice(2);
+  const hubs = new Set([z, ...HUBS.match(/.{40}/g)]), eth = (x) => (x === 'e'.repeat(40) ? z : x), has = new Map(), held = (x) => has.get(x) || 0n;
+  let got = 0n, seen = 0, backs = 0;
+  const walk = (h) => {
+    const w = (i) => { const x = h.slice(8 + 64 * i, 72 + 64 * i); if (x.length < 64) throw 0; return x; }, n = (i) => BigInt('0x' + w(i));
+    const a = (i) => { const x = w(i); if (!x.startsWith('0'.repeat(24))) throw 0; return x.slice(24); }, s = h.slice(0, 8), L = LEGS[s];
+    if (s === 'ac9650d8') {
+      const at = (o) => { const x = h.slice(8 + 2 * o, 72 + 2 * o); if (x.length < 64 || !x.startsWith('0'.repeat(56))) throw 0; return parseInt(x, 16); }, o = at(0);
+      for (let i = 0, k = at(o); i < k; i++) { const e = o + 32 + at(o + 32 + 32 * i), m = at(e), x = h.slice(72 + 2 * e, 72 + 2 * e + 2 * m); if (x.length < 2 * m) throw 0; walk(x); }
+    } else if (L) {
+      const cv = s === '12db224a', to = a(0), x = eth(a(L[1])), m = n(L[3] - 1);
+      let y = cv ? z : a(L[2]);
+      if (cv) for (let i = 0; i < 5 && n(3 + 2 * i); i++) y = a(4 + 2 * i);
+      y = eth(y);
+      if (n(1) !== 1n || !m || (x !== tok && !held(x))) throw 0;
+      if (to === stand) { if (y !== z) throw 0; seen++; got += m; } else if (to === zr && hubs.has(y)) has.set(y, held(y) + m); else throw 0;
+    } else if (s === 'cb019b84') {
+      // sweep(token, id, amount, to): an amount of 0 is the router's whole balance
+      const x = a(0), m = n(2), to = a(3);
+      if (n(1)) throw 0;
+      if (to === back) backs++;
+      else if (to === stand && x === z) { seen++; const v = m || held(z); got += v; has.set(z, held(z) > v ? held(z) - v : 0n); } else throw 0;
+    } else if (s === '0efe6a8b') {
+      // deposit(token, id, amount): taken from the sender
+      const m = n(2);
+      if (a(0) !== tok || n(1) || !m) throw 0;
+      has.set(tok, held(tok) + m);
+    } else if (s === 'de0e9a3e') {
+      // unwrap(amount): an amount of 0 is the router's whole WETH
+      const v = n(0) || held(weth);
+      has.set(weth, held(weth) > v ? held(weth) - v : 0n); has.set(z, held(z) + v);
+    } else throw 0;
+  };
+  try { walk(data); return amount > 0n && got >= amount && data.split(stand).length === seen + 1 && data.split(back).length === backs + 1 && !BigInt(r.value ?? 0); } catch { return false; }
 }
 // The route with the recipient written in for its stand-in, and where a route's leftovers go (`refund`) for theirs.
 const withDest = (r, to, refund = to) => { let data = r.data.split(r.stand).join(lc(to).slice(2)); if (r.back) data = data.split(r.back).join(lc(refund).slice(2)); return { ...r, data, stand: null, back: null }; };
@@ -7488,7 +7531,8 @@ async function shieldRoute(c, t, amount, slip, to = null, refund = to, out = ZER
   const block = '0x' + Math.max(0, (await headOf(headNodes(c), vetted(c), 12_000)) - 2).toString(16);
   const got = await Promise.all(jobs.map(([d, sl, u, v, s, mv]) => quorum(ZQUOTER, '0x' + d, ownNodes(c), false, block, 30_000).then((h) => routeOf(h, sl, u, v, s, mv, true)).catch(() => null)));
   const same = got[0] && got[1] && got[1].source === got[0].source && got[1].inp === got[0].inp;
-  const eth = t.addr === ZERO_ADDRESS, best = got.filter((r, k) => !(same && k === 1) && r?.out >= amount && (eth ? r.value >= r.inp : r.value === 0n) && r.inp > 0n && r.limit >= r.inp && r.data.includes(stand)).sort((a, b) => (a.limit < b.limit ? -1 : a.limit > b.limit ? 1 : 0))[0];
+  // A route from a token into ETH is read leg by leg as well (shieldLegsOk): it must pay the ETH to the stand-in.
+  const eth = t.addr === ZERO_ADDRESS, best = got.filter((r, k) => !(same && k === 1) && r?.out >= amount && (eth ? r.value >= r.inp : r.value === 0n) && r.inp > 0n && r.limit >= r.inp && r.data.includes(stand) && (eth || out !== ZERO_ADDRESS || shieldLegsOk(t, r, stand, back, amount))).sort((a, b) => (a.limit < b.limit ? -1 : a.limit > b.limit ? 1 : 0))[0];
   if (!best) return null;
   const r = { ...best, stand, back, deadline };
   return to ? withDest(r, to, refund) : r;

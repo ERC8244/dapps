@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-aNsJLi0f3LSZBQrUikqE99xIuQrl90h8caxJmeSNysU=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8eW/KPUdn1UsCa0uaWFc6Bl1srEwmFKWxg+zlrdzcxs=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -7785,7 +7785,7 @@ function formShieldToken(f, seg) {
     // With the zap there, the relay is only for amounts it moves in itself.
     if (zap && byRelay() && (least == null || a < least)) return say(html`${NOTE_ERR}${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
     const sp = !byRelay() && splitOk ? lgPlan(a) : null;
-    say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Ready to pay', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', routeName(r, t, false))}
+    say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Ready to pay', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(SOURCES[r.source] === 'Wrap' ? r.inp : r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', routeName(r, t, false))}
       ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${ws ? kvRow('Your wallet', walletAsks(c, t, ws, r.limit, byRelay() ? ZROUTER : sp ? SPLITZAP : ZAP, batch)) : ''}${sp ? html`${NOTE_MUTE}Whole notes · ${LG_TORNADO}, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words' : 'Tacit key'} (nothing extra to sign)` : 'made from your wallet’s signatures (a short message each, nothing sent)'}, in the same transaction as the swap.</p>` : ''}`);
     go.disabled = false;
   };
@@ -8193,7 +8193,9 @@ const dropSent = (was, landed) => { setSent(null); if (!S.key || (was.key && was
 const sentSaid = (c, h, ok) => {
   const s = $('#status [data-unconf]');
   if (!s || S.busy || !h || lc(s.dataset.unconf) !== lc(h)) return;
-  mount($('#status'), html`<span class="${ok ? 'ok' : 'err'}">${ok ? 'It landed.' : 'It failed on chain, so nothing moved. Your wallet paid its gas.'}</span> ${txLink(c, h)}`);
+  // What it was ("the withdrawal", "the deposit") is kept when the line named it, so the answer is not a bare "It".
+  const what = (s.textContent.match(/has not confirmed the ([^.]{1,40}?) yet/) || [])[1], it = what ? `The ${what}` : 'It';
+  mount($('#status'), html`<span class="${ok ? 'ok' : 'err'}">${ok ? `${it} landed.` : `${it} failed on chain, so nothing moved. Your wallet paid its gas.`}</span> ${txLink(c, h)}`);
 };
 const settleSent = (was) => sentState(was).then((st) => {
   if (S.sent !== was || !['landed', 'failed', 'replaced'].includes(st)) return;

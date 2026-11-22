@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8eW/KPUdn1UsCa0uaWFc6Bl1srEwmFKWxg+zlrdzcxs=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-j/MnGjG8KHVDN/QwRUUUYrDhx07W/sgmf/cClJPcxtE=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -6946,6 +6946,8 @@ const lgOneOn = (rc, amt) => rc.addEventListener('click', (e) => { const b = e.t
 const ZQUOTER = '0x000000bd2db80567c23e353ca95a251c573cbf9b', ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4';
 // What a route's source number names, as zSwap reads it.
 const SOURCES = ['Uniswap v2', 'Sushi', '', 'Uniswap v3', 'Uniswap v4', 'Curve', 'Lido', 'Wrap'];
+// The most of the token a route spends, as shown: an exact wrap or unwrap spends what it costs, with no price margin.
+const maxIn = (r) => (SOURCES[r.source] === 'Wrap' ? r.inp : r.limit);
 // A receipt's Route row: a wrap is WETH 1:1, no pool (`out`: ETH becomes the token).
 const routeName = (r, t, out) => (SOURCES[r.source] === 'Wrap' ? `${out ? 'Wrap to' : 'Unwrap'} ${t.sym}` : `${SOURCES[r.source] || 'zRouter'}${r.data.startsWith('0xac9650d8') ? ', several pools' : ''}`);
 const logoOk = (u) => (typeof u === 'string' && u.length <= 32_768 && /^data:image\/(svg\+xml|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(u) ? u : '');
@@ -7731,7 +7733,7 @@ function formShieldToken(f, seg) {
   const caption = () => {
     const a = ethAmt(), done = (k, q) => q.key === k && !q.busy, r = a && done(routeKey(a), SHQ) ? SHQ.r : null;
     if (inTok) { const x = tokAmt(); return !x || (tb != null && x > tb) ? '' : a == null ? (done(spendKey(x), SPQ) ? '' : '…') : a < 10n ** 13n ? '' : html`Shields <b>${fmt(a)} ETH</b>${r ? ` · about ${approx(r.inp, t.dec)} ${t.sym}` : ''}`; }
-    return !a ? '' : r ? html`≈ <b>${approx(r.inp, t.dec)} ${t.sym}</b> · at most ${unitsUp(r.limit, t.dec)}` : done(routeKey(a), SHQ) ? '' : '…';
+    return !a ? '' : r ? html`≈ <b>${approx(r.inp, t.dec)} ${t.sym}</b> · at most ${unitsUp(maxIn(r), t.dec)}` : done(routeKey(a), SHQ) ? '' : '…';
   };
   // Changing the unit carries the figure over: what the ETH costs in the token, or the ETH the amount of the token buys.
   wireUnits(f, inTok, amt, 'f-samt', 'unitWas', 'payIn', ethAmt, (a) => { const r = a && SHQ.key === routeKey(a) ? SHQ.r : null; return r ? units(r.inp, t.dec) : ''; }, { c: c.chainId, addr: t.addr });
@@ -7785,7 +7787,7 @@ function formShieldToken(f, seg) {
     // With the zap there, the relay is only for amounts it moves in itself.
     if (zap && byRelay() && (least == null || a < least)) return say(html`${NOTE_ERR}${least == null ? 'The relay is not answering.' : `Under the relay’s minimum of ${fmtUp(least)} ETH.`} Shield it in one transaction instead.</p>`);
     const sp = !byRelay() && splitOk ? lgPlan(a) : null;
-    say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Ready to pay', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(SOURCES[r.source] === 'Wrap' ? r.inp : r.limit, t.dec)} ${t.sym}`)}${kvRow('Route', routeName(r, t, false))}
+    say(html`${sp ? html`${kvRow('Into whole notes', `${fmt(sp.noteTotal)} ETH · ${sp.notes.map((n) => `${n.count} × ${TC.ethWords(n.denomination)}`).join(' + ')}`)}${sp.remainder ? kvRow('Ready to pay', `${fmt(sp.remainder, 18)} ETH`) : ''}` : kvRow('Into your private balance', `${fmt(a)} ETH`)}${t.added ? kvRow('Token', t.addr) : ''}${kvRow('Costs about', `${units(r.inp, t.dec)} ${t.sym}`)}${kvRow('At most', `${unitsUp(maxIn(r), t.dec)} ${t.sym}`)}${kvRow('Route', routeName(r, t, false))}
       ${!byRelay() ? kvRow('Then', 'shielded in the same transaction · no fee') : least == null || a < least ? kvRow('Then', 'your wallet takes it in · no fee, one more transaction') : kvRow('Then', 'the relay moves it in · up to 0.25%')}${ws ? kvRow('Your wallet', walletAsks(c, t, ws, r.limit, byRelay() ? ZROUTER : sp ? SPLITZAP : ZAP, batch)) : ''}${sp ? html`${NOTE_MUTE}Whole notes · ${LG_TORNADO}, ${S.key ? `made from your ${S.key.pq ? 'post-quantum words' : 'Tacit key'} (nothing extra to sign)` : 'made from your wallet’s signatures (a short message each, nothing sent)'}, in the same transaction as the swap.</p>` : ''}`);
     go.disabled = false;
   };
@@ -10677,6 +10679,9 @@ const ROUTE = (() => {
   // for requests to its gateway key; the registry's "nostr" list replaces them.
   let NOSTR = ['wss://relay.primal.net', 'wss://nos.lol', 'wss://offchain.pub'];
   let NOSTR_OFF = false;
+  // Told when public Nostr relays carried a request (the page says so to the reader).
+  let nostrSaid = () => {};
+  const onNostr = (f) => { nostrSaid = typeof f === 'function' ? f : () => {}; };
   const setNostrOff = (v) => { NOSTR_OFF = !!v; };
   const setNostr = (list) => { const l = (list || []).filter((u) => /^wss:\/\/[\w.-]+(?::\d+)?\/?$/.test(u)).slice(0, 6); if (l.length) NOSTR = l; };
   const te = new TextEncoder(), td = new TextDecoder();
@@ -10792,7 +10797,7 @@ const ROUTE = (() => {
         }
         try { const o = await env.open(new Uint8Array(await r.arrayBuffer())); MEM.up('f', fw); return answer(o); } catch (e) { last = e; tried = true; }
       }
-      if (nostr && !NOSTR_OFF) { const env = await seal(gateway, req); try { return answer(await carry(env, init.signal)); } catch (e) { if (init.signal?.aborted) throw e; } }
+      if (nostr && !NOSTR_OFF) { const env = await seal(gateway, req); try { const o = await carry(env, init.signal); nostrSaid(); return answer(o); } catch (e) { if (init.signal?.aborted) throw e; } }
       throw last;
     };
   }
@@ -10886,10 +10891,13 @@ const ROUTE = (() => {
     try { const x = await fetch(url, init); if (x.status >= 500 || x.status === 429) MEM.mark('b', url); else MEM.up('b', url); return x; } catch (e) { if (!init.signal?.aborted) MEM.mark('b', url); throw e; }
   }
   const bundlersFor = (urls) => [...urls.filter((u) => !MEM.down('b', u)), ...urls.filter((u) => MEM.down('b', u))];
-  return { OWN, forwarders, setForwarders, setGateways, setNostr, setNostrOff, relayFetch, bundlerFetch, bundlersFor, verifyDoc, seal };
+  return { OWN, forwarders, setForwarders, setGateways, setNostr, setNostrOff, onNostr, relayFetch, bundlerFetch, bundlersFor, verifyDoc, seal };
 })();
 
 ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways); ROUTE.setNostr(REG.nostr); ROUTE.setNostrOff(ends.nostr === false);
+// Once a visit, when the forwarders were down and public Nostr relays carried a request: who saw what, and where it is turned off.
+let NOSTR_TOLD = false;
+ROUTE.onNostr(() => { if (NOSTR_TOLD) return; NOSTR_TOLD = true; toast('The forwarders were not answering, so this went through public Nostr relays: they saw your IP address and the time, not the request. You can turn this off under Endpoints.'); });
 
 // ── large pools in the page ──
 // The Tornado Cash pools as part of one private balance. Shield: an amount of a whole note or more is split, whole notes

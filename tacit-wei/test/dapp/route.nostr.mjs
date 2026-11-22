@@ -73,9 +73,13 @@ ROUTE.setNostr(['wss://one.example', 'wss://two.example', 'ws://plain.example', 
 console.log('every forwarder down: the request goes over Nostr');
 modes = { 'wss://one.example': 'quiet', 'wss://two.example': 'answer' };
 const t0 = Date.now();
+// the page is told each time Nostr carried a request (it says so to the reader, once a visit)
+let told = 0;
+ROUTE.onNostr(() => { told++; });
 const r = await ROUTE.relayFetch('https://gw.example/1/evm-pool/keeper/quote?gas=600000', { signal: AbortSignal.timeout(20_000) });
 const q = await r.json();
 ok(r.status === 200 && q.fee === '77500000000000' && q.asked === 'GET /1/evm-pool/keeper/quote?gas=600000', 'the answer is the gateway\'s, opened by the request\'s own keys', `${Date.now() - t0} ms`);
+ok(told === 1, 'and the page is told that Nostr carried it', String(told));
 ok(fetched.length >= 2 && fetched.every((u) => /^https:\/\/tacit-evm-pool-forwarder(-2)?\.onrender\.com\/f\/k$/.test(u)), 'the forwarders were tried first, and nothing went to the relay in the open', fetched.join(' '));
 ok(JSON.stringify([...new Set(opened)]) === '["wss://one.example","wss://two.example"]', 'only the wss:// relays the registry may name are used', opened.join(' '));
 const ev = seen[0].ev;
@@ -110,12 +114,14 @@ console.log('\nswitched off under Endpoints: no Nostr connection is opened');
 opened.length = 0;
 ROUTE.setNostrOff(true);
 const off = await ROUTE.relayFetch('https://gw.example/1/evm-pool/keeper/quote?gas=600000', { signal: AbortSignal.timeout(5_000) }).then(() => null, (x) => x);
+ok(told === 2, 'a request that failed, or was not sent over Nostr, tells the page nothing', String(told));
 ok(off && opened.length === 0, 'with every forwarder down the request fails and nothing is sent to a Nostr relay', `${off?.message} · ${opened.length} connection(s)`);
 ROUTE.setNostrOff(false);
 opened.length = 0;
 modes = { 'wss://one.example': 'answer', 'wss://two.example': 'answer' };
 const back = await ROUTE.relayFetch('https://gw.example/1/evm-pool/keeper/quote?gas=600000', { signal: AbortSignal.timeout(20_000) }).then((r) => r.status, (x) => x.message);
 ok(back === 200 && opened.length > 0, 'and switched on again it is carried as before', String(back));
+ok(told === 3, 'and the page is told again', String(told));
 
 console.log(`\n${fail ? fail + ' FAILED' : 'all passed'}`);
 process.exit(fail ? 1 : 0);

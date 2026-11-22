@@ -92,6 +92,7 @@ await p.waitForFunction(() => /At most|than your wallet holds|No route/.test(doc
 const rm = (await p.textContent('#f-rcpt')).replace(/\s+/g, ' '), mostMax = raw(new RegExp(`At most\\s*([\\d.]+)\\s*${SYM}`).exec(rm)?.[1]);
 ok(!/than your wallet holds/.test(rm) && mostMax > 0n && mostMax <= held, `Max asks ${await p.inputValue('#f-samt')} ETH, which the ${SYM} in the wallet pays for`, `${mostMax} ≤ ${held}`);
 ok(new RegExp(`≈ [\\d.,]+ ${SYM} · at most [\\d.,]+`).test(await p.textContent('#f-cap')), `the line under the amount gives its cost in ${SYM}`, await p.textContent('#f-cap'));
+if (MODE === 'weth') { const cap = /≈ ([\d.,]+) WETH · at most ([\d.,]+)/.exec(await p.textContent('#f-cap')); ok(!!cap && cap[1] === cap[2], 'an exact unwrap: the line under the amount shows no price margin either', await p.textContent('#f-cap')); }
 let AMT = '0.005';
 if (MODE === 'permit') {
   console.log(`\nthe amount in ${SYM}: 0.5 to spend`);

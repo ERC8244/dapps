@@ -5746,7 +5746,9 @@ const readPct = (st) => { const p = st.W?.progress(); return p != null && p < 0.
 let sentAt = 0;
 const due = () => {
   if (!document.hidden && S.key && (cur().syncing || cur().W?.older() != null)) paintBal();
-  if (document.hidden || S.busy) return;
+  // A tab out of sight reads no more, unless a notice was asked for when a payment arrives: it then goes on reading (the
+  // browser slows its timers to about one a minute).
+  if ((document.hidden && !notifyOn()) || S.busy) return;
   lgDue();
   // A wallet payment that holds the forms ends when the wallet's node says how it went, without waiting for another action
   // (a payer with no key holds one too).

@@ -23,7 +23,7 @@ Each version serves its own bytes forever. `deployNext(initcode, salt)` on the l
 CREATE2 (so the successor's `PREVIOUS` is unforgeable) from creation code built from `src/TacitPay8244.sol`; then
 `tacit.wei` is pointed at it. The page shows a "newer version" link only when a version's `latest()` is what
 `tacit.wei` resolves to. The page's code is minified as a whole, so a new build usually changes every chunk: plan on all
-22 (about 115M gas) plus about 2.6M for `deployNext` (2,599,834 estimated from the multisig with all 22 in place).
+22 (about 115M gas) plus about 2.65M for `deployNext` (estimated from the multisig with all 22 in place; `--sim` prints the figure for the build in hand).
 
 The chunk count is pinned in the manifest (`chunks.count`, 22): the page is spread evenly over them, each about 1.1 KB
 under EIP-170, which leaves room for about 24 KB more page. A build that outgrows them stops with an error; the count is
@@ -37,27 +37,38 @@ raised on purpose (the contract takes any number of chunks), and this section's 
 2. **Simulate.** `node deploy/deploy-next-helper.mjs --sim` estimates `deployNext` from the multisig against mainnet, with
    the chunks that are not yet on chain put in place by a state override, and `setAddr` from the multisig. It prints the
    successor's address and the op id at the multisig's next nonce. A call from any other account reverts `NotSteward`.
-3. **Chunks.** `node deploy/deploy-next-helper.mjs` serves a page; from any funded wallet it sends each new chunk through
+   It also prints `initcodeHash`, which the salt below is mined against.
+3. **A salt, for a successor address with leading zeros (optional).** `deployNext` takes any salt and the live version is
+   the only caller, so the salt needs no guard: the address is plain CREATE2, `keccak256(0xff ‖ live version ‖ salt ‖
+   initcodeHash)[12:]`. Salts from the vanity shop are CreateX and market salts and cannot be used here. Build the miner
+   once (`cd deploy/vanity && cargo build --release`), then
+   `deploy/vanity/target/release/vanity2 <live version> <initcodeHash> <zero bytes>`. Write the salt it prints into
+   `out/next-salt.json` under the key `<live version, lowercase>:<initcodeHash>` and the helper uses it everywhere;
+   with no entry the salt is zero. On a 2023 laptop (4 of 8 cores) 3 zero bytes takes seconds and 4 about 16 minutes;
+   each further byte is 256 times the work, so 5 is days without a GPU. **The salt is mined against one build:** any
+   change to the page changes `initcodeHash`, and the salt, the successor address and the `deployNext` op id with it. So
+   mine after the page is final, and check the address the helper prints before anyone signs.
+4. **Chunks.** `node deploy/deploy-next-helper.mjs` serves a page; from any funded wallet it sends each new chunk through
    CreateX at an address fixed by its code (two per transaction from a wallet that batches calls). Chunks whose bytes
    the lineage already holds are reused. The page reads each address back.
-4. **deployNext.** Once every chunk is on chain with its exact bytes, `--plan` (or the served page) gives the call
+5. **deployNext.** Once every chunk is on chain with its exact bytes, `--plan` (or the served page) gives the call
    (to the live version, value 0, data), its op id, and the `execute` call. Two owners sign the op id;
    `node deploy/deploy-next-helper.mjs --execute deployNext 0x<signatures>` prints the `execute` calldata to send to the
    multisig. After the delay, `--plan` prints the `executeQueued` call (gas limit 3.5M), which any account may send.
-   Before signing, each owner rebuilds the page and the contract (steps 1 and 2) and checks that the successor address
+   Before signing, each owner rebuilds the page and the contract (steps 1 to 3) and checks that the successor address
    and the call's target and data are the ones printed here, and that the op id their own multisig tool shows for that
    call and nonce equals the printed one: the helper takes the op id from one RPC.
-5. **setAddr.** Offered only once the live version's `successor()` is the predicted address and the successor reads back
+6. **setAddr.** Offered only once the live version's `successor()` is the predicted address and the successor reads back
    with this page's `PAGE_HASH`, the multisig as steward and the live version as `PREVIOUS`. Queue and release it the
    same way (`--execute setAddr 0x<signatures>`, then `executeQueued`).
-6. **setGwei.** `tacit.gwei` (GNS `0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6`, served at `https://tacit.gwei.limo/`) is
+7. **setGwei.** `tacit.gwei` (GNS `0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6`, served at `https://tacit.gwei.limo/`) is
    pointed the same way: `setAddr(namehash("tacit.gwei"), successor)` on GNS. While the name's owner is an account rather
    than the multisig, that account sends this one transaction (the helper prints it, about 41k gas); once the multisig
    owns the name, it is queued like setAddr. The page names `tacit.gwei.limo` among the hosts to sign in on, so the name
    belongs with the multisig before this version is deployed (until it does, one account can repoint it). Until the
    record is set, tacit.gwei.limo keeps serving the earlier version, whose page does not show a "newer version" link on
    that host.
-7. **Read back.** `--plan` reports `done` once `tacit.wei` and `tacit.gwei` resolve to the successor and
+8. **Read back.** `--plan` reports `done` once `tacit.wei` and `tacit.gwei` resolve to the successor and
    `https://tacit.wei.limo/` and `https://tacit.gwei.limo/` serve bytes with the manifest's SHA-256, and prints the `deployment` record for `manifest.json`. Then
    `node deploy/check-deployment.mjs https://ethereum-rpc.publicnode.com <successor> dapp/page.min.html`, verify the
    successor on Sourcify and Etherscan (solc 0.8.30, 200 runs, prague), and check the "newer version" link on
@@ -67,10 +78,12 @@ raised on purpose (the contract takes any number of chunks), and this section's 
    (only those exact values). Do the same for `https://tacit.gwei.limo/`, whose gateway sends frame headers of its own: a
    second, different `X-Frame-Options` there would make browsers ignore it, so look for two values. Pages served by an
    ERC-8244 host (`<addr>.w4eth.io`) cannot carry headers and rely on the page's own guard.
-7. **Record it** in `TACIT-WEI.deployed.md`: the successor, its chunks, the page's sha256 and keccak, and the multisig's
-   op ids and transactions.
+9. **Record it** in `TACIT-WEI.deployed.md`: the successor, its chunks, the page's sha256 and keccak, and the multisig's
+   op ids and transactions. The "About the page itself" table in the tacit repository's `docs/EVM-POOL.md` names the
+   live version's size and sha256: update it there too, so a reader checking `html()` against the docs gets the version
+   the name now serves.
 
-Rehearse steps 4 and 5 on an anvil fork first (two owners impersonated: `execute`, the delay passed with
+Rehearse steps 5 and 6 on an anvil fork first (two owners impersonated: `execute`, the delay passed with
 `evm_increaseTime`, then `executeQueued`), and confirm `successor()`, `resolve` and `html()` there.
 
 To go back, the multisig points `tacit.wei` at an earlier version: every version still serves its own page. Renouncing

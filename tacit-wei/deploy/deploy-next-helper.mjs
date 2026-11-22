@@ -197,7 +197,7 @@ async function status() {
   const codes = await rpcBatch(finalChunks.map((a) => ['eth_getCode', [a, 'latest']]));
   const missing = finalChunks.map((a, i) => (lc(codes[i] || '') === lc(runtimes[i]) ? -1 : i)).filter((i) => i !== -1);
   const wrong = missing.filter((i) => (codes[i] || '0x').length > 2);
-  const head = { base, steward: OPS, page: { bytes: manifest.bytes, sha256: manifest.sha256, keccak256: pageHash }, predicted, salt, chunks: finalChunks.map((a, i) => ({ n: i + 1, address: a, reused: !!reused[i], onchain: !missing.includes(i) })) };
+  const head = { base, steward: OPS, page: { bytes: manifest.bytes, sha256: manifest.sha256, keccak256: pageHash }, predicted, salt, initcodeHash, chunks: finalChunks.map((a, i) => ({ n: i + 1, address: a, reused: !!reused[i], onchain: !missing.includes(i) })) };
   if (wrong.length) return { ...head, step: 'stop', error: `something other than its chunk is at ${wrong.map((i) => finalChunks[i]).join(', ')}` };
   if (missing.length) return { ...head, step: 'chunks', todo: missing.map((i) => i + 1), note: 'deploy these from any funded wallet (the served page); deployNext is offered once all are on chain' };
   const succ = addrOf(await view(base, 'successor()'));
@@ -257,7 +257,7 @@ if (MODE === 'sim') {
   };
   const nonce = Number(BigInt(await view(OPS, 'nonce()')));
   console.log(JSON.stringify({
-    base, steward, successorSteward: OPS, predicted, salt, page: { bytes: manifest.bytes, keccak256: pageHash },
+    base, steward, successorSteward: OPS, predicted, salt, initcodeHash, page: { bytes: manifest.bytes, keccak256: pageHash },
     chunks: { total: finalChunks.length, reused: reused.filter(Boolean).length, toDeploy: needsDeploy.length, overridden: Object.keys(override).length },
     deployNext: { to: base, calldataBytes: (deployNextData.length - 2) / 2, gasFromMultisig: await est(tx, override), gasFromAnotherAccount: await est({ ...tx, from: CREATEX }, override),
       opIdAtNextNonce: await word(OPS, hashCall(base, deployNextData, nonce)), nonce },

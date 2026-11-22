@@ -53,34 +53,63 @@ const RL = (() => {
     const host = url.slice(8).split('/')[0].replace(/:\d+$/, '').toLowerCase();
     return /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)+$/.test(host) && !/\.\d+$/.test(host) && !LOCAL_TLD.test(host);
   };
-  // The relays for a spend: the page's own first (its URL and pinned address), then up to ASKED − 1 drawn from the listed
-  // ones that are usable, one entry per URL and address, never one for the page's own URL (an entry made by someone else
-  // for it cannot pin it to another address).
-  function relaysFor(own, listed, random = Math.random) {
-    const mine = own ? lc(own.url.replace(/\/+$/, '')) : null, seen = new Set(), pool = [];
+  // Every relay known for a spend: the page's own first (its URL and pinned address), then the listed ones that are usable,
+  // one entry per URL and address, never one for the page's own URL (an entry made by someone else for it cannot pin it to
+  // another address).
+  function known(own, listed) {
+    const mine = own ? lc(own.url.replace(/\/+$/, '')) : null, seen = new Set(), out = own ? [{ url: own.url.replace(/\/+$/, ''), relayer: own.relayer, own: true }] : [];
     for (const e of listed) {
       const url = String(e.url || '').replace(/\/+$/, '');
       if (!usable(url) || !isAddr(e.relayer) || lc(url) === mine) continue;
       const k = `${lc(url)}|${lc(e.relayer)}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      pool.push({ url, relayer: e.relayer });
+      out.push({ url, relayer: e.relayer });
     }
-    const out = own ? [{ url: own.url.replace(/\/+$/, ''), relayer: own.relayer, own: true }] : [];
+    return out;
+  }
+  // The person's choices name a relay by its URL, and the page's own as 'own' (its URL follows the route in use).
+  const pickKey = (e) => (e?.own ? 'own' : lc(String(e?.url ?? '')));
+  // The relays for a spend: of those known, less the ones the person set aside (`avoid`), the page's own and the ones they
+  // prefer, then drawn from the rest, up to ASKED.
+  function relaysFor(own, listed, random = Math.random, { prefer = [], avoid = [] } = {}) {
+    const no = new Set(avoid.map(lc)), yes = new Set(prefer.map(lc)), all = known(own, listed).filter((e) => !no.has(pickKey(e)));
+    const out = all.filter((e) => e.own || yes.has(pickKey(e))).slice(0, ASKED), pool = all.filter((e) => !out.includes(e));
     while (out.length < ASKED && pool.length) out.push(...pool.splice(Math.min(pool.length - 1, Math.floor(random() * pool.length)), 1));
     return out;
   }
-  // [{ e, q }] → the one to use first, then the others by fee.
+  // [{ e, q }] → the one to use first, then the others by fee. A preferred relay (`prefer`) among the near ones is drawn
+  // from alone.
   const feeOf = (x) => BigInt(x.q.fee);
-  function orderQuotes(quotes, random = Math.random) {
+  function orderQuotes(quotes, random = Math.random, prefer = []) {
     if (quotes.length < 2) return [...quotes];
-    const byFee = [...quotes].sort((a, b) => (feeOf(a) < feeOf(b) ? -1 : feeOf(a) > feeOf(b) ? 1 : 0)), low = feeOf(byFee[0]);
-    const near = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT));
+    const byFee = [...quotes].sort((a, b) => (feeOf(a) < feeOf(b) ? -1 : feeOf(a) > feeOf(b) ? 1 : 0)), low = feeOf(byFee[0]), yes = new Set(prefer.map(lc));
+    const close = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT)), mine = close.filter((x) => yes.has(pickKey(x.e))), near = mine.length ? mine : close;
     const odds = (x) => { const f = feeOf(x), r = f === 0n ? 1 : Number((low * 1_000_000n) / f) / 1e6; return r * r; };
     let draw = random() * near.reduce((t, x) => t + odds(x), 0), pick = near[near.length - 1];
     for (const x of near) { draw -= odds(x); if (draw < 0) { pick = x; break; } }
     return [pick, ...byFee.filter((x) => x !== pick)];
   }
+  // What failed is passed over for an hour, kept in this browser (hosts and addresses, all public): relays by URL ('r'),
+  // relays whose private-route key could not be shown ('k'), forwarders ('f') and bundlers ('b'); with when each relay last
+  // answered. A list whose every entry failed is tried whole, so this never leaves nothing to ask. Without browser storage
+  // each memory() keeps its own.
+  const DOWN_MS = 3_600_000, MEM = 'tacit-pay-down-v1';
+  function memory(now = () => Date.now()) {
+    let own = {};
+    const get = () => { try { const o = JSON.parse(localStorage.getItem(MEM) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch { return own; } };
+    const put = (o) => { const t = now(); o = Object.fromEntries(Object.entries(o).filter(([k, v]) => Number.isFinite(v) && (k[0] === 'o' || v > t)).slice(-120)); try { localStorage.setItem(MEM, JSON.stringify(o)); } catch { own = o; } };
+    const key = (kind, id) => `${kind} ${lc(String(id))}`;
+    const down = (kind, id) => (get()[key(kind, id)] ?? 0) > now();
+    const mark = (kind, id) => { const o = get(), k = key(kind, id); delete o[k]; o[k] = now() + DOWN_MS; put(o); };
+    // a relay's answer is noted once a minute at most
+    const up = (kind, id) => { const o = get(), k = key(kind, id), s = key('o', id); if (!(k in o) && (kind !== 'r' || now() - (o[s] ?? 0) < 60_000)) return; delete o[k]; if (kind === 'r') { delete o[s]; o[s] = now(); } put(o); };
+    const live = (list, kind, idOf = (x) => x) => { const l = list.filter((x) => !down(kind, idOf(x))); return l.length ? l : [...list]; };
+    return { down, mark, up, live, last: (id) => get()[key('o', id)] ?? 0 };
+  }
+  // The last quote each relay gave in this visit (null: it did not give one), for the list of relays.
+  const HEARD = new Map();
+  const heard = (url, fee) => HEARD.set(lc(url), { fee: fee == null ? null : String(fee), at: Date.now() });
   // A quote from each relay (`ask(e)` → a quote or null) without waiting on the slowest: those that answered GRACE_MS
   // after the first, or all of them once the last has answered or failed.
   function collectQuotes(entries, ask, graceMs = GRACE_MS) {
@@ -95,5 +124,5 @@ const RL = (() => {
       }
     });
   }
-  return { decodeList, readRegistry, relaysFor, orderQuotes, collectQuotes, usable };
+  return { decodeList, readRegistry, known, relaysFor, orderQuotes, collectQuotes, usable, pickKey, memory, heard, heardOf: (url) => HEARD.get(lc(url)) || null };
 })();

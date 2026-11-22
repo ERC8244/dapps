@@ -738,7 +738,8 @@ const TC = (() => {
   }
   function bundlerSet(urls, fetchImpl = (u, i) => fetch(u, i)) {
     const clients = urls.map((u) => bundlerClient(u, fetchImpl));
-    let took = null;
+    // `took`: the bundler that took the operation; `priced`: the one whose gas limits it carries
+    let took = null, priced = null;
     const passable = (method, params, e) => {
       if (READS.has(method)) return true;
       if (method === 'eth_estimateUserOperationGas') return !!estimationUnavailable(e, params?.[0]);
@@ -748,6 +749,7 @@ const TC = (() => {
     };
     return {
       urls,
+      carrier: () => urls[took ?? priced] ?? null,
       async request(method, params) {
         const order = clients.map((_, i) => i);
         if (took !== null) order.unshift(...order.splice(took, 1));
@@ -756,6 +758,7 @@ const TC = (() => {
           let r;
           try { r = await clients[i].request(method, params); } catch (e) { if (first === null) { first = e; if (!passable(method, params, e)) throw e; } else if (!refusal && e?.kind === 'rpc' && !(method === 'pimlico_getUserOperationGasPrice' && e.code === -32601)) refusal = e; continue; }
           if (method === 'eth_estimateUserOperationGas' && !completeEstimate(r, params?.[0])) { if (first === null) first = Object.assign(new Error('the bundler gave no gas limits for the paymaster’s part of the operation'), { kind: 'incomplete-estimate' }); continue; }
+          if (method === 'eth_estimateUserOperationGas') priced = i;
           if (method === 'eth_sendUserOperation') took = i;
           if (r == null && READS.has(method)) { unknown = true; if (i === took) return r; continue; }
           return r;
@@ -1145,7 +1148,8 @@ const TC = (() => {
       return { hash, receive: pool.denomination, at: sentAt, spent: (await settled(pool, note, sentAt)) && (await paid(pool, note, recipient, hash)) };
     }
     // Gas from the note through the paymaster: one operation from a throwaway account; the wallet signs and sends nothing.
-    // `confirm` is asked once the fee is fixed; a fee that moved up while it was read is asked again.
+    // `confirm` is asked once the fee is fixed; a fee that moved up while it was read is asked again. Both it and the result
+    // name the paymaster and the bundler (`via`: the one that priced it, then the one that took it).
     // `swap` (a withdrawal that arrives as a token): { route(amountIn) → { to, value, data, out, limit } paying the token to
     // its address, gas }: the note pays its own one-time account (its key from the note), whose call swaps exactly what the
     // note leaves after the fee; `recipient` is then where the token goes, and only for the words shown.
@@ -1165,7 +1169,7 @@ const TC = (() => {
       if (!vetted.length) throw new Error('Gas from the note is not available right now, so nothing was sent. Try again in a minute, or pay the gas from your wallet.');
       let last = null;
       for (const pm of vetted) {
-        try { return { ...(await through(pm.address)), paymaster: pm.address }; } catch (e) {
+        try { return { ...(await through(pm.address)), paymaster: pm.address, via: client.carrier() }; } catch (e) {
           if (!(e?.refused || e?.pmFail) || e?.cancelled) throw e;
           last = e; onStep({ step: 'paymaster', failed: pm.address });
         }
@@ -1188,7 +1192,7 @@ const TC = (() => {
         const ask = !!confirm && (approved == null || prepared.fee > approved.fee || (route && route.limit < approved.limit));
         if (ask || again === 0) onStep({ step: 'quote', fee: prepared.fee, receive, route });
         if (ask) {
-          if (!(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination, route }))) throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+          if (!(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination, route, paymaster: PM, via: client.carrier() }))) throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
           approved = { fee: prepared.fee, limit: route?.limit ?? 0n };
         }
         const sentAt = await head();

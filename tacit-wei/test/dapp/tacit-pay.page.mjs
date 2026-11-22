@@ -85,15 +85,15 @@ const answer = (host, {method, params}) => {
   // read: these two say they are on another chain (registry-wrong.example is listed for Ethereum), the rest on Ethereum.
   if (method === 'eth_chainId') return ['example.org', 'registry-wrong.example'].includes(host) ? '0x2105' : '0x1';
   const to = method === 'eth_call' ? params[0].to.toLowerCase() : '', data = method === 'eth_call' ? params[0].data : '';
-  // TacitPayRegistry.read([rpc, logs, keepers, bundler, leaves, forwarders, mirrors, tmirrors, wc, wcpid, copies, paymasters, gateways], [1 ×6, 0 ×5, 1, 1]), and only that.
+  // TacitPayRegistry.read([rpc, logs, keepers, bundler, leaves, forwarders, mirrors, tmirrors, wc, wcpid, copies, paymasters, gateways, nostr], [1 ×6, 0 ×5, 1, 1, 0]), and only that.
   if (to === TPR && data.startsWith('0x78f142e8')) {
     const [keys, ids] = coder.decode(['bytes32[]', 'uint256[]'], '0x' + data.slice(10)), names = keys.map((k) => Buffer.from(k.slice(2), 'hex').toString().replace(/\0+$/, ''));
-    if (names.join() !== 'rpc,logs,keepers,bundler,leaves,forwarders,mirrors,tmirrors,wc,wcpid,copies,paymasters,gateways' || ids.join() !== '1,1,1,1,1,1,0,0,0,0,0,1,1') throw {rpcError: {code: 3, message: 'execution reverted'}};
+    if (names.join() !== 'rpc,logs,keepers,bundler,leaves,forwarders,mirrors,tmirrors,wc,wcpid,copies,paymasters,gateways,nostr' || ids.join() !== '1,1,1,1,1,1,0,0,0,0,0,1,1,0') throw {rpcError: {code: 3, message: 'execution reverted'}};
     return coder.encode(['uint256', 'string[][]'], [5n, [['https://registry-wrong.example', 'https://registry-eth.example', 'http://insecure.example', 'https://ethereum-rpc.publicnode.com'], ['https://registry-logs.example'],
       ['http://insecure.example', 'https://registry-keepers.example/?x=1', 'https://registry-keepers.example'], ['http://insecure.example', 'https://registry-bundler.example/v1/rpc'], ['https://registry-leaves.example'],
       ['https://registry-fwd.example/path', 'https://registry-fwd.example'], ['https://registry-mirror.example/ipfs/x', 'https://registry-mirror.example/evm-pool/'], ['https://registry-tmirror.example/', 'https://registry-tmirror.example/prover.wasm'],
       ['wss://relay.walletconnect.org/path', 'wss://relay.walletconnect.org'], ['NOT-AN-ID', '0123456789abcdef0123456789abcdef'], ['http://insecure.example', 'https://registry-copy.example'],
-      ['http://insecure.example', '0x2222222222222222222222222222222222222222 kohaku-v1', 'not an entry', '0x2222222222222222222222222222222222222222 kohaku-v1'], ['not a gateway']]]);
+      ['http://insecure.example', '0x2222222222222222222222222222222222222222 kohaku-v1', 'not an entry', '0x2222222222222222222222222222222222222222 kohaku-v1'], ['not a gateway'], ['ws://plain.example', 'wss://nostr.example/path', 'wss://nostr.example']]]);
   }
   if ([WNS, GNS, R_DIRECT].includes(to) && data.startsWith('0x59d1d43c')) {
     const rec = RECORDS['0x' + data.slice(10, 74)];
@@ -133,6 +133,8 @@ const answer = (host, {method, params}) => {
 const server = http.createServer((q, r) => { r.writeHead(200, {'content-type': 'text/html; charset=utf-8'}); r.end(HTML); }).listen(0);
 const browser = await chromium.launch();
 const ctx = await browser.newContext({permissions: ['clipboard-read', 'clipboard-write']});
+// The Nostr relays the page falls back to when no forwarder answers (the built-in ones and the registry mock's) are not reached from here.
+await ctx.routeWebSocket(/^wss:\/\/(nostr\.example|relay\.primal\.net|nos\.lol|offchain\.pub)\b/, (ws) => ws.close());
 await ctx.addInitScript(`(() => { const g = Storage.prototype.getItem; Storage.prototype.getItem = function (k) { const v = g.call(this, k); return v == null && typeof k === 'string' && k.startsWith('tacit-wei-pq-later:') && !window.__pqAsk ? String(Date.now()) : v; }; })();`);   // the post-quantum offer is put off, as after "Not now" (a test sets window.__pqAsk to see it)
 await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
   const req = route.request(), url = new URL(req.url());
@@ -438,7 +440,7 @@ console.log('the onchain registry of public nodes');
 await p.waitForFunction(() => !!localStorage.getItem('tacit-wei-registry-v1'), null, {timeout: 20e3}).catch(() => {});
 const reg = JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-wei-registry-v1') || 'null'));
 ok(!!reg && reg.rpc[1][0] === 'https://registry-logs.example' && reg.rpc[1].includes('https://registry-eth.example') && Object.keys(reg.rpc).join() === '1', 'the registry’s lists for Ethereum are read at load, through the page’s own nodes, and kept, its log nodes first', JSON.stringify(reg?.rpc));
-ok(reg.flags === '5' && JSON.stringify(reg.paymasters) === '["0x2222222222222222222222222222222222222222 kohaku-v1"]' && JSON.stringify(reg.bundler) === '["https://registry-bundler.example/v1/rpc"]' && JSON.stringify(reg.leaves) === '["https://registry-leaves.example"]' && JSON.stringify(reg.forwarders) === '["https://registry-fwd.example"]' && JSON.stringify(reg.tmirrors) === '["https://registry-tmirror.example/prover.wasm"]', 'and its switches, bundlers, deposit-history caches, forwarders (origins only) and prover mirrors (whole files), each by its shape; paymasters only as "<address> <interface>"', JSON.stringify(reg));
+ok(reg.flags === '5' && JSON.stringify(reg.paymasters) === '["0x2222222222222222222222222222222222222222 kohaku-v1"]' && JSON.stringify(reg.bundler) === '["https://registry-bundler.example/v1/rpc"]' && JSON.stringify(reg.leaves) === '["https://registry-leaves.example"]' && JSON.stringify(reg.forwarders) === '["https://registry-fwd.example"]' && JSON.stringify(reg.tmirrors) === '["https://registry-tmirror.example/prover.wasm"]' && JSON.stringify(reg.nostr) === '["wss://nostr.example"]', 'and its switches, bundlers, deposit-history caches, forwarders (origins only), prover mirrors (whole files) and Nostr relays (wss:// hosts), each by its shape; paymasters only as "<address> <interface>"', JSON.stringify(reg));
 ok(!reg.rpc[1].includes('http://insecure.example') && reg.rpc[1].filter((u) => u === 'https://ethereum-rpc.publicnode.com').length === 1, 'an http entry is dropped');
 ok(reg.keepers?.[1] === 'https://registry-keepers.example' && Object.keys(reg.keepers).join() === '1', 'the registry names the keepers’ host, its first plain https host (no http or query)', JSON.stringify(reg.keepers));
 ok(JSON.stringify(reg.mirrors) === '["https://registry-mirror.example/evm-pool/"]' && reg.wc === 'wss://relay.walletconnect.org' && reg.wcpid === '0123456789abcdef0123456789abcdef', 'and the proving key’s mirrors (folders), the WalletConnect relay (a host) and its project id, each by its shape', JSON.stringify([reg.mirrors, reg.wc, reg.wcpid]));
@@ -498,6 +500,31 @@ await closeCard();
 await p.click('#settings-open');
 await p.click('#e-reset');
 ok(JSON.stringify(JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1')))) === '{}', 'and the defaults come back');
+
+console.log('the relays under Endpoints');
+{
+  const picks = async () => JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-relay-pick-v1') || '{}'));
+  const ends = async () => JSON.parse(await p.evaluate(() => localStorage.getItem('tacit-pay-endpoints-v1') || '{}'));
+  await p.click('#settings-open');
+  await p.waitForSelector('#e-rl .kv', {timeout: 20e3}).catch(() => {});
+  const row = (await p.textContent('#e-rl').catch(() => '')).replace(/\s+/g, ' ');
+  ok(/Relays/.test(row) && /the Tacit relay/.test(row) && /answering · fee [\d.<]+ ETH|not answering|not asked yet/.test(row) && !!(await p.$('#e-rl [title*="."]')), 'each relay is listed by name with whether it answers and its fee, its host on hover', row.slice(0, 160));
+  await p.click('#e-rl [data-rl-pref="own"]');
+  await p.waitForFunction(() => /Preferred/.test(document.querySelector('#e-rl')?.textContent || ''), null, {timeout: 5e3}).catch(() => {});
+  ok(JSON.stringify((await picks()).prefer) === '["own"]' && (await p.getAttribute('#e-rl [data-rl-pref="own"]', 'aria-pressed')) === 'true', 'Prefer is kept in this browser and shown pressed');
+  await p.click('#e-rl [data-rl-off="own"]');
+  await p.waitForFunction(() => /last relay/.test(document.querySelector('#e-rl')?.textContent || ''), null, {timeout: 5e3}).catch(() => {});
+  ok(/That is the last relay\. With none, sends and withdrawals from your balance go from your wallet/.test(await p.textContent('#e-rl')) && !(await picks()).avoid?.length && !('relay' in (await ends()) && Object.keys((await ends()).relay).length), 'setting aside the last one first says that sends then go from the wallet, and changes nothing yet');
+  await p.click('#e-rl .note [data-rl-off="own"]');
+  await p.waitForFunction(() => !document.querySelector('#sheet-settings')?.open, null, {timeout: 5e3}).catch(() => {});
+  ok((await ends()).relay?.[1] === '' && JSON.stringify((await picks()).avoid) === '["own"]' && JSON.stringify((await picks()).prefer) === '[]', 'pressed again, the relay is off for Ethereum (as "none" is) and the choice is kept', JSON.stringify([await ends(), await picks()]));
+  await p.click('#settings-open');
+  await p.waitForSelector('#e-rl .kv', {timeout: 20e3}).catch(() => {});
+  ok(/No relay is asked: sends and withdrawals from your balance go from your wallet/.test(await p.textContent('#e-rl')) && /Use it/.test(await p.textContent('#e-rl')), 'the list then says no relay is asked, and offers each one back');
+  await p.click('#e-rl [data-rl-off="own"]');
+  await p.waitForFunction(() => !document.querySelector('#sheet-settings')?.open, null, {timeout: 5e3}).catch(() => {});
+  ok(!(1 in ((await ends()).relay || {})) && !(await picks()).avoid.length, 'Use it turns the relay on again');
+}
 
 console.log('a wallet that is connected but has not signed in');
 {

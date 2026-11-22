@@ -66,6 +66,10 @@ const keyRun = async (relayer, mode) => {
     if (!/\/key$/.test(String(u))) throw new Error('unexpected request ' + u);
     keyAsks.push(u);
     if (mode === 'unreachable') throw new Error('network down');
+    // a proxy's own page in front of a forwarder (no JSON): the route is in trouble, not the relay
+    if (mode === 'proxy-502') return { ok: false, status: 502, json: async () => { throw new SyntaxError('Unexpected token <'); } };
+    // the forwarder's own 502 for a relay it has no key for
+    if (mode === 'no-key-502') return { ok: false, status: 502, json: async () => ({ error: 'the relay has no gateway key to show' }) };
     return { ok: true, json: async () => ({ docs: [] }) };       // reachable, and it has no key for this relay
   };
   ctx.setTimeout = (f, ms) => { timers.push(ms); return 0; };
@@ -83,11 +87,20 @@ await test('when no forwarder could be reached, the next quote asks for the rela
   eq(r.asksAfterOne > 0 && r.asksAfterTwo > r.asksAfterOne, true, `asked again: ${r.asksAfterOne} then ${r.asksAfterTwo} key requests`);
   eq(r.timers.includes(600_000), false, 'and no ten-minute wait was set');
 });
-await test('when a forwarder answered that it has no key for the relay, the relay is passed over for ten minutes', async () => {
+await test('when a forwarder answered that it has no key for the relay, the relay is passed over for an hour (kept as a time, not a timer)', async () => {
   const r = await keyRun('0x' + '36'.repeat(20), 'no-key');
   eq(/could not be shown and checked/.test(r.one?.message), true, 'the first is refused: ' + r.one);
   eq(r.asksAfterOne > 0 && r.asksAfterTwo === r.asksAfterOne, true, `not asked again: ${r.asksAfterOne} then ${r.asksAfterTwo} key requests`);
-  eq(r.timers.filter((ms) => ms === 600_000).length, 1, 'with the ten-minute wait set once');
+  eq(r.timers.includes(600_000), false, 'and no ten-minute timer is what holds it');
+});
+await test('a forwarder\'s own 502 for a relay with no key counts as an answer: the relay is passed over, not asked again at every quote', async () => {
+  const r = await keyRun('0x' + '37'.repeat(20), 'no-key-502');
+  eq(/could not be shown and checked/.test(r.one?.message), true, 'the first is refused: ' + r.one);
+  eq(r.asksAfterOne > 0 && r.asksAfterTwo === r.asksAfterOne, true, `not asked again: ${r.asksAfterOne} then ${r.asksAfterTwo} key requests`);
+});
+await test('a proxy\'s 502 with no forwarder words in it is the route in trouble: the next quote asks again', async () => {
+  const r = await keyRun('0x' + '38'.repeat(20), 'proxy-502');
+  eq(r.asksAfterOne > 0 && r.asksAfterTwo > r.asksAfterOne, true, `asked again: ${r.asksAfterOne} then ${r.asksAfterTwo} key requests`);
 });
 
 // a wallet that answers eth_signTypedData_v4 with `key`'s signature, whatever account it is asked for

@@ -2386,34 +2386,63 @@ const RL = (() => {
     const host = url.slice(8).split('/')[0].replace(/:\d+$/, '').toLowerCase();
     return /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)+$/.test(host) && !/\.\d+$/.test(host) && !LOCAL_TLD.test(host);
   };
-  // The relays for a spend: the page's own first (its URL and pinned address), then up to ASKED − 1 drawn from the listed
-  // ones that are usable, one entry per URL and address, never one for the page's own URL (an entry made by someone else
-  // for it cannot pin it to another address).
-  function relaysFor(own, listed, random = Math.random) {
-    const mine = own ? lc(own.url.replace(/\/+$/, '')) : null, seen = new Set(), pool = [];
+  // Every relay known for a spend: the page's own first (its URL and pinned address), then the listed ones that are usable,
+  // one entry per URL and address, never one for the page's own URL (an entry made by someone else for it cannot pin it to
+  // another address).
+  function known(own, listed) {
+    const mine = own ? lc(own.url.replace(/\/+$/, '')) : null, seen = new Set(), out = own ? [{ url: own.url.replace(/\/+$/, ''), relayer: own.relayer, own: true }] : [];
     for (const e of listed) {
       const url = String(e.url || '').replace(/\/+$/, '');
       if (!usable(url) || !isAddr(e.relayer) || lc(url) === mine) continue;
       const k = `${lc(url)}|${lc(e.relayer)}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      pool.push({ url, relayer: e.relayer });
+      out.push({ url, relayer: e.relayer });
     }
-    const out = own ? [{ url: own.url.replace(/\/+$/, ''), relayer: own.relayer, own: true }] : [];
+    return out;
+  }
+  // The person's choices name a relay by its URL, and the page's own as 'own' (its URL follows the route in use).
+  const pickKey = (e) => (e?.own ? 'own' : lc(String(e?.url ?? '')));
+  // The relays for a spend: of those known, less the ones the person set aside (`avoid`), the page's own and the ones they
+  // prefer, then drawn from the rest, up to ASKED.
+  function relaysFor(own, listed, random = Math.random, { prefer = [], avoid = [] } = {}) {
+    const no = new Set(avoid.map(lc)), yes = new Set(prefer.map(lc)), all = known(own, listed).filter((e) => !no.has(pickKey(e)));
+    const out = all.filter((e) => e.own || yes.has(pickKey(e))).slice(0, ASKED), pool = all.filter((e) => !out.includes(e));
     while (out.length < ASKED && pool.length) out.push(...pool.splice(Math.min(pool.length - 1, Math.floor(random() * pool.length)), 1));
     return out;
   }
-  // [{ e, q }] → the one to use first, then the others by fee.
+  // [{ e, q }] → the one to use first, then the others by fee. A preferred relay (`prefer`) among the near ones is drawn
+  // from alone.
   const feeOf = (x) => BigInt(x.q.fee);
-  function orderQuotes(quotes, random = Math.random) {
+  function orderQuotes(quotes, random = Math.random, prefer = []) {
     if (quotes.length < 2) return [...quotes];
-    const byFee = [...quotes].sort((a, b) => (feeOf(a) < feeOf(b) ? -1 : feeOf(a) > feeOf(b) ? 1 : 0)), low = feeOf(byFee[0]);
-    const near = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT));
+    const byFee = [...quotes].sort((a, b) => (feeOf(a) < feeOf(b) ? -1 : feeOf(a) > feeOf(b) ? 1 : 0)), low = feeOf(byFee[0]), yes = new Set(prefer.map(lc));
+    const close = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT)), mine = close.filter((x) => yes.has(pickKey(x.e))), near = mine.length ? mine : close;
     const odds = (x) => { const f = feeOf(x), r = f === 0n ? 1 : Number((low * 1_000_000n) / f) / 1e6; return r * r; };
     let draw = random() * near.reduce((t, x) => t + odds(x), 0), pick = near[near.length - 1];
     for (const x of near) { draw -= odds(x); if (draw < 0) { pick = x; break; } }
     return [pick, ...byFee.filter((x) => x !== pick)];
   }
+  // What failed is passed over for an hour, kept in this browser (hosts and addresses, all public): relays by URL ('r'),
+  // relays whose private-route key could not be shown ('k'), forwarders ('f') and bundlers ('b'); with when each relay last
+  // answered. A list whose every entry failed is tried whole, so this never leaves nothing to ask. Without browser storage
+  // each memory() keeps its own.
+  const DOWN_MS = 3_600_000, MEM = 'tacit-pay-down-v1';
+  function memory(now = () => Date.now()) {
+    let own = {};
+    const get = () => { try { const o = JSON.parse(localStorage.getItem(MEM) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch { return own; } };
+    const put = (o) => { const t = now(); o = Object.fromEntries(Object.entries(o).filter(([k, v]) => Number.isFinite(v) && (k[0] === 'o' || v > t)).slice(-120)); try { localStorage.setItem(MEM, JSON.stringify(o)); } catch { own = o; } };
+    const key = (kind, id) => `${kind} ${lc(String(id))}`;
+    const down = (kind, id) => (get()[key(kind, id)] ?? 0) > now();
+    const mark = (kind, id) => { const o = get(), k = key(kind, id); delete o[k]; o[k] = now() + DOWN_MS; put(o); };
+    // a relay's answer is noted once a minute at most
+    const up = (kind, id) => { const o = get(), k = key(kind, id), s = key('o', id); if (!(k in o) && (kind !== 'r' || now() - (o[s] ?? 0) < 60_000)) return; delete o[k]; if (kind === 'r') { delete o[s]; o[s] = now(); } put(o); };
+    const live = (list, kind, idOf = (x) => x) => { const l = list.filter((x) => !down(kind, idOf(x))); return l.length ? l : [...list]; };
+    return { down, mark, up, live, last: (id) => get()[key('o', id)] ?? 0 };
+  }
+  // The last quote each relay gave in this visit (null: it did not give one), for the list of relays.
+  const HEARD = new Map();
+  const heard = (url, fee) => HEARD.set(lc(url), { fee: fee == null ? null : String(fee), at: Date.now() });
   // A quote from each relay (`ask(e)` → a quote or null) without waiting on the slowest: those that answered GRACE_MS
   // after the first, or all of them once the last has answered or failed.
   function collectQuotes(entries, ask, graceMs = GRACE_MS) {
@@ -2428,7 +2457,7 @@ const RL = (() => {
       }
     });
   }
-  return { decodeList, readRegistry, relaysFor, orderQuotes, collectQuotes, usable };
+  return { decodeList, readRegistry, known, relaysFor, orderQuotes, collectQuotes, usable, pickKey, memory, heard, heardOf: (url) => HEARD.get(lc(url)) || null };
 })();
 // The step a spend reports when another payment took its place in the tree first and it is proved again.
 const RACED_STEP = 'another payment landed first, proving again';
@@ -2626,12 +2655,15 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // The relay in use, { url, relayer } (`cur`): drawn when first needed for the reads of this visit, and again for each
   // spend among those whose quotes pass (below); held fixed for the length of one spend (`hold`), so a quote, its proof and
   // the relay it goes to are one relay's. `chain.relays()` lists them (the page's own first); with none, the one `keeper`.
+  // A relay that fails or refuses is passed over for an hour (RL.memory, kept in this browser); one the person set aside is
+  // no longer listed by `chain.relays()`, and one in use is let go once it is not.
   let cur = null, hold = false, chose = 0, carried = null;
-  const BAD = new Map();
-  const cands = async () => { const l = chain.relays ? await chain.relays().catch(() => []) : []; return l.length ? l : [{ url: keeper, relayer: chain.relayer === undefined ? RELAYERS[chain.chainId] : chain.relayer, own: true }]; };
-  const okRl = (e) => (BAD.get(e.url) ?? 0) < Date.now();
-  const rotate = (e) => { BAD.set(e.url, Date.now() + 300_000); if (cur?.url === e.url && !hold) cur = null; };
-  const readRelay = async () => { const all = await cands(), l = all.filter(okRl), from = l.length ? l : all; return (cur ||= from[Math.floor(Math.random() * from.length)]); };
+  const MEM = RL.memory(), byUrl = (e) => e.url;
+  const ownRelay = () => ({ url: keeper, relayer: chain.relayer === undefined ? RELAYERS[chain.chainId] : chain.relayer, own: true });
+  const cands = async () => { const l = chain.relays ? await chain.relays().catch(() => []) : []; return l.length ? l : [ownRelay()]; };
+  const rotate = (e) => { MEM.mark('r', e.url); if (cur?.url === e.url && !hold) cur = null; };
+  const relaysNow = async () => { const all = await cands(); if (cur && !hold && !all.some((e) => e.url === cur.url)) cur = null; return all; };
+  const readRelay = async () => { const from = MEM.live(await relaysNow(), 'r', byUrl); return (cur ||= from[Math.floor(Math.random() * from.length)]); };
   const keeperFetch = async (path, { ms, rl = null, ...init } = {}) => {
     if (!keeper) throw new Error('no relay for this chain');
     const e = rl || cur || await readRelay();
@@ -2639,6 +2671,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
       for (let i = 0; ; i++) {
         const r = await (chain.relayFetch || fetch)(e.url + path, { ...init, signal: timeoutSignal(ms ?? (path === '/relay' ? 180_000 : init.method === 'POST' ? 30_000 : 10_000)) }, e.relayer);
         const post = init.method === 'POST';
+        if (r.status < 500 && r.status !== 429) MEM.up('r', e.url);
         if (r.status !== 429 || i >= (post ? 4 : 1)) return r;
         await sleep(Math.min(post ? 30 : 5, Number(r.headers.get('retry-after')) || 3) * 1000 * (0.5 + Math.random()));
       }
@@ -2675,13 +2708,14 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   // of the first), vetted each against its own pinned address and the fee limits, and one drawn among the cheapest. `age`: a
   // choice this young is kept (its relay quoted again alone), so a form's refreshes do not ask every relay; `bind`: the
   // relay is held until the spend ends.
+  const quoteOf = (e, gas) => keeperGet(qpath(gas), undefined, e).then((q) => { RL.heard(e.url, q.fee); return q; }, (x) => { RL.heard(e.url, null); throw x; });
   async function choose(gas, age, bind) {
-    if (cur && (hold || Date.now() - chose < age)) { const q = await keeperGet(qpath(gas), undefined, cur).catch((e) => { if (hold) throw e; return null; }); if (q) { hold ||= bind; return q; } }
-    const all = await cands(), live = all.filter(okRl);
+    const all = await relaysNow();
+    if (cur && (hold || Date.now() - chose < age)) { const q = await quoteOf(cur, gas).catch((e) => { if (hold) throw e; return null; }); if (q) { hold ||= bind; return q; } }
     let last = null;
-    const got = await RL.collectQuotes(live.length ? live : all, (e) => keeperGet(qpath(gas), undefined, e).catch((x) => { last = last?.vet ? last : x; throw x; }));
+    const got = await RL.collectQuotes(MEM.live(all, 'r', byUrl), (e) => quoteOf(e, gas).catch((x) => { last = last?.vet ? last : x; throw x; }));
     if (!got.length) throw last || new Error('No relay answered.');
-    const [pick] = RL.orderQuotes(got);
+    const [pick] = RL.orderQuotes(got, Math.random, chain.prefer?.() || []);
     cur = pick.e; chose = Date.now(); hold = bind;
     return pick.q;
   }
@@ -2693,7 +2727,7 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const relayed = (fn) => async (o) => {
     for (let n = 0; ; n++) {
       try { return await fn(o); }
-      catch (e) { if (!e?.refused || n >= 2 || !chain.relays || !cur) throw e; BAD.set(cur.url, Date.now() + 300_000); cur = null; if (early) early.dead = true; if (e.keep) o = { ...o, keep: e.keep }; }
+      catch (e) { if (!e?.refused || n >= 2 || !chain.relays || !cur) throw e; MEM.mark('r', cur.url); cur = null; if (early) early.dead = true; if (e.keep) o = { ...o, keep: e.keep }; }
       finally { hold = false; }
     }
   };
@@ -3808,9 +3842,9 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
     // The relay that carried the last payment ({ url, relayer }; once), and the one in use for reads.
     carried: () => { const x = carried; carried = null; return x; }, relay: () => cur,
     // Asks the relay to watch a deposit address, so what arrives there moves in without anyone asking.
-    // A deposit address is given to the page's own relay (or the one set under Endpoints), whose keeper takes it in; a relay
-    // drawn for a payment's quote is not bound to watch addresses.
-    watch: async (i = 0, classical = false) => keeperPost('/receive', { chainId: chain.chainId, npk: String(receiveKeys(keys, i, classical).npk), feeBps: RECEIVE_FEE_BPS }, (await cands()).find((e) => e.own) || null),
+    // A deposit address is given to the page's own relay (or the one set under Endpoints), whose keeper takes it in, even when
+    // the person set it aside for payments; a relay drawn for a payment's quote is not bound to watch addresses.
+    watch: async (i = 0, classical = false) => keeperPost('/receive', { chainId: chain.chainId, npk: String(receiveKeys(keys, i, classical).npk), feeBps: RECEIVE_FEE_BPS }, (await cands()).find((e) => e.own) || ownRelay()),
     // What waits at deposit addresses `indexes` ({ index → wei, or null where a node did not answer), and how many
     // addresses from the first are found again from the key alone: those up to the last one used, and a gap past it.
     boxBalances: () => boxW,
@@ -4206,21 +4240,22 @@ const vetted = (c) => (u) => {
 async function readRegistry() {
   if (Date.now() - REG.at < 3600_000) return;
   try {
-    // read([rpc, logs, keepers, bundler, leaves, forwarders, mirrors, tmirrors, wc, wcpid, copies, paymasters], [1 ×6, 0 ×5, 1]) → (flags, lists)
-    const keys = ['rpc', 'logs', 'keepers', 'bundler', 'leaves', 'forwarders', 'mirrors', 'tmirrors', 'wc', 'wcpid', 'copies', 'paymasters', 'gateways'];
-    const b = unhex(await quorum(TPR, READ_SEL + hex(abi([{ array: 'bytes32' }, { array: 'uint256' }], [keys.map((x) => big(cat(utf8(x), new Uint8Array(32 - x.length)))), keys.map((_, i) => (i < 6 || i >= 11 ? 1n : 0n))])), ownNodes(CHAINS[0])));
+    // read([rpc, logs, keepers, bundler, leaves, forwarders, mirrors, tmirrors, wc, wcpid, copies, paymasters, gateways, nostr], [1 ×6, 0 ×5, 1, 1, 0]) → (flags, lists)
+    const keys = ['rpc', 'logs', 'keepers', 'bundler', 'leaves', 'forwarders', 'mirrors', 'tmirrors', 'wc', 'wcpid', 'copies', 'paymasters', 'gateways', 'nostr'];
+    const b = unhex(await quorum(TPR, READ_SEL + hex(abi([{ array: 'bytes32' }, { array: 'uint256' }], [keys.map((x) => big(cat(utf8(x), new Uint8Array(32 - x.length)))), keys.map((_, i) => (i < 6 || i === 11 || i === 12 ? 1n : 0n))])), ownNodes(CHAINS[0])));
     if (b.length < 96 || Number(big(b.subarray(32, 64))) !== 64) throw new Error('not the registry\'s reply');
-    const flags = big(b.subarray(0, 32)), [rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList] = abiStringLists(b, Number(big(b.subarray(32, 64))));
-    REG = regOf(Date.now(), flags & ((1n << 64n) - 1n), { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList });
+    const flags = big(b.subarray(0, 32)), [rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList, nostrList] = abiStringLists(b, Number(big(b.subarray(32, 64))));
+    REG = regOf(Date.now(), flags & ((1n << 64n) - 1n), { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList, nostrList });
     writeJson(REGISTRY, REG);
     ROUTE.setForwarders(REG.forwarders);
     ROUTE.setGateways(REG.gateways);
+    ROUTE.setNostr(REG.nostr);
     for (const k of Object.keys(RPC)) delete RPC[k];
   } catch {}
 }
 // The registry's lists as the page takes them (each entry of a shape it can use); the same for a copy kept in this browser,
 // which anything there could have written. `logs`: its wide-range log nodes, asked first for history.
-function regOf(at, flags, { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList }) {
+function regOf(at, flags, { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList, nostrList }) {
   const strs = (xs) => (Array.isArray(xs) ? xs.filter((x) => typeof x === 'string') : []);
   const take = (xs) => [...new Set(strs(xs).filter(goodUrl))].slice(0, 12);
   // keepers: a base URL alone is the host the direct mode reaches (pinned to the page's relayer address); `base#0xrelayer` is a
@@ -4238,9 +4273,11 @@ function regOf(at, flags, { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirro
       // "<address> <interface>": the page keeps the shape; which interfaces it implements is decided where they are used
       // "keeper|rpc <https base> <id> <66-hex gateway key>": a private-route gateway that replaces the page's own, which stays behind it
       gateways: [...new Set(strs(gwList).filter((x) => /^(?:keeper|rpc) https:\/\/[\w.-]+(:\d+)? [a-z0-9]{1,8} (?:02|03)[0-9a-f]{64}$/.test(x)))].slice(0, 6),
+      // public Nostr relays (wss://host) that carry a request to the page's own relay when no forwarder answers
+      nostr: [...new Set(strs(nostrList).filter((x) => /^wss:\/\/[\w.-]+(:\d+)?$/.test(x)))].slice(0, 6),
       paymasters: [...new Set(strs(pmList).filter((x) => /^0x[0-9a-fA-F]{40} [\w.-]{1,32}$/.test(x)))].slice(0, 8) };
 }
-{ const o = readJson(REGISTRY); if (o && typeof o === 'object') REG = regOf(Number(o.at), o.flags, { rpc1: o.rpc?.[1], logs1: o.logs, keepers1: [o.keepers?.[1], ...(Array.isArray(o.relays) ? o.relays : []).map((x) => `${String(x?.url).replace(/\/1\/evm-pool\/keeper$/, '')}#${x?.relayer}`)], bundlers: o.bundler, leaves: o.leaves, fwds: o.forwarders, mirrorList: o.mirrors, tmirrors: o.tmirrors, wcList: [o.wc], wcpidList: [o.wcpid], copyList: o.copies, pmList: o.paymasters, gwList: o.gateways }); }
+{ const o = readJson(REGISTRY); if (o && typeof o === 'object') REG = regOf(Number(o.at), o.flags, { rpc1: o.rpc?.[1], logs1: o.logs, keepers1: [o.keepers?.[1], ...(Array.isArray(o.relays) ? o.relays : []).map((x) => `${String(x?.url).replace(/\/1\/evm-pool\/keeper$/, '')}#${x?.relayer}`)], bundlers: o.bundler, leaves: o.leaves, fwds: o.forwarders, mirrorList: o.mirrors, tmirrors: o.tmirrors, wcList: [o.wc], wcpidList: [o.wcpid], copyList: o.copies, pmList: o.paymasters, gwList: o.gateways, nostrList: o.nostr }); }
 const relayOf = (c) => (ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || null : c.relay);
 const mirrors = () => [...new Set([...(ends.mirror ? [ends.mirror.replace(/\/?$/, '/')] : []), ...MIRRORS, ...(REG.mirrors || [])])];
 const RPC = {}, OWN = {};
@@ -5612,22 +5649,33 @@ const relayUrl = (c) => (routed(c) ? `${ROUTE.OWN.keeper}/${c.chainId}/evm-pool/
 const relayFetchOf = (c) => (routed(c) ? ROUTE.relayFetch : (u, i) => fetch(u, i));
 // The relays for a spend on `c`: the page's own (a default seed, never a requirement) first, then those drawn from
 // TacitPayRegistry's keepers entries that name their relayer and from the open RelayRegistry (read from the page's own nodes,
-// two agreeing, in bulk: nothing in the read names the reader). Registry flag bit 3 stops the open RelayRegistry's. A relay the
-// person set under Endpoints is the only one. Kept half an hour; two minutes when the read failed.
+// two agreeing, in bulk: nothing in the read names the reader), as the person chose (RPICK). Registry flag bit 3 stops the
+// open RelayRegistry's. A relay the person set under Endpoints is the only one. Kept half an hour; two minutes when the read
+// failed; drawn again when a choice changes.
 const RLIST = {};
-function relayList(c) {
+function relaysListed(c) {
   const k = RLIST[c.chainId];
   if (k && Date.now() - k.at < 1_800_000) return k.p;
-  const custom = !!(ends.relay && c.chainId in ends.relay), own = { url: relayUrl(c), relayer: custom ? null : RELAYERS[c.chainId], own: true }, e = RLIST[c.chainId] = { at: Date.now() };
+  const e = RLIST[c.chainId] = { at: Date.now() };
   e.p = (async () => {
-    if (custom || !relayOf(c)) return [own];
     let reg = [];
     if (!lgOff(3)) { reg = await Promise.race([RL.readRegistry((to, data) => quorum(to, data, ownNodes(c)), c.chainId).catch(() => []), sleep(4_000).then(() => [])]); if (!reg.length) e.at = Date.now() - 1_680_000; }
-    return RL.relaysFor(own, [...(REG.relays || []), ...reg]);
+    return [...(REG.relays || []), ...reg];
   })();
   return e.p;
 }
-const chainCfg = (c) => ({ relays: () => relayList(c), relayFetch: routed(c) ? ROUTE.relayFetch : null, sealed: routed(c), chainId: c.chainId, pool: POOL, router: ROUTER, ...pointsCfg(), rpc: rpcOn(c), own: ownOn(c), join: (calls, tag, own) => joinedCall(own ? ownOn(c) : rpcOn(c), calls, tag), boxTop, now: () => chainNow(c), head: (force) => (force ? headOf(headNodes(c), vetted(c)) : sharedHead(c)), vote: (to, data, tag) => quorum(to, data, ownNodes(c), false, tag), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayUrl(c), pqWrite, ...(!routed(c) && relayOf(c) !== c.relay && { relayer: null }) });
+const RDRAW = {};
+function relayList(c) {
+  const custom = !!(ends.relay && c.chainId in ends.relay), own = { url: relayUrl(c), relayer: custom ? null : RELAYERS[c.chainId], own: true };
+  if (custom || !relayOf(c)) return Promise.resolve([own]);
+  const from = relaysListed(c), d = RDRAW[c.chainId];
+  return d?.from === from ? d.p : (RDRAW[c.chainId] = { from, p: from.then((l) => RL.relaysFor(own, l, Math.random, rpick())) }).p;
+}
+// The person's choice of relays, kept in this browser (RL.pickKey: a URL, or 'own'): those to prefer, taken first when
+// their fee is among the near-cheapest, and those never to ask.
+const RPICK = 'tacit-pay-relay-pick-v1';
+const rpick = () => { const o = readJson(RPICK), l = (x) => (Array.isArray(x) ? x.filter((u) => typeof u === 'string').map(lc).slice(0, 32) : []); return { prefer: l(o?.prefer), avoid: l(o?.avoid) }; };
+const chainCfg = (c) => ({ relays: () => relayList(c), prefer: () => rpick().prefer, relayFetch: routed(c) ? ROUTE.relayFetch : null, sealed: routed(c), chainId: c.chainId, pool: POOL, router: ROUTER, ...pointsCfg(), rpc: rpcOn(c), own: ownOn(c), join: (calls, tag, own) => joinedCall(own ? ownOn(c) : rpcOn(c), calls, tag), boxTop, now: () => chainNow(c), head: (force) => (force ? headOf(headNodes(c), vetted(c)) : sharedHead(c)), vote: (to, data, tag) => quorum(to, data, ownNodes(c), false, tag), deployBlock: c.deployBlock, confirmations: c.confirmations, keeper: relayUrl(c), pqWrite, ...(!routed(c) && relayOf(c) !== c.relay && { relayer: null }) });
 function walletOn(c) {
   const st = CH[c.chainId];
   return (st.W ||= makePoolWallet({ chain: chainCfg(c), keys: S.key.pool, prove, store, signer: signerFor(c), proofMs: () => PROVER.ms || 0, secrets: sharedSecrets, pairs: hashPairs }));
@@ -8969,6 +9017,7 @@ function renderSettings() {
     ${CHAINS.map((c) => html`<label class="lbl" for="e-rpc-${c.chainId}"><span>${c.full} · your own node</span></label><textarea id="e-rpc-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.rpc?.[c.chainId] || []).join(' ')}</textarea>
       <label class="lbl" for="e-relay-${c.chainId}"><span>${c.full} relay</span></label><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:78px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
     <label class="lbl nw"><input type="checkbox" id="e-direct" ${ends.direct ? 'checked' : ''}> <span>Reach the relay and the nodes directly, not through the private route (they then see your IP address beside the addresses you pay; for when the private route is down)</span></label>
+    <div id="e-rl"></div>
     <label class="lbl" for="e-points"><span>Catch-up registry · an address, or none</span></label><input id="e-points" spellcheck="false" placeholder="${CHECKPOINTS} · or none" value="${/^none$/i.test(ends.points || '') ? 'none' : /^0x[0-9a-fA-F]{40}$/.test(ends.points || '') ? ends.points : ''}">
     <label class="lbl" for="e-wc"><span>WalletConnect project ID and relay</span></label><input id="e-wc" spellcheck="false" placeholder="32 characters, and/or wss://… (optional)" value="${[ends.wc, ends.wcrelay].filter(Boolean).join(' ')}">
     <label class="lbl" for="e-copies"><span>Copy nodes · Base Sepolia nodes for the onchain copy of the proving key</span></label><textarea id="e-copies" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.copies || []).join(' ')}</textarea>
@@ -9007,6 +9056,46 @@ function renderSettings() {
     applyEndpoints(next);
   };
   $('#e-reset').onclick = () => applyEndpoints({});
+  paintRelays();
+}
+// The relays known on `c` as this browser saw them (answering or not, the fee each last quoted, when each last worked) and the
+// person's choice for each (RPICK). Setting aside the last one that is still asked takes a second press, after a note that
+// sends then go from the wallet, and then turns the relay off for the chain (as "none" above does); "Use it" turns it on.
+async function paintRelays(c = CHAINS[0], last = null) {
+  const el = $('#e-rl');
+  if (!el) return;
+  if (ends.relay?.[c.chainId]) return mount(el, html`${NOTE_MUTE}Your relay above is the only one asked.</p>`);
+  const none = !!ends.relay && c.chainId in ends.relay, mem = RL.memory(), p = rpick(), key = RL.pickKey;
+  const all = RL.known({ url: relayUrl(c) || `${ROUTE.OWN.keeper}/${c.chainId}/evm-pool/keeper`, relayer: RELAYERS[c.chainId] }, await relaysListed(c));
+  if (!$('#e-rl')) return;
+  const off = (e) => none || p.avoid.includes(key(e)), on = all.filter((e) => !off(e));
+  const row = (e) => {
+    const host = new URL(e.url).host, k = key(e), h = RL.heardOf(e.url), t = mem.last(e.url), pref = p.prefer.includes(k);
+    const say = off(e) ? 'set aside' : h?.fee != null ? `answering · fee ${ethStr(BigInt(h.fee))} ETH` : h || mem.down('r', e.url) ? 'not answering' : 'not asked yet';
+    return html`<div class="kv"><span title="${host}">${e.own ? 'the Tacit relay' : host.split('.')[0]}<br><small>${say}${t ? ` · last worked ${ago(t / 1000)}` : ''}</small></span><span class="nw">${off(e) ? '' : html`${BTN_LINK} data-rl-pref="${k}" aria-pressed="${String(pref)}">${pref ? 'Preferred' : 'Prefer'}</button> · `}${BTN_LINK} data-rl-off="${k}">${off(e) ? 'Use it' : 'Don’t use'}</button></span></div>`;
+  };
+  mount(el, html`${LBL}Relays</span></div>${all.map(row)}
+    ${last ? html`${NOTE_WARN}That is the last relay. With none, sends and withdrawals from your balance go from your wallet, which pays the gas and shows as the sender. ${BTN_LINK} data-rl-off="${last}">Set it aside anyway</button></p>`
+      : none ? html`${NOTE_WARN}No relay is asked: sends and withdrawals from your balance go from your wallet, which pays the gas and shows as the sender.</p>`
+      : p.avoid.includes('own') ? html`${NOTE_MUTE}The Tacit relay still watches the deposit addresses it gave you.</p>` : ''}`);
+  const save = (x) => { writeJson(RPICK, x); delete RDRAW[c.chainId]; };
+  $$('[data-rl-pref]', el).forEach((b) => b.onclick = () => { const k = b.dataset.rlPref; save({ ...p, prefer: p.prefer.includes(k) ? p.prefer.filter((x) => x !== k) : [...p.prefer, k] }); paintRelays(c); });
+  $$('[data-rl-off]', el).forEach((b) => b.onclick = () => {
+    const k = b.dataset.rlOff, e = all.find((x) => key(x) === k);
+    if (!e) return;
+    if (off(e)) {
+      save({ ...p, avoid: p.avoid.filter((x) => x !== k) });
+      if (!none) return paintRelays(c);
+      const relay = { ...ends.relay }; delete relay[c.chainId];
+      return applyEndpoints({ ...ends, relay });
+    }
+    const rest = on.filter((x) => x !== e);
+    if (!rest.length && last !== k) return paintRelays(c, k);
+    if (!rest.length && S.busy) return toast('Wait for the current action to finish, then save.', true);
+    save({ prefer: p.prefer.filter((x) => x !== k), avoid: [...p.avoid, k] });
+    if (rest.length) return paintRelays(c);
+    applyEndpoints({ ...ends, relay: { ...ends.relay, [c.chainId]: '' } });
+  });
 }
 function applyEndpoints(next) {
   if (S.busy) return toast('Wait for the current action to finish, then save.', true);
@@ -9944,7 +10033,8 @@ const TC = (() => {
   }
   function bundlerSet(urls, fetchImpl = (u, i) => fetch(u, i)) {
     const clients = urls.map((u) => bundlerClient(u, fetchImpl));
-    let took = null;
+    // `took`: the bundler that took the operation; `priced`: the one whose gas limits it carries
+    let took = null, priced = null;
     const passable = (method, params, e) => {
       if (READS.has(method)) return true;
       if (method === 'eth_estimateUserOperationGas') return !!estimationUnavailable(e, params?.[0]);
@@ -9954,6 +10044,7 @@ const TC = (() => {
     };
     return {
       urls,
+      carrier: () => urls[took ?? priced] ?? null,
       async request(method, params) {
         const order = clients.map((_, i) => i);
         if (took !== null) order.unshift(...order.splice(took, 1));
@@ -9962,6 +10053,7 @@ const TC = (() => {
           let r;
           try { r = await clients[i].request(method, params); } catch (e) { if (first === null) { first = e; if (!passable(method, params, e)) throw e; } else if (!refusal && e?.kind === 'rpc' && !(method === 'pimlico_getUserOperationGasPrice' && e.code === -32601)) refusal = e; continue; }
           if (method === 'eth_estimateUserOperationGas' && !completeEstimate(r, params?.[0])) { if (first === null) first = Object.assign(new Error('the bundler gave no gas limits for the paymaster’s part of the operation'), { kind: 'incomplete-estimate' }); continue; }
+          if (method === 'eth_estimateUserOperationGas') priced = i;
           if (method === 'eth_sendUserOperation') took = i;
           if (r == null && READS.has(method)) { unknown = true; if (i === took) return r; continue; }
           return r;
@@ -10351,7 +10443,8 @@ const TC = (() => {
       return { hash, receive: pool.denomination, at: sentAt, spent: (await settled(pool, note, sentAt)) && (await paid(pool, note, recipient, hash)) };
     }
     // Gas from the note through the paymaster: one operation from a throwaway account; the wallet signs and sends nothing.
-    // `confirm` is asked once the fee is fixed; a fee that moved up while it was read is asked again.
+    // `confirm` is asked once the fee is fixed; a fee that moved up while it was read is asked again. Both it and the result
+    // name the paymaster and the bundler (`via`: the one that priced it, then the one that took it).
     // `swap` (a withdrawal that arrives as a token): { route(amountIn) → { to, value, data, out, limit } paying the token to
     // its address, gas }: the note pays its own one-time account (its key from the note), whose call swaps exactly what the
     // note leaves after the fee; `recipient` is then where the token goes, and only for the words shown.
@@ -10371,7 +10464,7 @@ const TC = (() => {
       if (!vetted.length) throw new Error('Gas from the note is not available right now, so nothing was sent. Try again in a minute, or pay the gas from your wallet.');
       let last = null;
       for (const pm of vetted) {
-        try { return { ...(await through(pm.address)), paymaster: pm.address }; } catch (e) {
+        try { return { ...(await through(pm.address)), paymaster: pm.address, via: client.carrier() }; } catch (e) {
           if (!(e?.refused || e?.pmFail) || e?.cancelled) throw e;
           last = e; onStep({ step: 'paymaster', failed: pm.address });
         }
@@ -10394,7 +10487,7 @@ const TC = (() => {
         const ask = !!confirm && (approved == null || prepared.fee > approved.fee || (route && route.limit < approved.limit));
         if (ask || again === 0) onStep({ step: 'quote', fee: prepared.fee, receive, route });
         if (ask) {
-          if (!(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination, route }))) throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+          if (!(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination, route, paymaster: PM, via: client.carrier() }))) throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
           approved = { fee: prepared.fee, limit: route?.limit ?? 0n };
         }
         const sentAt = await head();
@@ -10571,6 +10664,13 @@ const ROUTE = (() => {
   let extra = [];   // forwarders the registry adds (behind the page's own)
   const forwarders = () => [...new Set([...OWN.forwarders, ...extra])];
   const setForwarders = (list) => { extra = (list || []).filter((u) => /^https:\/\/[\w.-]+(?::\d+)?$/.test(u)).slice(0, 6); };
+  // A forwarder that failed, and a listed relay whose key could not be shown, are passed over for an hour (RL.memory).
+  const MEM = RL.memory();
+  const liveFw = () => shuffled(MEM.live(forwarders(), 'f'));
+  // Public Nostr relays that carry a request to the page's own relay when no forwarder answers, as its keeper listens there
+  // for requests to its gateway key; the registry's "nostr" list replaces them.
+  let NOSTR = ['wss://relay.primal.net', 'wss://nos.lol', 'wss://offchain.pub'];
+  const setNostr = (list) => { const l = (list || []).filter((u) => /^wss:\/\/[\w.-]+(?::\d+)?\/?$/.test(u)).slice(0, 6); if (l.length) NOSTR = l; };
   const te = new TextEncoder(), td = new TextDecoder();
   const TAG = te.encode('tacit-sealed-v2'), KID_TAG = te.encode('tacit-sealed-kid-v1'), DOC_TAG = te.encode('tacit-relay-gateway-v1');
   const REQUEST_SIZES = [4096, 8192, 16384, 32768, 65536], REQUEST_MIN = 8192, REPLY_MIN = 1024, MAX_REPLY = 8 << 20;
@@ -10608,29 +10708,83 @@ const ROUTE = (() => {
     return { bytes: cat(head, ct), open };
   }
   const shuffled = (xs) => { const a = [...xs]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  // Over Nostr (the tacit.finance dapp's road, docs/PRIVATE-ROUTE-NOSTR.md there): the same sealed envelope, base64, in an
+  // ephemeral event (kind 21501; tags x = the gateway key id, t, expiration, a NIP-13 nonce for 12 leading zero bits) signed
+  // by a key made for it alone, sent to each relay after asking it for replies to that event (kind 21502, tag e). A relay
+  // sees the caller's address and an envelope of a fixed size, as a forwarder does. Only a reply that opens under the
+  // envelope's own keys is taken; anything else is ignored. Envelopes up to 32 KiB go this way.
+  const N_REQ = 21501, N_REP = 21502, N_BITS = 12, N_TAG = 'tacit-route-v1';
+  const b64 = (u) => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+  const lead = (b) => { let n = 0; for (const x of b) { if (x) return n + Math.clz32(x) - 24; n += 8; } return n; };
+  const tagged = (t, m) => { const h = sha256(te.encode(t)); return sha256(cat(h, h, m)); };
+  async function nostrEvent(bytes, now) {
+    const d0 = scalar(), P = secp.affine(secp.mulG(d0)), d = P[1] & 1n ? SN - d0 : d0, px = be(P[0]), content = b64(bytes);
+    const tags = [['x', hex(bytes.subarray(1, 5))], ['t', N_TAG], ['expiration', String(now + 300)], ['nonce', '', String(N_BITS)]];
+    // the id is sha256 of [0, pubkey, created_at, kind, tags, content]; only the nonce changes between tries
+    const [pre, post] = JSON.stringify([0, hex(px), now, N_REQ, tags, content]).split('"nonce",""').map((s) => te.encode(s));
+    let id, n = 0;
+    for (; ; n++) { id = new Uint8Array(await subtle().digest('SHA-256', cat(pre, te.encode(`"nonce","${n}"`), post))); if (lead(id) >= N_BITS) break; }
+    tags[3][1] = String(n);
+    // BIP-340: even-y key and nonce, s = k + e·d
+    const k0 = scalar(), R = secp.affine(secp.mulG(k0)), k = R[1] & 1n ? SN - k0 : k0, rx = be(R[0]), e = big(tagged('BIP0340/challenge', cat(rx, px, id))) % SN;
+    return { id: hex(id), pubkey: hex(px), created_at: now, kind: N_REQ, tags, content, sig: hex(cat(rx, be((k + e * d) % SN))) };
+  }
+  // → the opened reply to `env` from the first relay to carry one, within `ms`.
+  async function carry(env, signal, ms = 12_000) {
+    const WS = globalThis.WebSocket, now = Math.floor(Date.now() / 1000);
+    if (typeof WS !== 'function' || !NOSTR.length || env.bytes.length > 32768) throw new Error('The private route did not answer.');
+    const ev = await nostrEvent(env.bytes, now), sub = 'tr' + hex(randomBytes(4)), socks = [];
+    let timer;
+    try {
+      return await new Promise((resolve, reject) => {
+        let left = NOSTR.length;
+        timer = setTimeout(() => reject(new Error('No answer came over Nostr.')), ms);
+        if (signal) { const stop = () => reject(signal.reason || new Error('aborted')); if (signal.aborted) return stop(); signal.addEventListener('abort', stop, { once: true }); }
+        for (const url of NOSTR) {
+          let ws, out = false;
+          const gone = () => { if (!out) { out = true; if (--left === 0) reject(new Error('No Nostr relay carried the request.')); } };
+          try { ws = new WS(url); } catch { gone(); continue; }
+          socks.push(ws);
+          ws.onopen = () => { try { ws.send(JSON.stringify(['REQ', sub, { kinds: [N_REP], '#e': [ev.id], since: now - 5 }])); ws.send(JSON.stringify(['EVENT', ev])); } catch { gone(); } };
+          ws.onerror = ws.onclose = gone;
+          ws.onmessage = (m) => {
+            let x; try { x = JSON.parse(m.data); } catch { return; }
+            const r = x?.[0] === 'EVENT' && x[1] === sub ? x[2] : null;
+            if (r?.kind !== N_REP || typeof r.content !== 'string' || r.content.length > 60_000 || !Array.isArray(r.tags) || !r.tags.some((t) => t?.[0] === 'e' && t[1] === ev.id)) return;
+            let b; try { b = Uint8Array.from(atob(r.content), (c) => c.charCodeAt(0)); } catch { return; }
+            env.open(b).then(resolve, () => {});
+          };
+        }
+      });
+    } finally { clearTimeout(timer); for (const ws of socks) { try { ws.close(); } catch {} } }
+  }
   // A fetch for requests under `base`, each sealed to `gateway` and posted to a forwarder at `pathOf(forwarder)`, the next
-  // one if that fails. Answers like fetch; never sends the request in the open.
-  function sealedFetch(base, gateway, pathOf) {
+  // one if that fails, and over Nostr (`nostr`, the page's own relay) when none answers. Answers like fetch; never sends the
+  // request in the open.
+  function sealedFetch(base, gateway, pathOf, nostr = false) {
     const root = base.replace(/\/+$/, '');
     return async (url, init = {}) => {
       const u = String(url);
       if (!u.startsWith(root + '/')) throw new Error('The private route carries requests to its own relay only.');
       const req = { method: String(init.method || 'GET').toUpperCase(), path: u.slice(root.length), body: init.body == null ? null : JSON.parse(init.body) };
       let last = new Error('The private route did not answer.'), tried = false;
-      for (const fw of shuffled(forwarders())) {
+      const answer = (o) => new Response([101, 204, 205, 304].includes(o.status) ? null : o.body, { status: o.status, headers: { ...o.headers, ...(tried ? { 'x-tried': '1' } : {}) } });
+      // a forwarder that does not answer is noted; on the page's own relay's road, one that fails or is throttled too
+      const fail = (fw, status) => { if (status == null || (nostr && (status >= 500 || status === 429))) MEM.mark('f', fw); };
+      for (const fw of liveFw()) {
         const env = await seal(gateway, req);
         let r;
         // a request lost on its way back may have been carried: the answer then says so (x-tried), and a refusal is not "nothing sent"
-        try { r = await fetch(pathOf(fw), { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: env.bytes, signal: init.signal }); } catch (e) { if (init.signal?.aborted) throw e; last = e; tried = true; continue; }
-        const answer = (o) => new Response([101, 204, 205, 304].includes(o.status) ? null : o.body, { status: o.status, headers: { ...o.headers, ...(tried ? { 'x-tried': '1' } : {}) } });
+        try { r = await fetch(pathOf(fw), { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: env.bytes, signal: init.signal }); } catch (e) { if (init.signal?.aborted) throw e; last = e; tried = true; fail(fw); continue; }
         // a forwarder's own refusal (4xx) passes to the next one; a body that opens under this request's key is the relay's answer
         if (r.status !== 200) {
           last = new Error(`a forwarder answered ${r.status}`);
-          if (r.status < 500 && r.status !== 429) { const o = await env.open(new Uint8Array(await r.arrayBuffer())).catch(() => null); if (o) return answer(o); } else tried ||= r.status !== 429;
+          if (r.status < 500 && r.status !== 429) { const o = await env.open(new Uint8Array(await r.arrayBuffer())).catch(() => null); if (o) { MEM.up('f', fw); return answer(o); } } else { tried ||= r.status !== 429; fail(fw, r.status); }
           continue;
         }
-        try { return answer(await env.open(new Uint8Array(await r.arrayBuffer()))); } catch (e) { last = e; tried = true; }
+        try { const o = await env.open(new Uint8Array(await r.arrayBuffer())); MEM.up('f', fw); return answer(o); } catch (e) { last = e; tried = true; }
       }
+      if (nostr) { const env = await seal(gateway, req); try { return answer(await carry(env, init.signal)); } catch (e) { if (init.signal?.aborted) throw e; } }
       throw last;
     };
   }
@@ -10639,7 +10793,7 @@ const ROUTE = (() => {
     const path = String(url).slice(base().length);
     let last = new Error('The private route did not answer.');
     for (const g of GW[role]) {
-      try { return await sealedFetch(g.url, g.key, (fw) => `${fw}/f/${g.id}`)(g.url + path, init); } catch (e) { if (init.signal?.aborted || /refuses|too large/.test(String(e.message))) throw e; last = e; }
+      try { return await sealedFetch(g.url, g.key, (fw) => `${fw}/f/${g.id}`, role === 'keeper')(g.url + path, init); } catch (e) { if (init.signal?.aborted || /refuses|too large/.test(String(e.message))) throw e; last = e; }
     }
     throw last;
   };
@@ -10661,24 +10815,30 @@ const ROUTE = (() => {
     } catch { return null; }
   }
   const KEYS = new Map();   // relayer → its sealed fetch, once its key is known and checked
+  const noKey = (heard) => Object.assign(new Error('This relay\'s private route key could not be shown and checked, so it is not reached.'), { nokey: true, heard });
+  // `heard`: a forwarder answered about the relay (so it is the relay that showed no key, not the route that is down)
   async function gatewayOf(relayer) {
-    let said = false;    // some forwarder answered with its documents, none of them a key this relay signed
-    for (const fw of shuffled(forwarders())) {
+    let heard = false;
+    for (const fw of liveFw()) {
       try {
         const r = await fetch(`${fw}/r/1/${relayer}/key`, { signal: timeoutSignal(15_000) });
+        const j = await r.json().catch(() => null);
+        // the forwarder's own words (its documents, or its error for this relay), not a proxy's page in front of it
+        if (j && typeof j === 'object' && (Array.isArray(j.docs) || typeof j.error === 'string')) heard = true;
         if (!r.ok) continue;
-        const { docs } = await r.json();
-        if (Array.isArray(docs)) said = true;
-        for (const d of Array.isArray(docs) ? docs : []) { const k = verifyDoc(d, relayer); if (k) return k; }
+        for (const d of Array.isArray(j.docs) ? j.docs : []) { const k = verifyDoc(d, relayer); if (k) return k; }
       } catch { /* the next forwarder */ }
     }
-    throw Object.assign(new Error('This relay\'s private route key could not be shown and checked, so it is not reached.'), { nokey: true, said });
+    throw noKey(heard);
   }
   function listedFetch(url, relayer) {
     const k = lc(relayer), root = new URL(url).origin;
-    // A relay whose key the forwarders said they do not have is passed over for ten minutes, not asked again at every quote;
-    // when none of them could be reached (a moment's outage) the next quote asks again.
-    if (!KEYS.has(k)) KEYS.set(k, gatewayOf(relayer).then((g) => sealedFetch(root, g, (fw) => `${fw}/r/1/${relayer}`)).catch((e) => { if (e?.said) setTimeout(() => KEYS.delete(k), 600_000); else KEYS.delete(k); throw e; }));
+    // A relay a forwarder said has no key is passed over for an hour (kept in this browser), not asked again at every quote;
+    // when no forwarder could be reached (a moment's outage) the next quote asks again.
+    if (!KEYS.has(k)) {
+      if (MEM.down('k', relayer)) return Promise.reject(noKey(true));
+      KEYS.set(k, gatewayOf(relayer).then((g) => { MEM.up('k', relayer); return sealedFetch(root, g, (fw) => `${fw}/r/1/${relayer}`); }).catch((e) => { if (e.heard) MEM.mark('k', relayer); KEYS.delete(k); throw e; }));
+    }
     return KEYS.get(k);
   }
   // fetch for a relay: the page's own through its gateway, a listed one (`relayer`: the address it is listed under) through
@@ -10694,32 +10854,34 @@ const ROUTE = (() => {
   // when that road fails. A user operation sent twice is one: the EntryPoint runs it once.
   const RPC = viaGw('rpc', () => OWN.rpc.url);
   const BUNDLER_URL = [[/^https:\/\/public\.pimlico\.io\/v2\/1\/rpc$/, 'pimlico'], [/^https:\/\/api\.candide\.dev\/public\/v3\/1$/, 'candide']];
-  // Each bundler's road is passed by for a minute after it fails; a standard call then tries the other bundler's road, and
-  // only when neither carries it, and the person agrees (once a visit), goes straight to the bundler, which sees their address.
-  const bundlerSkip = {};
+  // Each bundler's road is passed by for an hour after it fails (kept in this browser; both are tried when both failed); a
+  // standard call then tries the other bundler's road, and only when neither carries it, and the person agrees (once a
+  // visit), goes straight to the bundler, which sees their address. A bundler that fails when reached straight is put last
+  // for an hour (`bundlersFor`).
   let bundlerDirect = false;
   async function bundlerFetch(url, init = {}) {
-    const which = BUNDLER_URL.find(([re]) => re.test(String(url)))?.[1];
+    const which = BUNDLER_URL.find(([re]) => re.test(String(url)))?.[1], both = BUNDLER_URL.every(([, b]) => MEM.down('b', b));
     const road = async (b) => {
-      if (!b || Date.now() < (bundlerSkip[b] || 0)) return null;
+      if (!b || (!both && MEM.down('b', b))) return null;
       try {
         const r = await RPC(`${OWN.rpc.url}/1/evm-pool/keeper/bundler-${b}`, { method: 'POST', body: init.body, signal: init.signal });
         // a gateway that could not carry the call (404, 403) or was throttled (every caller leaves from its one address)
-        if (![403, 404, 429].includes(r.status) && r.status < 500) return r;
+        if (![403, 404, 429].includes(r.status) && r.status < 500) { MEM.up('b', b); return r; }
       } catch (e) { if (init.signal?.aborted) throw e; }
-      bundlerSkip[b] = Date.now() + 60_000;
+      MEM.mark('b', b);
       return null;
     };
     const other = which && /^"?eth_/.test(String(JSON.parse(init.body || '{}').method || '')) ? BUNDLER_URL.map(([, b]) => b).find((b) => b !== which) : null;
     const r = (await road(which)) || (await road(other));
     if (r) return r;
     if (!bundlerDirect && !(bundlerDirect = confirm('The private route is not answering. Send the withdrawal directly instead? The service that sends it will see your IP address.'))) throw new Error('The private route is not answering, so nothing was sent. Try again in a minute.');
-    return fetch(url, init);
+    try { const x = await fetch(url, init); if (x.status >= 500 || x.status === 429) MEM.mark('b', url); else MEM.up('b', url); return x; } catch (e) { if (!init.signal?.aborted) MEM.mark('b', url); throw e; }
   }
-  return { OWN, forwarders, setForwarders, setGateways, relayFetch, bundlerFetch, verifyDoc, seal };
+  const bundlersFor = (urls) => [...urls.filter((u) => !MEM.down('b', u)), ...urls.filter((u) => MEM.down('b', u))];
+  return { OWN, forwarders, setForwarders, setGateways, setNostr, relayFetch, bundlerFetch, bundlersFor, verifyDoc, seal };
 })();
 
-ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways);
+ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways); ROUTE.setNostr(REG.nostr);
 
 // ── large pools in the page ──
 // The Tornado Cash pools as part of one private balance. Shield: an amount of a whole note or more is split, whole notes
@@ -11284,12 +11446,12 @@ async function lgExitOne(c, step, n, to, { confirm, swap = null, prover = null, 
       const gas = BigInt(first.gas) > 620_000n ? BigInt(first.gas) - 520_000n : 100_000n;
       route = { router: ZROUTER, gas: gas + 60_000n, route: async (amountIn) => swapRoute(c, swap.t, amountIn, swap.slip, to).then((r) => (r ? { to: ZROUTER, value: r.value, data: r.data, out: r.out, limit: r.limit } : null)) };
     }
-    return await flow.withdrawSponsored({ noteText: text, recipient: to, prover: own, confirm, cache: LG_TREES, caches, bundlers: [...new Set([...TC.BUNDLERS, ...(REG.bundler || [])])], paymasters: TC.parsePaymasters(REG.paymasters), fetchImpl: ROUTE.bundlerFetch, swap: route, onStep: (s) => step(lgExitSaid(s)) });
+    return await flow.withdrawSponsored({ noteText: text, recipient: to, prover: own, confirm, cache: LG_TREES, caches, bundlers: ROUTE.bundlersFor([...new Set([...TC.BUNDLERS, ...(REG.bundler || [])])]), paymasters: TC.parsePaymasters(REG.paymasters), fetchImpl: ROUTE.bundlerFetch, swap: route, onStep: (s) => step(lgExitSaid(s)) });
   } finally { if (!prover) own.close(); }
 }
 // The fee panel under the notes: what goes where, the fee and its share, a token's floor. → Promise<bool>
 // `fresh`: `to` is a new deposit address of this key, which is not looked up (a read of it would name the note's withdrawal).
-function lgConfirm({ fee, receive, denomination, route }, { what, to, swap, fresh = false, sweep = false } = {}) {
+function lgConfirm({ fee, receive, denomination, route, paymaster, via }, { what, to, swap, fresh = false, sweep = false } = {}) {
   return new Promise((resolve) => {
     const ask = LG.ask || $('#status');
     const up = (BigInt(fee) * 10000n + denomination - 1n) / denomination;
@@ -11297,7 +11459,7 @@ function lgConfirm({ fee, receive, denomination, route }, { what, to, swap, fres
     mount(ask, html`<div class="callout lg-fee"><div>
       ${NOTE}<b>${what || 'This note'}</b>${/ ETH /.test(what || '') ? '' : ` · ${TC.ethWords(denomination)} ETH`}${to ? html` → <code>${short(to, 6)}</code>` : ''}</p>
       ${fee === 0n ? html`${NOTE}Your wallet sends this and pays its gas, so it shows as the sender. The address gets the whole ${TC.ethWords(denomination)} ETH.</p>`
-        : html`${NOTE}Gas from the note: up to ${ethStr(fee)} ETH (${(Number(up) / 100).toFixed(2)}%); what is not used comes back${swap ? ' to the note’s one-time address, which you can send on later' : ' to the address'}.</p>`}
+        : html`${NOTE}Gas paid from the note${lgGasVia({ paymaster, via }) ? ` through ${lgGasVia({ paymaster, via })}` : ''}: up to ${ethStr(fee)} ETH (${(Number(up) / 100).toFixed(2)}%); what is not used comes back${swap ? ' to the note’s one-time address, which you can send on later' : ' to the address'}.</p>`}
       ${route ? html`${NOTE}Arrives as at least <b class="num">${units(route.limit, swap.t.dec)} ${swap.t.sym}</b> (quoted ${units(route.out, swap.t.dec)}).</p>` : fee ? html`${NOTE}The address gets at least <b class="num">${fmt(receive, 6, true)} ETH</b>.</p>` : ''}
       ${sweep ? html`${NOTE}The relay then makes it ready to pay within minutes, for up to 0.25%.</p>` : ''}
       <div class="row"><button class="btn sm" type="button" id="lg-yes">Send</button>${BTN_GHOST} id="lg-no">Cancel</button></div></div></div>`);
@@ -11349,8 +11511,16 @@ async function lgSweep(c, step, n, to) {
   const r = await TC.sweepThrowaway({ read: lgOwn() ? lgOwnRead() : lgRead, key: TC.noteKey(TC.parseNote(text).preimage), to });
   done(c, r.hash, `${fmt(r.value)} ETH is on its way to ${short(to, 6)}.`);
 }
-// Which paymaster carried the notes' gas, for a receipt.
-const lgGasBy = (outs) => (outs.some((o) => o.paymaster) ? ` Gas came out of the ${outs.length === 1 ? 'note' : 'notes'}.` : '');
+// The service that carries a note's gas, in plain words: the bundler (Pimlico and Candide by name, any other by its host's
+// first label), and a paymaster other than the page's own by its address.
+const lgGasVia = ({ paymaster, via }) => {
+  let h = '';
+  try { h = new URL(via).host; } catch {}
+  const b = /(^|\.)pimlico\.io$/.test(h) ? 'Pimlico' : /(^|\.)candide\.dev$/.test(h) ? 'Candide' : h.split('.')[0], pm = paymaster && lc(paymaster) !== lc(TC.PAYMASTER) ? `paymaster ${short(paymaster)}` : '';
+  return [b, pm].filter(Boolean).join(' and ');
+};
+// Which service carried the notes' gas, for a receipt.
+const lgGasBy = (outs) => { const g = outs.filter((o) => o.paymaster), v = [...new Set(g.map(lgGasVia).filter(Boolean))]; return g.length ? ` Gas paid from the ${g.length === 1 ? 'note' : 'notes'}${v.length ? ` through ${v.join(' and ')}` : ''}.` : ''; };
 async function lgOutcome(c, n, out, words) {
   if (n.nh) lgSent(n, out);
   lgLoad();

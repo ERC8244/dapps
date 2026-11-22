@@ -222,5 +222,73 @@ console.log('a withdrawal in parts: the receipt says what each later part pays')
   ok(row(E18 / 1000n, notesOnly) === 'Fee, each later part: from its note, as this one’s (at most 3%)' && row(null, notesOnly) === row(0n, notesOnly), 'a part wholly from notes: each pays from its own note, whatever the relay asks', row(null, notesOnly));
 }
 
+// RL (the relays) with the page's lc and isAddr under it; `ls`: the browser's storage, or none
+const loadRL = (ls = null) => vm.runInNewContext(`${cut('const lc =', '\n')}\n${cut('const isAddr =', '\n')}\n${cut('const RL = (() => {', '\n})();\n')}\n})();\nRL`, {BigInt, Math, Date, JSON, Number, Object, String, Set, Map, Array, Promise, setTimeout, clearTimeout, ...(ls && {localStorage: ls})});
+
+console.log('\nwhat failed, kept an hour in this browser');
+{
+  const disk = new Map();
+  const RL = loadRL({getItem: (k) => disk.get(k) ?? null, setItem: (k, v) => disk.set(k, String(v)), removeItem: (k) => disk.delete(k)}), HOUR = 3_600_000;
+  let now = 1_700_000_000_000;
+  const a = RL.memory(() => now), b = RL.memory(() => now);
+  a.mark('r', 'https://Kestrel.example/1/evm-pool/keeper');
+  ok(a.down('r', 'https://kestrel.example/1/evm-pool/keeper') && b.down('r', 'https://kestrel.example/1/evm-pool/keeper'), 'a relay that failed is passed over, by every reader of this browser\'s memory (case does not matter)');
+  ok(RL.memory(() => now).down('r', 'https://kestrel.example/1/evm-pool/keeper') && JSON.parse(disk.get('tacit-pay-down-v1'))['r https://kestrel.example/1/evm-pool/keeper'] === now + HOUR, 'kept in storage, so a reload still passes it over, for one hour');
+  now += HOUR - 1; ok(a.down('r', 'https://kestrel.example/1/evm-pool/keeper'), 'still passed over just before the hour');
+  now += 2; ok(!a.down('r', 'https://kestrel.example/1/evm-pool/keeper'), 'and asked again after it');
+  a.mark('f', 'https://fw1.example'); a.mark('k', '0xAA'); a.mark('b', 'pimlico');
+  ok(a.down('f', 'https://fw1.example') && a.down('k', '0xaa') && a.down('b', 'pimlico') && !a.down('r', 'https://fw1.example'), 'forwarders, relays with no key and bundlers each have their own entry');
+  ok(JSON.stringify(a.live(['https://fw1.example', 'https://fw2.example'], 'f')) === '["https://fw2.example"]', 'a list passes over what failed');
+  a.mark('f', 'https://fw2.example');
+  ok(JSON.stringify(a.live(['https://fw1.example', 'https://fw2.example'], 'f')) === '["https://fw1.example","https://fw2.example"]', 'and when everything in it failed, every entry is tried anyway');
+  a.up('f', 'https://fw1.example');
+  ok(!a.down('f', 'https://fw1.example') && a.down('f', 'https://fw2.example'), 'one that answers again is taken back at once');
+  const u = 'https://r.example/1/evm-pool/keeper';
+  a.up('r', u); ok(a.last(u) === now, 'a relay\'s answer is noted with its time');
+  const t0 = now; now += 30_000; a.up('r', u); ok(a.last(u) === t0, 'and noted again at most once a minute');
+  now += 60_000; a.up('r', u); ok(a.last(u) === now, 'then again');
+  now += 2 * HOUR; a.mark('r', 'https://x.example/1/evm-pool/keeper');
+  const kept = JSON.parse(disk.get('tacit-pay-down-v1'));
+  ok(!Object.keys(kept).some((k) => /^[fkb] /.test(k)) && kept[`o ${u}`] > 0, 'what ran out is dropped on the next write; when a relay last answered stays');
+  disk.set('tacit-pay-down-v1', 'not json'); ok(!a.down('r', u) && a.live([u], 'r').length === 1, 'storage that is not a record is read as nothing');
+  disk.set('tacit-pay-down-v1', '[1,2]'); a.mark('r', u); ok(a.down('r', u), 'and is written over');
+  const bare = loadRL(), m1 = bare.memory(), m2 = bare.memory();
+  m1.mark('r', u); ok(m1.down('r', u) && !m2.down('r', u), 'without browser storage each memory keeps its own');
+}
+
+console.log('\nwhich gas service carries a note\'s withdrawal');
+{
+  const PM = '0xB0FfCdC890E969579D348F519a9C3920C2DD04a5', OTHER = '0x' + '12'.repeat(20);
+  const g = vm.runInNewContext(`${cut('const lgGasVia =', '\nasync function lgOutcome')}\n({ lgGasVia, lgGasBy })`, {URL, RegExp, Set, TC: {PAYMASTER: PM}, lc: (x) => String(x || '').toLowerCase(), short: (a) => a.slice(0, 6) + '…' + a.slice(-4)});
+  ok(g.lgGasVia({paymaster: PM, via: 'https://public.pimlico.io/v2/1/rpc'}) === 'Pimlico', 'a note\'s gas is said to come through the bundler, by name (Pimlico)');
+  ok(g.lgGasVia({paymaster: PM, via: 'https://api.candide.dev/public/v3/1'}) === 'Candide', 'Candide too');
+  ok(g.lgGasVia({paymaster: PM, via: 'https://bundler.example/rpc'}) === 'bundler', 'a bundler from the registry by its host\'s first label');
+  ok(g.lgGasVia({paymaster: OTHER, via: 'https://public.pimlico.io/v2/1/rpc'}) === 'Pimlico and paymaster 0x1212…1212', 'a paymaster other than the page\'s own is named by its address');
+  ok(g.lgGasVia({paymaster: PM, via: null}) === '', 'with no service known it says nothing more');
+  ok(g.lgGasBy([{paymaster: PM, via: 'https://public.pimlico.io/v2/1/rpc'}]) === ' Gas paid from the note through Pimlico.' && g.lgGasBy([{paymaster: PM, via: 'https://public.pimlico.io/v2/1/rpc'}, {paymaster: PM, via: 'https://api.candide.dev/public/v3/1'}]) === ' Gas paid from the notes through Pimlico and Candide.', 'a receipt says it for one note and for several');
+  ok(g.lgGasBy([{hash: '0x1'}]) === '', 'a note the wallet sent says nothing of a gas service');
+}
+
+console.log('\nthe relays a person prefers or sets aside');
+{
+  const RL = loadRL(), U = (h) => `https://${h}/1/evm-pool/keeper`, A = (n) => '0x' + n.repeat(40);
+  const own = {url: U('own.example'), relayer: A('1')}, listed = ['a', 'b', 'c', 'd', 'e', 'f'].map((h, i) => ({url: U(`${h}.example`), relayer: A(String(i + 2))}));
+  const names = (l) => l.map((e) => e.url.slice(8).split('.')[0]).join();
+  ok(names(RL.relaysFor(own, listed, () => 0)) === 'own,a,b,c,d', 'with no choice made: the page\'s own, then four drawn');
+  ok(names(RL.known(own, [...listed, listed[0], {url: U('own.example'), relayer: A('9')}])) === 'own,a,b,c,d,e,f', 'every relay known, once each, never another entry for the page\'s own URL');
+  ok(names(RL.relaysFor(own, listed, () => 0, {prefer: [U('F.example')]})) === 'own,f,a,b,c', 'a preferred relay is always among those asked, though the draw would leave it out');
+  ok(names(RL.relaysFor(own, listed, () => 0, {avoid: [U('a.example'), U('b.example')]})) === 'own,c,d,e,f', 'one set aside is never asked');
+  ok(names(RL.relaysFor(own, listed, () => 0, {avoid: ['own']})) === 'a,b,c,d,e', 'the page\'s own is set aside by name, whatever its URL');
+  ok(names(RL.relaysFor(own, listed.slice(0, 1), () => 0, {avoid: ['own', U('a.example')]})) === '', 'with every one set aside, none is listed');
+  const q = (h, fee, extra = {}) => ({e: {url: U(`${h}.example`), relayer: A('2'), ...extra}, q: {fee: String(fee)}});
+  const quotes = [q('own', 100, {own: true}), q('a', 110), q('b', 124), q('c', 200)];
+  ok(names(RL.orderQuotes(quotes, () => 0).map((x) => x.e)) === 'own,a,b,c', 'with no preference the near-cheapest are drawn from (here the cheapest), the rest by fee');
+  ok(RL.orderQuotes(quotes, () => 0, [U('b.example')])[0].e.url === U('b.example') && RL.orderQuotes(quotes, () => 0.99, [U('b.example')])[0].e.url === U('b.example'), 'a preferred relay within 25% of the lowest fee is used first, whatever the draw');
+  ok(RL.orderQuotes(quotes, () => 0, [U('c.example')])[0].e.url === U('own.example'), 'one further off is not: its fee is twice the lowest');
+  ok(RL.orderQuotes(quotes.slice(1), () => 0, ['own'])[0].e.url === U('a.example') && RL.orderQuotes(quotes, () => 0.99, ['own'])[0].e.own, 'the page\'s own is preferred by name too');
+  const two = RL.orderQuotes(quotes, () => 0.99, [U('a.example'), U('b.example')]);
+  ok([U('a.example'), U('b.example')].includes(two[0].e.url) && two.length === 4, 'with two preferred and near, the draw is between them, and every quote stays in the order');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

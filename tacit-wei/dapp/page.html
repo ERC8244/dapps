@@ -93,7 +93,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .bal .v { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: lining-nums tabular-nums; }
 .bal .v.t { font: 400 28px/1.05 var(--serif); }
 .bal .u, .bal .side .err, .bal .note { grid-column: 2 / 4; }
-.pools summary { cursor: pointer; list-style: none; } .pools summary::-webkit-details-marker { display: none; }
+.pools summary { cursor: pointer; list-style: none; padding: 8px 0; margin: -8px 0; } .pools summary::-webkit-details-marker { display: none; }
 #lg-box > summary { cursor: pointer; list-style: none; } #lg-box > summary::-webkit-details-marker { display: none; }
 #lg-box > summary h2::after { content: '›'; display: inline-block; margin-left: 10px; color: var(--mute); transition: transform .2s; } #lg-box[open] > summary h2::after { transform: rotate(90deg); }
 .bal br { display: none; }
@@ -363,7 +363,7 @@ code, .id, .num.nw, .addr, .amt input, .bal .v, .chip code { font-family: var(--
 .amt .seg.sub.unit button { width: auto; padding: 6px 10px; font-size: 13px; }
 /* fields: a soft well with a rounded edge; the amount large in the mono */
 .amt { border-radius: var(--r2); border: 1px solid var(--hair); background: var(--field); }
-.amt:focus-within { border-color: var(--hair-2); box-shadow: 0 0 0 3px var(--well); }
+.amt:focus-within { border-color: var(--mute); box-shadow: 0 0 0 3px var(--well); }
 .amt input { font-size: 30px; padding: 16px 16px; }
 .amt.text input { font-size: 14px; padding: 15px 16px; }
 textarea { border-radius: var(--r3); }
@@ -393,7 +393,7 @@ footer a, footer .link { color: var(--mute); }
 /* the split card and the notes */
 .lg-split { margin-top: var(--sp2); padding: 12px 14px; background: var(--well); border-radius: var(--r2); }
 .lg-split .lbl { margin-top: 0; }
-.lg-split select, .card select { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); border-radius: var(--r3); padding: 4px 8px; }
+.lg-split select, .card select { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); border-radius: var(--r3); min-height: 36px; padding: 4px 8px; }
 .lg-parts { display: grid; gap: 6px; margin: 4px 0 6px; }
 .lg-part { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; padding: 8px 12px; background: var(--card); border: 1px solid var(--hair); border-radius: var(--r3); }
 .lg-part span { color: var(--mute); font-size: 13px; }
@@ -407,7 +407,7 @@ footer a, footer .link { color: var(--mute); }
 .steps li.on::before { background: var(--ink); color: var(--card); border-color: var(--ink); }
 .steps li.done::before { content: '✓'; }
 .quick { display: flex; gap: 6px; margin: 8px 0 0; }
-.quick button { font: 13px var(--mono); min-height: 32px; padding: 4px 12px; background: none; border: 1px solid var(--hair-2); border-radius: var(--r3); color: var(--mute); cursor: pointer; }
+.quick button { font: 13px var(--mono); min-height: 36px; min-width: 44px; padding: 4px 12px; background: none; border: 1px solid var(--hair-2); border-radius: var(--r3); color: var(--mute); cursor: pointer; }
 .quick button:hover { color: var(--ink); border-color: var(--ink); }
 .pq { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--hair); }
 .pq-words { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 2.6em; margin: 10px 0; padding-left: 2.2em; font-family: var(--mono); font-size: 13px; }
@@ -424,6 +424,7 @@ dialog.sheet { border-color: var(--hair-2); border-radius: var(--r) var(--r) 0 0
 #sheet-settings input[type="checkbox"] { display: inline-block; width: auto; margin: 3px 8px 0 0; accent-color: var(--ink); }
 #sheet-settings label.nw { white-space: normal; flex-wrap: nowrap; justify-content: flex-start; align-items: flex-start; }
 .rcpt > :first-child { margin-top: 0; }
+summary.note { padding: 8px 0; margin-top: 4px; }
 .route b { white-space: nowrap; }
 .lg-part b { white-space: nowrap; } .lg-part span { margin-left: auto; text-align: right; }
 .lg-split .note { margin-top: 8px; } .lg-split [data-lg-size] + [data-lg-size] { margin-top: 0; }
@@ -434,7 +435,7 @@ dialog.sheet { border-color: var(--hair-2); border-radius: var(--r) var(--r) 0 0
 .row2 > .btn:only-child { grid-column: 1 / -1; }
 .pq-do { align-items: center; padding: 8px 0; } .pq-do .btn { white-space: nowrap; }
 #w-pq input:not([type]), #f-pq input:not([type]) { display: block; width: 100%; font: 15px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); border-radius: var(--r3); padding: 10px 12px; }
-:is(#w-pq, #f-pq) input:not([type]):focus { outline: none; border-color: var(--hair-2); box-shadow: 0 0 0 3px var(--well); }
+:is(#w-pq, #f-pq) input:not([type]):focus { outline: none; border-color: var(--mute); box-shadow: 0 0 0 3px var(--well); }
 .pq .row2, #f-pq .row2 { margin-top: 14px; }
 </style>
 </head>

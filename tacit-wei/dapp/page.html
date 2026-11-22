@@ -273,11 +273,8 @@ dialog.sheet[open], .toast { animation: up .15s ease-out; }
 .toast { max-width: 520px; padding: 10px 16px; font-size: 13px; color: var(--card); background: var(--ink); box-shadow: var(--lift); }
 .toast.bad { background: var(--err); }
 @media (max-width: 640px) {
-  .hero { padding: 24px 0 22px; }
-  .facts { flex-direction: column; }
   .card { padding: 18px 16px; }
   .seg button { padding: 8px 6px; }
-  .bal .v { font-size: clamp(26px, 8vw, 30px); }
   dialog.sheet { width: 100%; max-width: 100%; margin: auto 0 0; max-height: 92vh; max-height: 92dvh; }
 }
 @media (pointer: coarse) { .amt.text input, textarea { font-size: 16px; } }
@@ -361,10 +358,7 @@ code, .id, .num.nw, .addr, .amt input, .bal .v, .chip code { font-family: var(--
 .seg button { border-radius: var(--r3); font-family: var(--sans); font-weight: 500; color: var(--mute); }
 .seg button + button { border-left: 0; }
 .seg button:is([aria-selected="true"], [aria-pressed="true"]) { background: var(--sel, var(--card)); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--sel-ring, var(--hair)); }
-.seg.sub { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--well); padding: 4px; border: 0; border-radius: var(--r2); gap: 4px; }
-.seg.sub button { width: 100%; justify-self: stretch; text-align: center; border-radius: var(--r3); font-size: 14px; }
-.seg.sub button + button { border: 0; }
-.seg.sub button:is([aria-selected="true"], [aria-pressed="true"]) { background: var(--sel, var(--card)); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--sel-ring, var(--hair)); }
+.seg.sub button { font-size: 14px; }
 .amt .seg.sub.unit { grid-auto-columns: auto; padding: 3px; margin-right: 8px; }
 .amt .seg.sub.unit button { width: auto; padding: 6px 10px; font-size: 13px; }
 /* fields: a soft well with a rounded edge; the amount large in the mono */

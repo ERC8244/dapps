@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: the module, by its hash, and WebAssembly the page writes itself; workers from blob: URLs of the page's own code; images only from data: URLs; connections to any https/wss node the reader or the registry names, and to a node on this machine. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-12YVxtmcwOs4LQoOnFwxAHeV6SaQzljFTZxK4DSXbqM=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-yrG+G08bQ0xZyL88tATNS24mCvFoSFM2ivi0+wk9Z68=' 'wasm-unsafe-eval'; worker-src blob:; connect-src https: wss: http://127.0.0.1:* http://localhost:*; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
@@ -2661,7 +2661,10 @@ function makePoolWallet({ chain, keys, prove, store = null, signer = null, feed 
   const MEM = RL.memory(), byUrl = (e) => e.url;
   const ownRelay = () => ({ url: keeper, relayer: chain.relayer === undefined ? RELAYERS[chain.chainId] : chain.relayer, own: true });
   const cands = async () => { const l = chain.relays ? await chain.relays().catch(() => []) : []; return l.length ? l : [ownRelay()]; };
-  const rotate = (e) => { MEM.mark('r', e.url); if (cur?.url === e.url && !hold) cur = null; };
+  // A relay whose read failed is passed over; the page's own is not. With the private route down every read fails, and the own
+  // relay is the one a request can still reach (over Nostr): set aside, the next spend would draw only listed relays, whose keys
+  // come through that route, and be refused for an hour.
+  const rotate = (e) => { if (lc(e.url) !== lc(keeper)) MEM.mark('r', e.url); if (cur?.url === e.url && !hold) cur = null; };
   const relaysNow = async () => { const all = await cands(); if (cur && !hold && !all.some((e) => e.url === cur.url)) cur = null; return all; };
   const readRelay = async () => { const from = MEM.live(await relaysNow(), 'r', byUrl); return (cur ||= from[Math.floor(Math.random() * from.length)]); };
   const keeperFetch = async (path, { ms, rl = null, ...init } = {}) => {
@@ -9183,7 +9186,11 @@ async function servedBy() {
   if (!isAddr(here) || !BigInt(here)) { HOST.ok ??= false; return; }
   mount($('#served'), html`tacit.wei · stored in <a href="https://etherscan.io/address/${here}#code" rel="noopener">${short(here)}</a> on Ethereum`);
   const [tip, home] = await Promise.all([quorum(here, '0x' + hex(selector('latest()'))).then(addrOf), homeAt]);
-  HOST.ok ??= here === home || tip === home;
+  // A host that names tacit.wei's contract is safe to sign on only when its gateway is this project's (wei.limo, gwei.limo,
+  // w4eth.io): another gateway (w3eth.io, w3link.io, eth.limo) could serve any bytes under that contract's name, so a page from
+  // one still asks first. A host that names another contract is not safe either way.
+  const named = here === home || tip === home;
+  if (!named || /(^|\.)(wei\.limo|gwei\.limo|w4eth\.io)$/i.test(location.hostname)) HOST.ok ??= named;
   if (!isAddr(tip) || !BigInt(tip) || tip === here || home !== tip) return;
   const href = lc(location.href).includes(here.slice(2)) ? location.href.replace(new RegExp(here.slice(2), 'i'), tip.slice(2)) : `https://${tip}.w4eth.io/`;
   mount($('#newer'), html`A newer version of this page is at <a href="${href}">${short(tip)}</a>.`);
@@ -9373,7 +9380,8 @@ const TC = (() => {
     { denomination: 10n * ETHER, address: '0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF', deployBlock: 9117720 },
     { denomination: 100n * ETHER, address: '0xA160cdAB225685dA1d56aa342Ad8841c3b53f291', deployBlock: 9161895 },
   ].map(Object.freeze));
-  // Newer pools of the same code and verifier (0.01, 0.03, 0.3, 3 and 30 ETH), which other tools deposit into and the
+  // Newer pools with the same verifier and denominations (0.01, 0.03, 0.3, 3 and 30 ETH; compiled apart, so their runtime
+  // code is not the canonical pools' byte for byte), which other tools deposit into and the
   // paymaster takes: a note made there is found and taken out here, but nothing is deposited there (they hold a handful of
   // deposits, no cover).
   const MORE_POOLS = Object.freeze([

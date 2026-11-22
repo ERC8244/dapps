@@ -11435,6 +11435,8 @@ function lgTreeSoon(n) {
 }
 const lgAheadTake = async () => { const p = LG_AHEAD.prover; if (!p) return null; await LG_AHEAD.busy; LG_AHEAD.prover = null; return p; };
 async function lgExitOne(c, step, n, to, { confirm, swap = null, prover = null, wal = lgWal(swap) } = {}) {
+  // the pool's deposits may still be being read for this note (started when its withdrawal came on screen): said, not left as "Getting ready"
+  if (!prover && LG_AHEAD.busy) step('Reading the pool’s deposits');
   const flow = lgFlow(), own = prover || (await lgAheadTake()) || lgProver();
   try {
     const text = await lgText(c, step, n);

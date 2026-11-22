@@ -83,8 +83,12 @@ raised on purpose (the contract takes any number of chunks), and this section's 
    live version's size and sha256: update it there too, so a reader checking `html()` against the docs gets the version
    the name now serves.
 
-Rehearse steps 5 and 6 on an anvil fork first (two owners impersonated: `execute`, the delay passed with
-`evm_increaseTime`, then `executeQueued`), and confirm `successor()`, `resolve` and `html()` there.
+**Rehearse it on a fork first.** `node deploy/rehearse-next.mjs` (anvil on PATH) forks Ethereum locally and runs the
+release on the build in hand: the 22 chunks through CreateX, `deployNext` from the multisig (and the same call from
+another account, which must be refused), then `successor()`, `PAGE_HASH`, `steward`, `PREVIOUS`, `latest()`, `html()`
+compared byte for byte with `dapp/page.min.html`, `setAddr` on WNS and GNS, and pointing the name back again. It
+impersonates the multisig rather than signing, so the queue itself (`execute`, `evm_increaseTime`, `executeQueued`) is
+the one part left to rehearse by hand when a release changes how it is queued.
 
 To go back, the multisig points `tacit.wei` at an earlier version: every version still serves its own page. Renouncing
 the steward freezes the lineage.

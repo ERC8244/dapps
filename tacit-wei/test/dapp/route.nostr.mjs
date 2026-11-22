@@ -21,8 +21,19 @@ const te = new TextEncoder(), td = new TextDecoder(), TAG = te.encode('tacit-sea
 
 // A gateway of the page's own relay's kind, with a key made here; the page's own key stays behind it.
 const g = 0x1234567890abcdefn % SN, pub = secp.compress(secp.mulG(g)), kid = hex(keccak(cat(u8(te.encode('tacit-sealed-kid-v1')), pub)).subarray(0, 4));
-ROUTE.setGateways([`keeper https://gw.example k ${hex(pub)}`]);
-ok(ROUTE.OWN.keeper === 'https://gw.example', 'the gateway made here is the first of the page\'s own relay\'s kind');
+// Its key comes with the signature of a relay address made here, which the page is told is its own relay's.
+const { SigningKey, computeAddress } = await import(new URL('../../../node_modules/ethers/lib.esm/index.js', import.meta.url).href);
+const relayKey = new SigningKey('0x' + '5a'.repeat(32)), relayer = computeAddress(relayKey.publicKey).toLowerCase();
+const docSig = relayKey.sign(Uint8Array.from(keccak(cat(u8(te.encode('tacit-relay-gateway-v1')), u8(Buffer.from(relayer.slice(2), 'hex')), pub))));
+const signed = `keeper https://gw.example k ${hex(pub)} ${docSig.serialized.slice(2)}`;
+ROUTE.setGateways([`keeper https://gw.example k ${hex(pub)}`], relayer);
+ok(ROUTE.OWN.keeper !== 'https://gw.example', 'a gateway with a key of its own and no signature is not taken');
+ROUTE.setGateways([signed.replace(/[0-9a-f]{2}$/, (x) => (x === '1c' ? '1b' : '1c'))], relayer);
+ok(ROUTE.OWN.keeper !== 'https://gw.example', 'nor one whose signature is not the relay address\'s');
+ROUTE.setGateways([signed]);
+ok(ROUTE.OWN.keeper !== 'https://gw.example', 'nor a signed one when no relay address is given');
+ROUTE.setGateways([signed], relayer);
+ok(ROUTE.OWN.keeper === 'https://gw.example', 'the gateway made here, signed by the relay address, is the first of the page\'s own relay\'s kind');
 
 // The gateway's side: the request opened, its answer sealed back to the same keys (dapp/page.html, ROUTE's header).
 const aes = (k, use) => webcrypto.subtle.importKey('raw', k, 'AES-GCM', false, [use]);

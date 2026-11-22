@@ -4249,7 +4249,7 @@ async function readRegistry() {
     REG = regOf(Date.now(), flags & ((1n << 64n) - 1n), { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirrorList, tmirrors, wcList, wcpidList, copyList, pmList, gwList, nostrList });
     writeJson(REGISTRY, REG);
     ROUTE.setForwarders(REG.forwarders);
-    ROUTE.setGateways(REG.gateways);
+    ROUTE.setGateways(REG.gateways, RELAYERS[1]);
     ROUTE.setNostr(REG.nostr);
     for (const k of Object.keys(RPC)) delete RPC[k];
   } catch {}
@@ -4273,7 +4273,7 @@ function regOf(at, flags, { rpc1, logs1, keepers1, bundlers, leaves, fwds, mirro
       wc: first(wcList, /^wss:\/\/[\w.-]+(:\d+)?$/), wcpid: first(wcpidList, /^[0-9a-f]{32}$/), copies: take(copyList).slice(0, 6),
       // "<address> <interface>": the page keeps the shape; which interfaces it implements is decided where they are used
       // "keeper|rpc <https base> <id> <66-hex gateway key>": a private-route gateway that replaces the page's own, which stays behind it
-      gateways: [...new Set(strs(gwList).filter((x) => /^(?:keeper|rpc) https:\/\/[\w.-]+(:\d+)? [a-z0-9]{1,8} (?:02|03)[0-9a-f]{64}$/.test(x)))].slice(0, 6),
+      gateways: [...new Set(strs(gwList).filter((x) => /^(?:keeper|rpc) https:\/\/[\w.-]+(:\d+)? [a-z0-9]{1,8} (?:02|03)[0-9a-f]{64}(?: [0-9a-f]{130})?$/.test(x)))].slice(0, 6),
       // public Nostr relays (wss://host) that carry a request to the page's own relay when no forwarder answers
       nostr: [...new Set(strs(nostrList).filter((x) => /^wss:\/\/[\w.-]+(:\d+)?$/.test(x)))].slice(0, 6),
       paymasters: [...new Set(strs(pmList).filter((x) => /^0x[0-9a-fA-F]{40} [\w.-]{1,32}$/.test(x)))].slice(0, 8) };
@@ -10703,11 +10703,18 @@ const ROUTE = (() => {
   };
   const SEED = { keeper: { url: OWN.keeper, id: OWN.id, key: OWN.gateway }, rpc: { url: OWN.rpc.url, id: OWN.rpc.id, key: OWN.rpc.gateway } };
   // The registry's gateways replace the page's own (the first of each kind); the page's own stay as the road behind them.
+  // An entry ("<role> <url> <id> <key>") may move the page's own key to another host; an entry with another key is taken
+  // only with a fifth field, the signature of `vouch` (the page's own relay address) over that key, as a listed relay's
+  // document carries it (verifyDoc).
   const GW = { keeper: [SEED.keeper], rpc: [SEED.rpc] };
-  const setGateways = (list) => {
+  const setGateways = (list, vouch = null) => {
     for (const role of ['keeper', 'rpc']) {
       const got = [];
-      for (const x of list || []) { const [r, url, id, key] = String(x).split(' '); if (r === role) { try { secp.decompress(unhex(key)); got.push({ url, id, key }); } catch {} } }
+      for (const x of list || []) {
+        const [r, url, id, key, sig] = String(x).split(' ');
+        if (r !== role) continue;
+        try { const k = unhex(key); secp.decompress(k); if (lc(key) === SEED[role].key || (vouch && verifyDoc({ relayer: vouch, key, kid: hex(kidOf(k)), sig }, vouch))) got.push({ url, id, key }); } catch {}
+      }
       GW[role] = [...got.slice(0, 2), SEED[role]].filter((g, i, a) => a.findIndex((h) => h.url === g.url) === i);
     }
     OWN.keeper = GW.keeper[0].url; OWN.id = GW.keeper[0].id; OWN.gateway = GW.keeper[0].key;
@@ -10938,7 +10945,7 @@ const ROUTE = (() => {
   return { OWN, forwarders, setForwarders, setGateways, setNostr, setNostrOff, onNostr, relayFetch, bundlerFetch, bundlersFor, verifyDoc, seal };
 })();
 
-ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways); ROUTE.setNostr(REG.nostr); ROUTE.setNostrOff(ends.nostr === false);
+ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways, RELAYERS[1]); ROUTE.setNostr(REG.nostr); ROUTE.setNostrOff(ends.nostr === false);
 // Once a visit, when the forwarders were down and public Nostr relays carried a request: who saw what, and where it is turned off.
 let NOSTR_TOLD = false;
 ROUTE.onNostr(() => { if (NOSTR_TOLD) return; NOSTR_TOLD = true; toast('The forwarders were not answering, so this went through public Nostr relays: they saw your IP address and the time, not the request. You can turn this off under Endpoints.'); });

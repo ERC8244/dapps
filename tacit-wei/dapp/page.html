@@ -144,7 +144,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 @keyframes pop { 0% { transform: scale(.4); } 70% { transform: scale(1.15); } }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .row2 .btn { margin-top: 10px; }
-.status { font-size: 13px; margin-top: 12px; overflow-wrap: anywhere; }
+.status { font-size: 14px; margin-top: 12px; overflow-wrap: anywhere; }
 .status:empty { display: none; }
 .status .link { display: block; padding: 12px 0; }
 .status .link::after { inset: 0 -8px; }
@@ -152,7 +152,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .status:focus { outline: none; }
 .note.old { visibility: hidden; animation: old-show 0s 3s forwards; }
 /* Room kept for what the script draws first, so the cards below do not jump when it does. */
-#tabs:empty { min-height: 46px; }
+#tabs:empty { min-height: 52px; }
 #bal:empty { min-height: 80px; }
 #form:has(> .note.old) { min-height: 400px; }
 @keyframes old-show { to { visibility: visible; } }
@@ -364,7 +364,7 @@ code, .id, .num.nw, .addr, .amt input, .bal .v, .chip code { font-family: var(--
 /* fields: a soft well with a rounded edge; the amount large in the mono */
 .amt { border-radius: var(--r2); border: 1px solid var(--hair); background: var(--field); }
 .amt:focus-within { border-color: var(--mute); box-shadow: 0 0 0 3px var(--well); }
-.amt input { font-size: 30px; padding: 16px 16px; }
+.amt input { font-size: 30px; padding: 16px 16px; text-overflow: ellipsis; }
 .amt.text input { font-size: 14px; padding: 15px 16px; }
 textarea { border-radius: var(--r3); }
 .rcpt { border-top: 0; background: var(--well); border-radius: var(--r2); padding: 10px 14px; }
@@ -423,7 +423,9 @@ dialog.sheet { border-color: var(--hair-2); border-radius: var(--r) var(--r) 0 0
 #sheet-settings input:not([type="checkbox"]) { text-overflow: ellipsis; }
 #sheet-settings input[type="checkbox"] { display: inline-block; width: auto; margin: 3px 8px 0 0; accent-color: var(--ink); }
 #sheet-settings label.nw { white-space: normal; flex-wrap: nowrap; justify-content: flex-start; align-items: flex-start; }
+.opts > .lbl { margin: 0; }
 .rcpt > :first-child { margin-top: 0; }
+.rcpt .note:not(:last-child) { margin-bottom: 8px; }
 summary.note { padding: 8px 0; margin-top: 4px; }
 .route b { white-space: nowrap; }
 .lg-part b { white-space: nowrap; } .lg-part span { margin-left: auto; text-align: right; }

@@ -29,11 +29,14 @@ pragma solidity ^0.8.30;
 ///   from an owned onchain registry (TacitPayRegistry) behind the page's own values; it names no address a payment
 ///   goes to or a spender (the relays and paymasters it lists are paid a fee the page caps). To
 ///   shield or withdraw as a token it also uses zRouter (the swap aggregator) with routes found by its onchain
-///   quoter zQuoter, the token list at token.list.wei, and Permit2, all read and called at their public addresses.
+///   quoter zQuoter, a list of tokens built into the page (any other is added by its address), and Permit2, all read
+///   and called at their public addresses.
 ///   Chain state comes from public nodes the reader can replace, or from the reader's wallet.
 ///
-///   A relay sends spends for a fee, reached through a private route of forwarders so it does not see the reader's
-///   address, so the spender's account never appears on chain, and serves an
+///   A relay sends spends for a fee, reached through a private route of forwarders (or, when none answers and the reader
+///   has not turned it off, public Nostr relays carrying the same sealed request, which see the reader's IP address and
+///   the time but not the request) so it does not see the reader's address, so the spender's account never appears on
+///   chain, and serves an
 ///   index of pool events that makes the first read fast. The page never needs it: every spend can be sent from
 ///   the reader's wallet instead, and the index is checked against the pool (a page of it counts only when the
 ///   tree it builds is one the pool has held) before the chain logs fill in the rest.

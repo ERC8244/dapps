@@ -470,7 +470,7 @@ summary.note { padding: 8px 0; margin-top: 4px; }
       <div class="bal" id="bal"></div>
       <div id="bal-note"></div>
       <div class="seg sub" role="tablist" aria-label="Action" id="tabs"></div>
-      <div id="form"><p class="note old">This page needs JavaScript and a browser from 2022 or later. Update yours or use another.</p></div>
+      <div id="form" role="tabpanel"><p class="note old">This page needs JavaScript and a browser from 2022 or later. Update yours or use another.</p></div>
       <div class="status" role="status" aria-live="polite" id="status" tabindex="-1"></div>
     </section>
 
@@ -6183,7 +6183,7 @@ function paintBal() {
 const TABS = [['shield', 'Shield'], ['send', 'Send'], ['withdraw', 'Withdraw'], ['receive', 'Receive']];
 // Only the selected tab is in the tab order; the arrow keys, Home and End move between them (the tab-list handler).
 function paintTabs() {
-  mount($('#tabs'), html`${TABS.map(([k, l]) => html`${BTN} role="tab" data-tab="${k}" aria-selected="${String(k === S.tab)}" tabindex="${k === S.tab ? 0 : -1}" ${S.busy ? 'disabled' : ''}>${l}</button>`)}`);
+  mount($('#tabs'), html`${TABS.map(([k, l]) => html`${BTN} role="tab" data-tab="${k}" aria-controls="form" aria-selected="${String(k === S.tab)}" tabindex="${k === S.tab ? 0 : -1}" ${S.busy ? 'disabled' : ''}>${l}</button>`)}`);
   $$('#tabs [data-tab]').forEach((b) => b.onclick = () => { if (S.busy) return; S.tab = b.dataset.tab; mount($('#status'), ''); paintTabs(); renderForm(); });
 }
 // Where signing is safe: the signature is the key and is not bound to a site. tacit.wei.limo, tacit.gwei.limo, tacit.finance,
@@ -7038,6 +7038,7 @@ function wireTok(f, slot = 'outTok', n = '') {
     if (e.key === 'Escape') { box.seq = (box.seq || 0) + 1; box.hidden = true; btn.setAttribute('aria-expanded', 'false'); btn.focus(); }
     if (e.key === 'Enter' && e.target.id === `f-toksq${n}`) { e.preventDefault(); e.stopPropagation(); const one = $$(`#f-tokl${n} [data-tk]`, box).filter((b) => b.dataset.tk); if (one.length === 1) one[0].click(); }
   };
+  btn.onkeydown = (e) => { if (!box.hidden) box.onkeydown(e); };
   btn.onclick = async () => {
     if (!box.hidden) { box.seq = (box.seq || 0) + 1; box.hidden = true; btn.setAttribute('aria-expanded', 'false'); return; }
     box.hidden = false; btn.setAttribute('aria-expanded', 'true');

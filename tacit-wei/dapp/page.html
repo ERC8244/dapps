@@ -6891,7 +6891,7 @@ const sameNote = (a) => (cur().W?.history().some((r) => r.ext && BigInt(r.ext) =
 // Paying `a` out to an address, as a receipt: whole notes first (the largest that fit), the rest from the private balance.
 // → { x, p } when it can be paid as shown, else null (said why).
 // The switch under a payout's receipt: whole notes first (the default), or ready to pay only, the notes kept.
-const keepRow = (x) => (x || LG.keep ? html`<p class="note">${BTN_LINK} id="f-keep">${LG.keep ? 'Use whole notes first' : 'Pay from ready to pay only (keep the notes)'}</button></p>` : '');
+const keepRow = (x) => (x || LG.keep ? html`<p class="note">${BTN_LINK} id="f-keep">${LG.keep ? 'Use whole notes first' : 'Use only ready to pay (keep the notes)'}</button></p>` : '');
 document.addEventListener('click', (e) => { if (e.target.closest?.('#f-keep') && !S.busy) { LG.keep = !LG.keep; FORM.check?.(); } });
 function outRows(say, tab, a, fee, bal, where, d) {
   const x = lgExitPlan(a);
@@ -7098,7 +7098,7 @@ function wireTok(f, slot = 'outTok', n = '') {
         draw(q);
       }, () => { reading.delete(paste); const e = $(`#f-tokadd${n}`, box); if (e && $(`#f-toksq${n}`, box).value.trim().toLowerCase() === paste) mount(e, 'Could not read that token just now. Try again.'); });
     };
-    mount(box, html`<div class="amt text"><input id="f-toksq${n}" placeholder="Search, or paste a token’s address" autocomplete="off" spellcheck="false" aria-label="Search tokens, or paste a token’s address"></div><div class="tokl" id="f-tokl${n}"></div>`);
+    mount(box, html`<div class="amt text"><input id="f-toksq${n}" placeholder="Search or paste an address" autocomplete="off" spellcheck="false" aria-label="Search tokens, or paste a token’s address"></div><div class="tokl" id="f-tokl${n}"></div>`);
     $(`#f-toksq${n}`, box)?.addEventListener('input', (e) => draw(e.target.value));
     draw();
     if (!TOKENS.rows) {
@@ -8848,7 +8848,7 @@ function paintActivity() {
       const d = describe(r), t = blockTime(r.c, r.block);
       return html`<li><div class="h"><b>${pal(d.pal)}${d.label}</b><span class="${d.in ? 'in' : ''}">${d.in ? '+' : d.v ? '−' : ''}${ethStr(d.v)} ETH</span></div>
         <div class="f">${[r.c.name, t ? ago(t) : null, d.fee ? `fee ${ethStr(d.fee)} ETH` : null].filter(Boolean).join(' · ')} · ${txLink(r.c, r.tx)}</div></li>`;
-    })}</ul>${total > rows.length ? html`${NOTE}Showing the latest ${rows.length} of ${total}.</p>` : ''}` : CHAINS.every((c) => CH[c.chainId].at) && !rebuilding && !older.length ? html`${NOTE}${pal('ninja')}Nothing yet. Shield some ETH to start. Expecting a payment? Rebuild, below, reads the chain directly.</p>` : ''}
+    })}</ul>${total > rows.length ? html`${NOTE}Showing the latest ${rows.length} of ${total}.</p>` : ''}` : CHAINS.every((c) => CH[c.chainId].at) && !rebuilding && !older.length ? html`${NOTE}${pal('ninja')}Nothing yet. Shield some ETH to start. Expecting a payment? Use “Rebuild from the chain” below.</p>` : ''}
     <details class="adv" id="rebuild-more" ${opened ? 'open' : ''}><summary>Rebuild from the chain</summary>${NOTE}Forgets this browser’s copy and reads the chain again from its own logs.</p>${BTN_GHOST} id="rebuild" ${rebuilding ? html`disabled aria-busy="true"` : ''}>Rebuild</button></details>
     <details class="adv" id="points-more" ${pointsOpen ? 'open' : ''}><summary>Catch-up points</summary>${NOTE}A new device starts reading from the newest catch-up point instead of the pool’s first block. Anyone can post one, and the registry keeps it only if the pool held its root. ${pointLine(S.chain)}</p>${BTN_GHOST} id="post-point" ${canPost(S.chain) ? '' : 'disabled'}>Post one from my wallet on ${S.chain.full}</button></details>`);
   const pm = $('#points-more'), pp = $('#post-point');

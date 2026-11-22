@@ -106,5 +106,16 @@ ctx.confirm = () => false;
 const b = await ROUTE.bundlerFetch('https://public.pimlico.io/v2/1/rpc', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }) }).then(() => null, (x) => x);
 ok(b && opened.length === 0, 'a bundler call with no forwarder answering opens no Nostr connection', b?.message);
 
+console.log('\nswitched off under Endpoints: no Nostr connection is opened');
+opened.length = 0;
+ROUTE.setNostrOff(true);
+const off = await ROUTE.relayFetch('https://gw.example/1/evm-pool/keeper/quote?gas=600000', { signal: AbortSignal.timeout(5_000) }).then(() => null, (x) => x);
+ok(off && opened.length === 0, 'with every forwarder down the request fails and nothing is sent to a Nostr relay', `${off?.message} · ${opened.length} connection(s)`);
+ROUTE.setNostrOff(false);
+opened.length = 0;
+modes = { 'wss://one.example': 'answer', 'wss://two.example': 'answer' };
+const back = await ROUTE.relayFetch('https://gw.example/1/evm-pool/keeper/quote?gas=600000', { signal: AbortSignal.timeout(20_000) }).then((r) => r.status, (x) => x.message);
+ok(back === 200 && opened.length > 0, 'and switched on again it is carried as before', String(back));
+
 console.log(`\n${fail ? fail + ' FAILED' : 'all passed'}`);
 process.exit(fail ? 1 : 0);

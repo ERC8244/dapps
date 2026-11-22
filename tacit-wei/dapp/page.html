@@ -4199,6 +4199,7 @@ let ends = ((o) => {
   if (/^(none|0x[0-9a-fA-F]{40})$/.test(o.points || '')) e.points = o.points;
   if (urls(o.copies).length) e.copies = urls(o.copies);
   if (o.direct === true) e.direct = true;
+  if (o.nostr === false) e.nostr = false;
   return e;
 })(readJson(ENDPOINTS));
 // The reader's own nodes, or the page's: what the reads that say what the reader is doing go through (the names they pay,
@@ -9017,6 +9018,7 @@ function renderSettings() {
     ${CHAINS.map((c) => html`<label class="lbl" for="e-rpc-${c.chainId}"><span>${c.full} · your own node</span></label><textarea id="e-rpc-${c.chainId}" spellcheck="false" style="min-height:38px" placeholder="https://… (optional)">${(ends.rpc?.[c.chainId] || []).join(' ')}</textarea>
       <label class="lbl" for="e-relay-${c.chainId}"><span>${c.full} relay</span></label><textarea id="e-relay-${c.chainId}" spellcheck="false" style="min-height:78px" placeholder="${c.relay} · or none">${ends.relay && c.chainId in ends.relay ? ends.relay[c.chainId] || 'none' : ''}</textarea>`)}
     <label class="lbl nw"><input type="checkbox" id="e-direct" ${ends.direct ? 'checked' : ''}> <span>Reach the relay and the nodes directly, not through the private route (they then see your IP address beside the addresses you pay; for when the private route is down)</span></label>
+    <label class="lbl nw"><input type="checkbox" id="e-nostr" ${ends.nostr === false ? '' : 'checked'}> <span>When both forwarders are down, carry requests to the Tacit relay through public Nostr relays (they see your IP address and the time, never what is in a request)</span></label>
     <div id="e-rl"></div>
     <label class="lbl" for="e-points"><span>Catch-up registry · an address, or none</span></label><input id="e-points" spellcheck="false" placeholder="${CHECKPOINTS} · or none" value="${/^none$/i.test(ends.points || '') ? 'none' : /^0x[0-9a-fA-F]{40}$/.test(ends.points || '') ? ends.points : ''}">
     <label class="lbl" for="e-wc"><span>WalletConnect project ID and relay</span></label><input id="e-wc" spellcheck="false" placeholder="32 characters, and/or wss://… (optional)" value="${[ends.wc, ends.wcrelay].filter(Boolean).join(' ')}">
@@ -9029,7 +9031,7 @@ function renderSettings() {
   const good = (u) => /^https:\/\/[^\s/]+/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(u);
   const urls = (t) => [...new Set(t.split(/\s+/).filter(Boolean).map((u) => u.replace(/\/+$/, '')))];
   $('#e-save').onclick = async (e) => {
-    const next = { rpc: {}, relay: {}, mirror: '', wc: '', points: '', ...($('#e-direct').checked ? { direct: true } : {}) }, bad = [];
+    const next = { rpc: {}, relay: {}, mirror: '', wc: '', points: '', ...($('#e-direct').checked ? { direct: true } : {}), ...($('#e-nostr').checked ? {} : { nostr: false }) }, bad = [];
     const take = (t) => { const l = urls(t); bad.push(...l.filter((u) => !good(u))); return l.filter(good); };
     next.mirror = take($('#e-mirror').value)[0] || '';
     const pts = $('#e-points').value.trim();
@@ -9099,7 +9101,7 @@ async function paintRelays(c = CHAINS[0], last = null) {
 }
 function applyEndpoints(next) {
   if (S.busy) return toast('Wait for the current action to finish, then save.', true);
-  ends = next; writeJson(ENDPOINTS, next); endsMark();
+  ends = next; writeJson(ENDPOINTS, next); endsMark(); ROUTE.setNostrOff(ends.nostr === false);
   // What the old relays quoted (the least they take in) goes with them.
   for (const o of [RPC, OWN, WCO, RMIN, RLIST]) for (const k of Object.keys(o)) delete o[k];
   for (const c of CHAINS) { CH[c.chainId].W?.stop(); Object.assign(CH[c.chainId], { W: null, quote: null, syncing: null, at: null, fails: 0 }); }
@@ -10670,6 +10672,8 @@ const ROUTE = (() => {
   // Public Nostr relays that carry a request to the page's own relay when no forwarder answers, as its keeper listens there
   // for requests to its gateway key; the registry's "nostr" list replaces them.
   let NOSTR = ['wss://relay.primal.net', 'wss://nos.lol', 'wss://offchain.pub'];
+  let NOSTR_OFF = false;
+  const setNostrOff = (v) => { NOSTR_OFF = !!v; };
   const setNostr = (list) => { const l = (list || []).filter((u) => /^wss:\/\/[\w.-]+(?::\d+)?\/?$/.test(u)).slice(0, 6); if (l.length) NOSTR = l; };
   const te = new TextEncoder(), td = new TextDecoder();
   const TAG = te.encode('tacit-sealed-v2'), KID_TAG = te.encode('tacit-sealed-kid-v1'), DOC_TAG = te.encode('tacit-relay-gateway-v1');
@@ -10784,7 +10788,7 @@ const ROUTE = (() => {
         }
         try { const o = await env.open(new Uint8Array(await r.arrayBuffer())); MEM.up('f', fw); return answer(o); } catch (e) { last = e; tried = true; }
       }
-      if (nostr) { const env = await seal(gateway, req); try { return answer(await carry(env, init.signal)); } catch (e) { if (init.signal?.aborted) throw e; } }
+      if (nostr && !NOSTR_OFF) { const env = await seal(gateway, req); try { return answer(await carry(env, init.signal)); } catch (e) { if (init.signal?.aborted) throw e; } }
       throw last;
     };
   }
@@ -10878,10 +10882,10 @@ const ROUTE = (() => {
     try { const x = await fetch(url, init); if (x.status >= 500 || x.status === 429) MEM.mark('b', url); else MEM.up('b', url); return x; } catch (e) { if (!init.signal?.aborted) MEM.mark('b', url); throw e; }
   }
   const bundlersFor = (urls) => [...urls.filter((u) => !MEM.down('b', u)), ...urls.filter((u) => MEM.down('b', u))];
-  return { OWN, forwarders, setForwarders, setGateways, setNostr, relayFetch, bundlerFetch, bundlersFor, verifyDoc, seal };
+  return { OWN, forwarders, setForwarders, setGateways, setNostr, setNostrOff, relayFetch, bundlerFetch, bundlersFor, verifyDoc, seal };
 })();
 
-ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways); ROUTE.setNostr(REG.nostr);
+ROUTE.setForwarders(REG.forwarders); ROUTE.setGateways(REG.gateways); ROUTE.setNostr(REG.nostr); ROUTE.setNostrOff(ends.nostr === false);
 
 // ── large pools in the page ──
 // The Tornado Cash pools as part of one private balance. Shield: an amount of a whole note or more is split, whole notes

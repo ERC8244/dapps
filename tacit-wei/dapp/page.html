@@ -260,7 +260,7 @@ dialog.sheet[open], .toast { animation: up .15s ease-out; }
 }
 #w-say:empty { display: none; }
 .sheet-in { padding: 24px 24px calc(28px + env(safe-area-inset-bottom)); }
-.sheet-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.sheet-head { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 1; margin: -24px -24px 10px; padding: 24px 24px 8px; background: var(--card); }
 .x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
 .x:hover { color: var(--ink); border-color: var(--hair-2); }
 .picker { display: grid; gap: 8px; }

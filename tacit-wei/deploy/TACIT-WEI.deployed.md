@@ -52,7 +52,7 @@ The next version of the page, deployed as the successor of the version above: `d
 | page | 538,182 B, sha256 `2f42e7e467a0bce4966e143d7a7bbd5ca4063160f3e0b3f87bbfeb8dfd505097`, keccak256 `0xa4e626f179d49c66b3284a0ac8cb36231c2d5e4f6725af8525137770cf331289` |
 | salt | `0x18ea73d089ea4ef00000000000000000000000000000000040000000936d1bc3` (init code hash `0xd8308941373cf85432cc7cfa5bf7a77fa318908976bf20270250370a4134b7ea`) |
 | chunks | 22, through CreateX `deployCreate2` with open salts, from `0xc2531dF297CCc41d39004dEd1E9cB9F8f985374f`; 117.9M gas in all |
-| checks | `deploy/check-deployment.mjs` passed on the live contract: all 22 chunk code hashes, the chunks hold 538,182 B, `html()` equal to the page byte for byte, `PAGE_HASH`; `deploy/rehearse-next.mjs` passed 17 of 17 on a fork before the release |
+| checks | `deploy/check-deployment.mjs` passed on the live contract: all 22 chunk code hashes, the chunks hold 538,182 B, `html()` equal to the page byte for byte, `PAGE_HASH`; `deploy/rehearse-next.mjs` passed 17 of 17 on a fork before the release; verified on Sourcify (full match, creation and runtime) and on Etherscan (solc 0.8.30, 200 runs, prague, the constructor arguments as deployed) on 2026-11-23 |
 
 | step | transaction | when (UTC) |
 | --- | --- | --- |
